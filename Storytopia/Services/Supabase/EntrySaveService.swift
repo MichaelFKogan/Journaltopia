@@ -259,7 +259,22 @@ struct SupabaseStoryboardService {
         }
     }
 
-    func loadCompletedJournalStoryboards(limit: Int = 9) async throws -> [EntryStoryboard] {
+    func loadPrimaryCompletedStoryboards() async throws -> [EntryStoryboard] {
+        do {
+            return try await client
+                .from("entry_storyboards")
+                .select("id,user_id,client_entry_id,storage_path,created_at,updated_at,art_style,panel_layout,prompt,is_primary,generation_status")
+                .eq("is_primary", value: true)
+                .eq("generation_status", value: "completed")
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+        } catch {
+            throw SupabaseStoryboardError.syncFailed
+        }
+    }
+
+    func loadCompletedJournalStoryboards(limit: Int = 9, offset: Int = 0) async throws -> [EntryStoryboard] {
         do {
             let completedEntries: [CompletedEntryReference] = try await client
                 .from("entries")
@@ -275,18 +290,12 @@ struct SupabaseStoryboardService {
                 return []
             }
 
-            let rows: [EntryStoryboard] = try await client
-                .from("entry_storyboards")
-                .select()
-                .eq("is_primary", value: true)
-                .eq("generation_status", value: "completed")
-                .order("created_at", ascending: false)
-                .execute()
-                .value
+            let rows = try await loadPrimaryCompletedStoryboards()
 
             return Array(
                 rows
                     .filter { completedClientEntryIDs.contains($0.clientEntryID) }
+                    .dropFirst(offset)
                     .prefix(limit)
             )
         } catch {
@@ -295,8 +304,8 @@ struct SupabaseStoryboardService {
         }
     }
 
-    func loadCompletedJournalStoryboardImages(limit: Int = 9) async throws -> [GeneratedStoryboard] {
-        let rows = try await loadCompletedJournalStoryboards(limit: limit)
+    func loadCompletedJournalStoryboardImages(limit: Int = 9, offset: Int = 0) async throws -> [GeneratedStoryboard] {
+        let rows = try await loadCompletedJournalStoryboards(limit: limit, offset: offset)
         var storyboards: [GeneratedStoryboard] = []
 
         for row in rows {
@@ -327,10 +336,16 @@ struct SupabaseStoryboardService {
 
     func downloadStoryboardImage(storagePath: String) async throws -> UIImage {
         do {
-            print("[Storytopia] Cloud image download/cache miss.")
-            let data = try await client.storage
-                .from(bucketName)
-                .download(path: storagePath)
+            let data: Data
+            if let cachedData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: storagePath) {
+                data = cachedData
+            } else {
+                print("[Storytopia] Cloud image download/cache miss.")
+                data = try await client.storage
+                    .from(bucketName)
+                    .download(path: storagePath)
+                SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: storagePath)
+            }
             guard let image = UIImage(data: data) else {
                 throw SupabaseStoryboardError.downloadFailed
             }

@@ -72,6 +72,44 @@ enum SupabaseReferencePhotoError: LocalizedError {
     }
 }
 
+enum SupabaseStorageImageCache {
+    static func data(bucketName: String, storagePath: String) -> Data? {
+        try? Data(contentsOf: fileURL(bucketName: bucketName, storagePath: storagePath))
+    }
+
+    static func store(_ data: Data, bucketName: String, storagePath: String) {
+        do {
+            try FileManager.default.createDirectory(
+                at: cacheDirectory,
+                withIntermediateDirectories: true
+            )
+            try data.write(
+                to: fileURL(bucketName: bucketName, storagePath: storagePath),
+                options: [.atomic]
+            )
+        } catch {
+            print("[Storytopia] Supabase storage image cache write failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static var cacheDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("StorytopiaSupabaseImageCache", isDirectory: true)
+    }
+
+    private static func fileURL(bucketName: String, storagePath: String) -> URL {
+        cacheDirectory.appendingPathComponent(cacheKey(bucketName: bucketName, storagePath: storagePath))
+    }
+
+    private static func cacheKey(bucketName: String, storagePath: String) -> String {
+        "\(bucketName)__\(storagePath)"
+            .map { character in
+                character.isLetter || character.isNumber || character == "." ? character : "_"
+            }
+            .reduce(into: "") { $0.append($1) }
+    }
+}
+
 struct SupabaseReferencePhotoService {
     private let client: SupabaseClient
     private let bucketName = "storytopia-media"
@@ -173,9 +211,15 @@ struct SupabaseReferencePhotoService {
 
             var photos: [CreateEntryReferencePhoto] = []
             for row in rows {
-                let data = try await client.storage
-                    .from(bucketName)
-                    .download(path: row.storagePath)
+                let data: Data
+                if let cachedData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: row.storagePath) {
+                    data = cachedData
+                } else {
+                    data = try await client.storage
+                        .from(bucketName)
+                        .download(path: row.storagePath)
+                    SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: row.storagePath)
+                }
                 guard let image = UIImage(data: data) else {
                     continue
                 }

@@ -60,6 +60,12 @@ struct JournalEntry: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+struct JournalEntrySummaryCounts: Equatable, Sendable {
+    let all: Int
+    let drafts: Int
+    let completed: Int
+}
+
 struct JournalEntryPayload: Encodable, Sendable {
     let userID: UUID
     let clientEntryID: UUID
@@ -379,12 +385,10 @@ struct SupabaseJournalRepository {
                 )
             }
 
-            for payload in payloads {
-                try await client
-                    .from("journal_entries")
-                    .insert(payload)
-                    .execute()
-            }
+            try await client
+                .from("journal_entries")
+                .insert(payloads)
+                .execute()
         } catch {
             throw StoryJournalRepositoryError.operationFailed
         }
@@ -472,6 +476,90 @@ struct SupabaseEntryRepository {
                 .order("created_at", ascending: false)
                 .execute()
                 .value
+        } catch {
+            throw JournalEntryRepositoryError.operationFailed
+        }
+    }
+
+    func getEntrySummaries() async throws -> [JournalEntry] {
+        let userID = try await authenticatedUserID()
+
+        do {
+            return try await client
+                .from("entries")
+                .select("id,user_id,client_entry_id,title,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
+                .eq("user_id", value: userID)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+        } catch {
+            throw JournalEntryRepositoryError.operationFailed
+        }
+    }
+
+    func getEntrySummariesPage(
+        limit: Int,
+        offset: Int,
+        sort: EntrySummarySort,
+        statusFilter: EntrySummaryStatusFilter
+    ) async throws -> [JournalEntry] {
+        let userID = try await authenticatedUserID()
+        let rangeEnd = max(offset, offset + limit - 1)
+
+        do {
+            var query = client
+                .from("entries")
+                .select("id,user_id,client_entry_id,title,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
+                .eq("user_id", value: userID)
+                .neq("status", value: JournalEntryStatus.archived.rawValue)
+
+            switch statusFilter {
+            case .all:
+                break
+            case .drafts:
+                query = query.neq("status", value: JournalEntryStatus.completed.rawValue)
+            case .completed:
+                query = query.eq("status", value: JournalEntryStatus.completed.rawValue)
+            }
+
+            switch sort {
+            case .entryDate:
+                return try await query
+                    .order("entry_date", ascending: false)
+                    .order("created_at", ascending: false)
+                    .range(from: offset, to: rangeEnd)
+                    .execute()
+                    .value
+            case .createdAt:
+                return try await query
+                    .order("created_at", ascending: false)
+                    .range(from: offset, to: rangeEnd)
+                    .execute()
+                    .value
+            case .updatedAt:
+                return try await query
+                    .order("updated_at", ascending: false)
+                    .range(from: offset, to: rangeEnd)
+                    .execute()
+                    .value
+            }
+        } catch {
+            throw JournalEntryRepositoryError.operationFailed
+        }
+    }
+
+    func getEntrySummaryCounts() async throws -> JournalEntrySummaryCounts {
+        async let all = getEntrySummaryCount(statusFilter: .all)
+        async let drafts = getEntrySummaryCount(statusFilter: .drafts)
+        async let completed = getEntrySummaryCount(statusFilter: .completed)
+
+        do {
+            let (allCount, draftCount, completedCount) = try await (all, drafts, completed)
+            return JournalEntrySummaryCounts(
+                all: allCount,
+                drafts: draftCount,
+                completed: completedCount
+            )
         } catch {
             throw JournalEntryRepositoryError.operationFailed
         }
@@ -682,6 +770,41 @@ struct SupabaseEntryRepository {
             throw JournalEntryRepositoryError.notAuthenticated
         }
     }
+
+    private func getEntrySummaryCount(statusFilter: EntrySummaryStatusFilter) async throws -> Int {
+        let userID = try await authenticatedUserID()
+
+        var query = client
+            .from("entries")
+            .select("id")
+            .eq("user_id", value: userID)
+            .neq("status", value: JournalEntryStatus.archived.rawValue)
+
+        switch statusFilter {
+        case .all:
+            break
+        case .drafts:
+            query = query.neq("status", value: JournalEntryStatus.completed.rawValue)
+        case .completed:
+            query = query.eq("status", value: JournalEntryStatus.completed.rawValue)
+        }
+
+        let response = try await query
+            .execute(options: FetchOptions(head: true, count: .exact))
+        return response.count ?? 0
+    }
+}
+
+enum EntrySummarySort: Sendable, Hashable {
+    case entryDate
+    case createdAt
+    case updatedAt
+}
+
+enum EntrySummaryStatusFilter: Sendable, Hashable {
+    case all
+    case drafts
+    case completed
 }
 
 private extension String {

@@ -13,7 +13,11 @@ struct ProfileView: View {
     @State private var storyboardsToShare: [GeneratedStoryboard] = []
     @State private var isShowingShareSheet = false
     @State private var isLoadingProfileStoryboards = false
+    @State private var isLoadingMoreProfileStoryboards = false
+    @State private var hasMoreProfileStoryboards = true
+    @State private var nextProfileStoryboardOffset = 0
     @State private var profileStoryboardErrorMessage: String?
+    private let profileStoryboardPageSize = 9
 
     private let storyboardColumns = [
         GridItem(.flexible(), spacing: 1),
@@ -187,7 +191,7 @@ struct ProfileView: View {
                 }
             }
 
-            if isLoadingProfileStoryboards {
+            if isLoadingProfileStoryboards && generatedStoryboards.isEmpty {
                 LazyVGrid(columns: storyboardColumns, spacing: 1) {
                     ForEach(0..<9, id: \.self) { _ in
                         LoadingStoryboardCard()
@@ -196,7 +200,7 @@ struct ProfileView: View {
             } else if let profileStoryboardErrorMessage {
                 ProfileStoryboardErrorState(message: profileStoryboardErrorMessage) {
                     Task {
-                        await loadProfileStoryboards()
+                        await loadProfileStoryboards(forceReload: true)
                     }
                 }
             } else if generatedStoryboards.isEmpty {
@@ -207,7 +211,7 @@ struct ProfileView: View {
                 }
             } else {
                 LazyVGrid(columns: storyboardColumns, spacing: 1) {
-                    ForEach(Array(generatedStoryboards.prefix(9).enumerated()), id: \.element.id) { index, storyboard in
+                    ForEach(Array(generatedStoryboards.enumerated()), id: \.element.id) { index, storyboard in
                         Button {
                             if isSelecting {
                                 toggleSelection(for: storyboard)
@@ -230,6 +234,15 @@ struct ProfileView: View {
                         .accessibilityAddTraits(
                             selectedStoryboardIDs.contains(storyboard.id) ? .isSelected : []
                         )
+                        .onAppear {
+                            loadMoreProfileStoryboardsIfNeeded(currentIndex: index)
+                        }
+                    }
+
+                    if isLoadingMoreProfileStoryboards {
+                        ForEach(0..<3, id: \.self) { _ in
+                            LoadingStoryboardCard()
+                        }
                     }
                 }
             }
@@ -295,7 +308,7 @@ struct ProfileView: View {
     }
 
     @MainActor
-    private func loadProfileStoryboards() async {
+    private func loadProfileStoryboards(forceReload: Bool = false) async {
         guard authStore.userID != nil else {
             generatedStoryboards = []
             profileStoryboardErrorMessage = nil
@@ -303,18 +316,88 @@ struct ProfileView: View {
             return
         }
 
+        let cachedStoryboards = Array(GeneratedStoryboardStore.load().prefix(profileStoryboardPageSize))
+        if !forceReload, !cachedStoryboards.isEmpty {
+            generatedStoryboards = cachedStoryboards
+            profileStoryboardErrorMessage = nil
+            isLoadingProfileStoryboards = false
+            nextProfileStoryboardOffset = cachedStoryboards.count
+            hasMoreProfileStoryboards = true
+            return
+        }
+
         isLoadingProfileStoryboards = true
+        isLoadingMoreProfileStoryboards = false
+        hasMoreProfileStoryboards = true
+        nextProfileStoryboardOffset = 0
         profileStoryboardErrorMessage = nil
         defer { isLoadingProfileStoryboards = false }
 
         do {
             let service = SupabaseStoryboardService()
-            generatedStoryboards = try await service.loadCompletedJournalStoryboardImages(limit: 9)
+            generatedStoryboards = try await service.loadCompletedJournalStoryboardImages(
+                limit: profileStoryboardPageSize,
+                offset: 0
+            )
+            nextProfileStoryboardOffset = generatedStoryboards.count
+            hasMoreProfileStoryboards = generatedStoryboards.count == profileStoryboardPageSize
             profileStoryboardErrorMessage = nil
         } catch {
             generatedStoryboards = []
+            hasMoreProfileStoryboards = false
             print("[Storytopia] Profile storyboard grid load failed: \(error.localizedDescription)")
             profileStoryboardErrorMessage = "Could not load your completed AI storyboards from Storytopia cloud."
+        }
+    }
+
+    private func loadMoreProfileStoryboardsIfNeeded(currentIndex: Int) {
+        guard currentIndex >= generatedStoryboards.count - 3 else {
+            return
+        }
+        guard hasMoreProfileStoryboards, !isLoadingProfileStoryboards, !isLoadingMoreProfileStoryboards else {
+            return
+        }
+
+        Task {
+            await loadMoreProfileStoryboards()
+        }
+    }
+
+    @MainActor
+    private func loadMoreProfileStoryboards() async {
+        guard authStore.userID != nil else {
+            return
+        }
+        guard hasMoreProfileStoryboards, !isLoadingProfileStoryboards, !isLoadingMoreProfileStoryboards else {
+            return
+        }
+
+        let cachedStoryboards = GeneratedStoryboardStore.load()
+        if cachedStoryboards.count > generatedStoryboards.count {
+            let nextCachedPage = Array(cachedStoryboards.dropFirst(generatedStoryboards.count).prefix(profileStoryboardPageSize))
+            generatedStoryboards.append(contentsOf: nextCachedPage)
+            nextProfileStoryboardOffset = generatedStoryboards.count
+            hasMoreProfileStoryboards = true
+            return
+        }
+
+        isLoadingMoreProfileStoryboards = true
+        defer { isLoadingMoreProfileStoryboards = false }
+
+        do {
+            let service = SupabaseStoryboardService()
+            let page = try await service.loadCompletedJournalStoryboardImages(
+                limit: profileStoryboardPageSize,
+                offset: nextProfileStoryboardOffset
+            )
+            let existingIDs = Set(generatedStoryboards.map(\.id))
+            let newStoryboards = page.filter { !existingIDs.contains($0.id) }
+            generatedStoryboards.append(contentsOf: newStoryboards)
+            nextProfileStoryboardOffset += page.count
+            hasMoreProfileStoryboards = page.count == profileStoryboardPageSize
+            profileStoryboardErrorMessage = nil
+        } catch {
+            profileStoryboardErrorMessage = "Could not load more storyboards."
         }
     }
 

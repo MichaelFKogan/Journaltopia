@@ -4746,6 +4746,73 @@ private extension CreateEntryDraft {
     }
 }
 
+private enum EntriesCloudFetchCache {
+    private static let freshnessInterval: TimeInterval = 90
+    private static var entrySummariesByKey: [EntryQueryKey: CachedEntrySummaries] = [:]
+    private static var storyboardLoadDateByUserID: [UUID: Date] = [:]
+
+    static func entrySummaries(for key: EntryQueryKey) -> CachedEntrySummaries? {
+        guard
+            let cached = entrySummariesByKey[key],
+            Date().timeIntervalSince(cached.loadedAt) < freshnessInterval
+        else {
+            return nil
+        }
+
+        return cached
+    }
+
+    static func storeEntrySummaries(
+        _ entries: [JournalEntry],
+        hasMore: Bool,
+        nextOffset: Int,
+        for key: EntryQueryKey
+    ) {
+        entrySummariesByKey[key] = CachedEntrySummaries(
+            entries: entries,
+            hasMore: hasMore,
+            nextOffset: nextOffset,
+            loadedAt: Date()
+        )
+    }
+
+    static func shouldLoadStoryboards(for userID: UUID) -> Bool {
+        guard let loadedAt = storyboardLoadDateByUserID[userID] else {
+            return true
+        }
+
+        return Date().timeIntervalSince(loadedAt) >= freshnessInterval
+    }
+
+    static func markStoryboardsLoaded(for userID: UUID) {
+        storyboardLoadDateByUserID[userID] = Date()
+    }
+
+    static func invalidate(for userID: UUID?) {
+        guard let userID else {
+            entrySummariesByKey.removeAll()
+            storyboardLoadDateByUserID.removeAll()
+            return
+        }
+
+        entrySummariesByKey = entrySummariesByKey.filter { $0.key.userID != userID }
+        storyboardLoadDateByUserID.removeValue(forKey: userID)
+    }
+
+    struct EntryQueryKey: Hashable {
+        let userID: UUID
+        let sort: EntrySummarySort
+        let statusFilter: EntrySummaryStatusFilter
+    }
+
+    struct CachedEntrySummaries {
+        let entries: [JournalEntry]
+        let hasMore: Bool
+        let nextOffset: Int
+        let loadedAt: Date
+    }
+}
+
 struct EntriesView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @Binding var selectedPage: StoryPage
@@ -4774,11 +4841,16 @@ struct EntriesView: View {
     @State private var entryIDsBeingDeleted: Set<UUID> = []
     @State private var entryIDsBeingRenamed: Set<UUID> = []
     @State private var cloudEntries: [JournalEntry] = []
+    @State private var cloudEntryCounts: JournalEntrySummaryCounts?
     @State private var cloudEntryThumbnails: [UUID: UIImage] = [:]
     @State private var isLoadingCloudEntries = false
+    @State private var isLoadingMoreCloudEntries = false
+    @State private var hasMoreCloudEntries = true
+    @State private var nextCloudEntryOffset = 0
     @State private var cloudEntriesErrorMessage: String?
     @State private var openingEntryPreview: EntryOpeningPreview?
     @State private var isFinishingEntryOpening = false
+    private let cloudEntriesPageSize = 30
     @AppStorage("StorytopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedEntriesTab") private var selectedEntryTabRawValue = EntriesTab.all.rawValue
     @AppStorage("StorytopiaSelectedEntrySort") private var selectedEntrySortRawValue = EntrySortOption.entryDate.rawValue
@@ -4862,7 +4934,9 @@ struct EntriesView: View {
         .toolbarBackground(Color.homePageBackground, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .environment(\.editMode, $editMode)
-        .onAppear(perform: refreshEntries)
+        .onAppear {
+            refreshEntries()
+        }
         .onChange(of: selectedPage) { newPage in
             if newPage != .entries {
                 dismissAnyKeyboard()
@@ -4876,11 +4950,18 @@ struct EntriesView: View {
         }
         .onChange(of: activeDraftID) { newDraftID in
             if newDraftID == nil && selectedPage != .create {
-                refreshEntries()
+                refreshEntries(forceCloudReload: true)
             }
         }
         .onChange(of: authStore.userID) { _ in
-            refreshEntries()
+            EntriesCloudFetchCache.invalidate(for: nil)
+            refreshEntries(forceCloudReload: true)
+        }
+        .onChange(of: selectedEntryTabRawValue) { _ in
+            refreshEntries(forceCloudReload: true)
+        }
+        .onChange(of: selectedEntrySortRawValue) { _ in
+            refreshEntries(forceCloudReload: true)
         }
         .onDisappear {
             dismissAnyKeyboard()
@@ -5082,11 +5163,11 @@ struct EntriesView: View {
 
         switch tab {
         case .all:
-            return mergedEntryItems.count
+            return authStore.userID == nil ? mergedEntryItems.count : cloudEntryCounts?.all ?? mergedEntryItems.count
         case .drafts:
-            return draftEntryItems.count
+            return authStore.userID == nil ? draftEntryItems.count : cloudEntryCounts?.drafts ?? draftEntryItems.count
         case .completed:
-            return completedEntryItems.count
+            return authStore.userID == nil ? completedEntryItems.count : cloudEntryCounts?.completed ?? completedEntryItems.count
         }
     }
 
@@ -5162,7 +5243,7 @@ struct EntriesView: View {
 
                 Button("Retry") {
                     Task {
-                        await loadCloudEntriesIfNeeded()
+                        await loadCloudEntriesIfNeeded(forceReload: true)
                     }
                 }
                 .font(.system(size: 12, weight: .bold))
@@ -5222,7 +5303,7 @@ struct EntriesView: View {
                 .listRowBackground(Color.homePageBackground)
             }
         } else {
-            ForEach(filteredEntryItems) { item in
+            ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
                 let displayEntry = entryForDisplay(item)
                 let isCompleted = isCompletedEntryItem(item)
                 let completedFallbackIndex = completedStoryboardFallbackIndex(for: item)
@@ -5250,6 +5331,9 @@ struct EntriesView: View {
                     trailing: JournalChapterListMetrics.trailingInset
                 ))
                 .listRowBackground(Color.homePageBackground)
+                .onAppear {
+                    loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
+                }
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
                     Button {
                         beginRenaming(displayEntry)
@@ -5268,6 +5352,17 @@ struct EntriesView: View {
             }
             .onDelete(perform: deleteEntries)
             .onMove(perform: moveEntries)
+
+            if isLoadingMoreCloudEntries {
+                EntryListLoadingRow()
+                    .listRowInsets(EdgeInsets(
+                        top: 0,
+                        leading: JournalChapterListMetrics.horizontalInset,
+                        bottom: 0,
+                        trailing: JournalChapterListMetrics.trailingInset
+                    ))
+                    .listRowBackground(Color.homePageBackground)
+            }
         }
     }
 
@@ -5300,11 +5395,18 @@ struct EntriesView: View {
                                 sampleEntryGridCard(for: entry)
                             }
                         } else {
-                            ForEach(filteredEntryItems) { item in
+                            ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
                                 let displayEntry = entryForDisplay(item)
 
                                 entryGridCard(for: item, displayEntry: displayEntry)
+                                    .onAppear {
+                                        loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
+                                    }
                             }
+                        }
+
+                        if isLoadingMoreCloudEntries {
+                            EntryGridLoadingCard(seed: filteredEntryItems.count)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -5348,6 +5450,13 @@ struct EntriesView: View {
                                     openEntryItem(item, asCompleted: true, storyboardImage: storyboardUIImage(for: item, fallbackIndex: index))
                                 }
                             )
+                            .onAppear {
+                                loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
+                            }
+                        }
+
+                        if isLoadingMoreCloudEntries {
+                            EntryGridLoadingCard(seed: completedEntryItems.count)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -5770,7 +5879,7 @@ struct EntriesView: View {
         if failedEntries.isEmpty {
             entriesPendingDeletion = []
             entryDeleteErrorMessage = nil
-            refreshEntries()
+            refreshEntries(forceCloudReload: true)
         } else {
             entriesPendingDeletion = failedEntries
             entryDeleteErrorMessage = "Could not delete from Storytopia cloud. Check your connection and try again."
@@ -5856,7 +5965,7 @@ struct EntriesView: View {
         )
 
         if renamedID != nil {
-            refreshEntries()
+            refreshEntries(forceCloudReload: true)
         }
 
         if authStore.userID != nil {
@@ -5881,7 +5990,7 @@ struct EntriesView: View {
                     status: status,
                     isSignedIn: true
                 )
-                await loadCloudEntriesIfNeeded()
+                await loadCloudEntriesIfNeeded(forceReload: true)
             } catch {
                 entryRenameErrorMessage = "Saved locally. Could not sync the title to Storytopia cloud."
                 return
@@ -5902,18 +6011,22 @@ struct EntriesView: View {
         CreateEntryDraftStore.saveOrder(entries.map(\.id))
     }
 
-    private func refreshEntries() {
+    private func refreshEntries(forceCloudReload: Bool = false) {
         print("[Storytopia] Entries list refresh requested.")
-        guard authStore.userID != nil else {
+        guard let userID = authStore.userID else {
             entries = []
             sampleEntries = []
             completedStoryboards = []
             cloudEntries = []
+            cloudEntryCounts = nil
             cloudEntryThumbnails = [:]
             cloudEntriesErrorMessage = nil
             cloudStoryboardClientIDs = []
             failedCloudStoryboardClientIDs = []
             isLoadingCloudEntries = false
+            isLoadingMoreCloudEntries = false
+            hasMoreCloudEntries = false
+            nextCloudEntryOffset = 0
             isDraftSaved = false
             return
         }
@@ -5928,24 +6041,63 @@ struct EntriesView: View {
         isLoadingCloudEntries = true
 
         Task {
-            await loadCloudEntriesIfNeeded()
-            await loadCloudStoryboardsIfNeeded()
+            await loadCloudEntriesIfNeeded(forceReload: forceCloudReload)
+            await loadCloudStoryboardsIfNeeded(forceReload: forceCloudReload, userID: userID)
         }
     }
 
-    private func loadCloudEntriesIfNeeded() async {
-        guard authStore.userID != nil else {
+    private func loadCloudEntriesIfNeeded(forceReload: Bool = false) async {
+        guard let userID = authStore.userID else {
             cloudEntries = []
+            cloudEntriesErrorMessage = nil
+            isLoadingCloudEntries = false
+            isLoadingMoreCloudEntries = false
+            hasMoreCloudEntries = false
+            nextCloudEntryOffset = 0
+            return
+        }
+
+        let queryKey = currentEntryQueryKey(userID: userID)
+        if !forceReload, let cachedEntries = EntriesCloudFetchCache.entrySummaries(for: queryKey) {
+            cloudEntries = cachedEntries.entries
+            hasMoreCloudEntries = cachedEntries.hasMore
+            nextCloudEntryOffset = cachedEntries.nextOffset
+            if cloudEntryCounts == nil {
+                cloudEntryCounts = try? await SupabaseEntryRepository().getEntrySummaryCounts()
+            }
+            backfillCloudEntryThumbnailsIfNeeded()
+            isDraftSaved = draftEntryItems.isEmpty == false
             cloudEntriesErrorMessage = nil
             isLoadingCloudEntries = false
             return
         }
 
         isLoadingCloudEntries = true
+        isLoadingMoreCloudEntries = false
+        hasMoreCloudEntries = true
+        nextCloudEntryOffset = 0
         defer { isLoadingCloudEntries = false }
 
         do {
-            cloudEntries = try await SupabaseEntryRepository().getEntries()
+            let repository = SupabaseEntryRepository()
+            async let pageLoad = repository.getEntrySummariesPage(
+                limit: cloudEntriesPageSize,
+                offset: 0,
+                sort: selectedEntrySort.summarySort,
+                statusFilter: selectedEntryTab.summaryStatusFilter
+            )
+            async let countsLoad = repository.getEntrySummaryCounts()
+            let (page, counts) = try await (pageLoad, countsLoad)
+            cloudEntries = page
+            cloudEntryCounts = counts
+            hasMoreCloudEntries = page.count == cloudEntriesPageSize
+            nextCloudEntryOffset = page.count
+            EntriesCloudFetchCache.storeEntrySummaries(
+                cloudEntries,
+                hasMore: hasMoreCloudEntries,
+                nextOffset: nextCloudEntryOffset,
+                for: queryKey
+            )
             backfillCloudEntryThumbnailsIfNeeded()
             isDraftSaved = draftEntryItems.isEmpty == false
             cloudEntriesErrorMessage = nil
@@ -5954,20 +6106,97 @@ struct EntriesView: View {
         }
     }
 
-    private func loadCloudStoryboardsIfNeeded() async {
-        guard authStore.userID != nil else {
+    private func loadMoreCloudEntriesIfNeeded(currentIndex: Int, totalCount: Int) {
+        guard authStore.userID != nil, totalCount > 0 else {
+            return
+        }
+        guard currentIndex >= totalCount - 6 else {
+            return
+        }
+        guard hasMoreCloudEntries, !isLoadingCloudEntries, !isLoadingMoreCloudEntries else {
+            return
+        }
+
+        Task {
+            await loadMoreCloudEntries()
+        }
+    }
+
+    private func loadMoreCloudEntries() async {
+        guard let userID = authStore.userID else {
+            return
+        }
+        guard hasMoreCloudEntries, !isLoadingCloudEntries, !isLoadingMoreCloudEntries else {
+            return
+        }
+
+        isLoadingMoreCloudEntries = true
+        defer { isLoadingMoreCloudEntries = false }
+
+        do {
+            let page = try await SupabaseEntryRepository().getEntrySummariesPage(
+                limit: cloudEntriesPageSize,
+                offset: nextCloudEntryOffset,
+                sort: selectedEntrySort.summarySort,
+                statusFilter: selectedEntryTab.summaryStatusFilter
+            )
+            let existingIDs = Set(cloudEntries.map(\.clientEntryID))
+            let newEntries = page.filter { !existingIDs.contains($0.clientEntryID) }
+            cloudEntries.append(contentsOf: newEntries)
+            hasMoreCloudEntries = page.count == cloudEntriesPageSize
+            nextCloudEntryOffset += page.count
+            EntriesCloudFetchCache.storeEntrySummaries(
+                cloudEntries,
+                hasMore: hasMoreCloudEntries,
+                nextOffset: nextCloudEntryOffset,
+                for: currentEntryQueryKey(userID: userID)
+            )
+            backfillCloudEntryThumbnailsIfNeeded()
+            if selectedEntryTab != .drafts {
+                await loadCloudStoryboardsIfNeeded(forceReload: true, userID: userID)
+            }
+            cloudEntriesErrorMessage = nil
+        } catch {
+            cloudEntriesErrorMessage = "Could not load more cloud entries."
+        }
+    }
+
+    private func currentEntryQueryKey(userID: UUID) -> EntriesCloudFetchCache.EntryQueryKey {
+        EntriesCloudFetchCache.EntryQueryKey(
+            userID: userID,
+            sort: selectedEntrySort.summarySort,
+            statusFilter: selectedEntryTab.summaryStatusFilter
+        )
+    }
+
+    private func loadCloudStoryboardsIfNeeded(forceReload: Bool = false, userID: UUID? = nil) async {
+        guard let userID = userID ?? authStore.userID else {
             cloudStoryboardClientIDs = []
             failedCloudStoryboardClientIDs = []
             return
         }
 
+        guard forceReload || EntriesCloudFetchCache.shouldLoadStoryboards(for: userID) else {
+            return
+        }
+
+        guard !completedEntryItems.isEmpty else {
+            cloudStoryboardClientIDs = []
+            failedCloudStoryboardClientIDs = []
+            EntriesCloudFetchCache.markStoryboardsLoaded(for: userID)
+            return
+        }
+
         do {
-            let rows = try await SupabaseStoryboardService().loadStoryboards()
-            let primaryRows = rows.filter(\.isPrimary)
+            let primaryRows = try await SupabaseStoryboardService().loadPrimaryCompletedStoryboards()
+            let completedEntryIDs = Set(completedEntryItems.map(\.id))
             let localStoryboardIDs = Set(completedStoryboards.map(\.id))
-            let rowsToDownload = primaryRows.filter { !localStoryboardIDs.contains($0.id) }
+            let rowsToDownload = primaryRows.filter {
+                completedEntryIDs.contains($0.clientEntryID) && !localStoryboardIDs.contains($0.id)
+            }
             cloudStoryboardClientIDs = Set(rowsToDownload.map(\.clientEntryID))
             failedCloudStoryboardClientIDs = []
+            EntriesCloudFetchCache.markStoryboardsLoaded(for: userID)
 
             guard !rowsToDownload.isEmpty else {
                 return
@@ -6062,7 +6291,9 @@ struct EntriesView: View {
         let photos: [CreateEntryReferencePhoto]
         if let cloudEntry = item.cloudEntry {
             do {
-                photos = try await SupabaseReferencePhotoService().loadReferencePhotos(entryID: cloudEntry.id)
+                let fullCloudEntry = try await SupabaseEntryRepository().getEntry(id: cloudEntry.id)
+                entry = CreateEntryDraft.fromCloud(fullCloudEntry, thumbnail: entry.thumbnail)
+                photos = try await SupabaseReferencePhotoService().loadReferencePhotos(entryID: fullCloudEntry.id)
             } catch {
                 cloudEntriesErrorMessage = "Could not download this entry's reference photos."
                 return nil
@@ -7228,6 +7459,17 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
         }
     }
 
+    var summaryStatusFilter: EntrySummaryStatusFilter {
+        switch self {
+        case .all:
+            return .all
+        case .drafts:
+            return .drafts
+        case .completed:
+            return .completed
+        }
+    }
+
     var pillForegroundColor: Color {
         switch self {
         case .all:
@@ -7301,6 +7543,17 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
             return "plus.circle"
         case .updated:
             return "clock.arrow.circlepath"
+        }
+    }
+
+    var summarySort: EntrySummarySort {
+        switch self {
+        case .entryDate:
+            return .entryDate
+        case .cloudCreated:
+            return .createdAt
+        case .updated:
+            return .updatedAt
         }
     }
 }
