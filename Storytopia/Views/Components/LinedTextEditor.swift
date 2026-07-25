@@ -4,6 +4,7 @@ import UIKit
 private extension NSAttributedString.Key {
     static let notebookBold = NSAttributedString.Key("StorytopiaNotebookBold")
     static let notebookItalic = NSAttributedString.Key("StorytopiaNotebookItalic")
+    static let notebookForegroundColorHex = NSAttributedString.Key("StorytopiaNotebookForegroundColorHex")
     static let notebookTextStyle = NSAttributedString.Key("StorytopiaNotebookTextStyle")
 }
 
@@ -15,6 +16,7 @@ enum NotebookTextFormattingCommand: Equatable {
     case bulletList
     case indent
     case outdent
+    case textColor(String)
     case textStyle(NotebookTextRunStyle)
 }
 
@@ -58,6 +60,7 @@ struct NotebookTextFormattingRun: Codable, Equatable, Sendable {
     var isItalic: Bool
     var isUnderlined: Bool
     var isStrikethrough: Bool
+    var textColorHex: String?
     var textStyleRawValue: String?
 
     init(
@@ -67,6 +70,7 @@ struct NotebookTextFormattingRun: Codable, Equatable, Sendable {
         isItalic: Bool,
         isUnderlined: Bool,
         isStrikethrough: Bool,
+        textColorHex: String? = nil,
         textStyleRawValue: String? = nil
     ) {
         self.location = location
@@ -75,6 +79,7 @@ struct NotebookTextFormattingRun: Codable, Equatable, Sendable {
         self.isItalic = isItalic
         self.isUnderlined = isUnderlined
         self.isStrikethrough = isStrikethrough
+        self.textColorHex = textColorHex
         self.textStyleRawValue = textStyleRawValue
     }
 }
@@ -101,6 +106,7 @@ struct NotebookRichTextDocument: Codable, Equatable, Sendable {
             let isItalic = (attributes[.notebookItalic] as? Bool) ?? traits.contains(.traitItalic)
             let isUnderlined = (attributes[.underlineStyle] as? Int ?? 0) != 0
             let isStrikethrough = (attributes[.strikethroughStyle] as? Int ?? 0) != 0
+            let textColorHex = attributes[.notebookForegroundColorHex] as? String
             let textStyleRawValue = attributes[.notebookTextStyle] as? String
             let run = NotebookTextFormattingRun(
                 location: range.location,
@@ -109,6 +115,7 @@ struct NotebookRichTextDocument: Codable, Equatable, Sendable {
                 isItalic: isItalic,
                 isUnderlined: isUnderlined,
                 isStrikethrough: isStrikethrough,
+                textColorHex: textColorHex,
                 textStyleRawValue: textStyleRawValue
             )
 
@@ -157,6 +164,7 @@ struct NotebookRichTextDocument: Codable, Equatable, Sendable {
                 isItalic: run.isItalic,
                 isUnderlined: run.isUnderlined,
                 isStrikethrough: run.isStrikethrough,
+                textColorHex: run.textColorHex,
                 textStyleRawValue: run.textStyleRawValue
             )
         }
@@ -223,6 +231,12 @@ struct NotebookRichTextDocument: Codable, Equatable, Sendable {
                     range: safeRange
                 )
             }
+
+            if let textColorHex = run.textColorHex,
+               let color = UIColor(storytopiaHexString: textColorHex) {
+                attributedText.addAttribute(.foregroundColor, value: color, range: safeRange)
+                attributedText.addAttribute(.notebookForegroundColorHex, value: textColorHex, range: safeRange)
+            }
         }
 
         return attributedText
@@ -235,7 +249,7 @@ private extension NotebookTextFormattingRun {
     }
 
     var hasFormatting: Bool {
-        isBold || isItalic || isUnderlined || isStrikethrough || textStyleRawValue != nil
+        isBold || isItalic || isUnderlined || isStrikethrough || textColorHex != nil || textStyleRawValue != nil
     }
 }
 
@@ -852,6 +866,8 @@ final class LinedTextView: UITextView {
             break
         case .indent, .outdent:
             break
+        case .textColor(let hexString):
+            mutableText.applyNotebookForegroundColor(hexString, in: range)
         case .textStyle:
             break
         }
@@ -1231,7 +1247,7 @@ final class LinedTextView: UITextView {
             isTypingBold.toggle()
         case .italic:
             isTypingItalic.toggle()
-        case .underline, .strikethrough, .bulletList, .indent, .outdent, .textStyle:
+        case .underline, .strikethrough, .bulletList, .indent, .outdent, .textColor, .textStyle:
             return
         }
 
@@ -1761,6 +1777,15 @@ private extension NSAttributedString {
 }
 
 private extension NSMutableAttributedString {
+    func applyNotebookForegroundColor(_ hexString: String, in range: NSRange) {
+        guard let color = UIColor(storytopiaHexString: hexString) else {
+            return
+        }
+
+        addAttribute(.foregroundColor, value: color, range: range)
+        addAttribute(.notebookForegroundColorHex, value: hexString, range: range)
+    }
+
     func setNotebookTextRunStyle(
         _ runStyle: NotebookTextRunStyle,
         textStyle: NotebookTextStyle,
@@ -1934,6 +1959,27 @@ private extension NSMutableAttributedString {
     }
 }
 
+private extension UIColor {
+    convenience init?(storytopiaHexString: String) {
+        var hex = storytopiaHexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if hex.hasPrefix("#") {
+            hex.removeFirst()
+        }
+
+        guard hex.count == 6,
+              let value = Int(hex, radix: 16) else {
+            return nil
+        }
+
+        self.init(
+            red: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+}
+
 private final class TexturedPaperBodyTextView: UIView {
     var text = "" {
         didSet {
@@ -1998,7 +2044,7 @@ private final class TexturedPaperBodyTextView: UIView {
         drawGlyphs(glyphRange, color: darkEdge, offset: CGSize(width: 0, height: -1.1))
         drawGlyphs(glyphRange, color: lightEdge, offset: CGSize(width: 0.8, height: 0.25))
         drawGlyphs(glyphRange, color: lightEdge, offset: CGSize(width: 0, height: 1.15))
-        drawGlyphs(glyphRange, color: inkColor, offset: .zero)
+        drawGlyphs(glyphRange, color: inkColor, offset: .zero, honorsRunForegroundColors: true)
         context.restoreGState()
     }
 
@@ -2026,20 +2072,52 @@ private final class TexturedPaperBodyTextView: UIView {
         setNeedsDisplay()
     }
 
-    private func drawGlyphs(_ glyphRange: NSRange, color: UIColor, offset: CGSize) {
+    private func drawGlyphs(
+        _ glyphRange: NSRange,
+        color: UIColor,
+        offset: CGSize,
+        honorsRunForegroundColors: Bool = false
+    ) {
         let characterRange = layoutManager.characterRange(
             forGlyphRange: glyphRange,
             actualGlyphRange: nil
         )
 
-        textStorage.addAttribute(.foregroundColor, value: color, range: characterRange)
-        layoutManager.drawGlyphs(
-            forGlyphRange: glyphRange,
-            at: CGPoint(
-                x: textLeadingInset + offset.width,
-                y: offset.height
+        guard honorsRunForegroundColors else {
+            textStorage.addAttribute(.foregroundColor, value: color, range: characterRange)
+            layoutManager.drawGlyphs(
+                forGlyphRange: glyphRange,
+                at: CGPoint(
+                    x: textLeadingInset + offset.width,
+                    y: offset.height
+                )
             )
-        )
+            return
+        }
+
+        textStorage.enumerateAttribute(.notebookForegroundColorHex, in: characterRange) { value, subrange, _ in
+            let runColor = (value as? String)
+                .flatMap { UIColor(storytopiaHexString: $0) }?
+                .withAlphaComponent(color.cgColor.alpha)
+                ?? color
+            let runGlyphRange = layoutManager.glyphRange(
+                forCharacterRange: subrange,
+                actualCharacterRange: nil
+            )
+
+            guard runGlyphRange.length > 0 else {
+                return
+            }
+
+            textStorage.addAttribute(.foregroundColor, value: runColor, range: subrange)
+            layoutManager.drawGlyphs(
+                forGlyphRange: runGlyphRange,
+                at: CGPoint(
+                    x: textLeadingInset + offset.width,
+                    y: offset.height
+                )
+            )
+        }
     }
 }
 

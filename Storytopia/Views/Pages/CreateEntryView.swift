@@ -1491,6 +1491,20 @@ struct CreateEntryView: View {
         ].color
     }
 
+    private func applyKeyboardTextColor(_ index: Int) {
+        let clampedIndex = min(max(index, 0), CreateFormattingPalette.textColors.count - 1)
+        guard editorSelectionState.hasSelection else {
+            selectedTextColorIndex = clampedIndex
+            return
+        }
+
+        guard let hexString = CreateFormattingPalette.textColors[clampedIndex].uiColor.storytopiaHexString else {
+            return
+        }
+
+        sendTextFormattingCommand(.textColor(hexString))
+    }
+
     private var selectedPaperSurfaceColor: Color {
         usesPaperImageBackground ? .clear : selectedPageBackgroundColor
     }
@@ -3542,6 +3556,15 @@ struct CreateEntryView: View {
                 sendTextFormattingCommand(.underline)
             }
 
+            keyboardFormattingButton(
+                title: "S",
+                accessibilityLabel: "Strikethrough",
+                isSelected: isKeyboardInlineStyleSelected(.strikethrough),
+                isStrikethrough: true
+            ) {
+                sendTextFormattingCommand(.strikethrough)
+            }
+
             keyboardToolbarDivider
 
             keyboardColorButton
@@ -3618,7 +3641,7 @@ struct CreateEntryView: View {
             return editorSelectionState.hasSelection && editorSelectionState.isUnderlined
         case .strikethrough:
             return editorSelectionState.hasSelection && editorSelectionState.isStrikethrough
-        case .bulletList, .indent, .outdent, .textStyle:
+        case .bulletList, .indent, .outdent, .textColor, .textStyle:
             return false
         }
     }
@@ -3846,7 +3869,7 @@ struct CreateEntryView: View {
                             color: CreateFormattingPalette.textColors[index].color,
                             isSelected: selectedTextColorIndex == index
                         ) {
-                            selectedTextColorIndex = index
+                            applyKeyboardTextColor(index)
                         }
                     }
                 }
