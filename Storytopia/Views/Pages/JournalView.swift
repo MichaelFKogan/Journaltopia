@@ -4681,6 +4681,32 @@ private struct EntryOpeningPreview: Identifiable {
 }
 
 private extension CreateEntryDraft {
+    func prototypeEntry() -> PrototypeEntry {
+        let weekdayFormatter = DateFormatter()
+        weekdayFormatter.dateFormat = "EEE"
+
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "d"
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.timeStyle = .short
+
+        let displayDate = datePrecision == .noDate ? createdAt : date
+        let trimmedLocation = location.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return PrototypeEntry(
+            id: id,
+            weekday: weekdayFormatter.string(from: displayDate).uppercased(),
+            day: dayFormatter.string(from: displayDate),
+            title: entryDisplayTitle(self),
+            body: text,
+            richText: richText,
+            time: timeFormatter.string(from: displayDate),
+            location: trimmedLocation.isEmpty ? nil : trimmedLocation,
+            imageNames: []
+        )
+    }
+
     static func fromCloud(_ entry: JournalEntry, thumbnail: UIImage? = nil) -> CreateEntryDraft {
         CreateEntryDraft(
             id: entry.clientEntryID,
@@ -4840,6 +4866,10 @@ struct EntriesView: View {
     @State private var entryRenameErrorMessage: String?
     @State private var entryIDsBeingDeleted: Set<UUID> = []
     @State private var entryIDsBeingRenamed: Set<UUID> = []
+    @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var isShowingAddSelectedEntriesToJournalSheet = false
+    @State private var selectedEntriesJournalTitle: String?
+    @State private var selectedEntriesJournalTitles: Set<String> = []
     @State private var cloudEntries: [JournalEntry] = []
     @State private var cloudEntryCounts: JournalEntrySummaryCounts?
     @State private var cloudEntryThumbnails: [UUID: UIImage] = [:]
@@ -4891,6 +4921,68 @@ struct EntriesView: View {
     }
 
     var body: some View {
+        entriesScreenWithAlerts
+    }
+
+    private var entriesScreenWithAlerts: some View {
+        entriesScreenWithPresentation
+            .alert("Rename Entry", isPresented: isRenameEntryAlertPresented) {
+                renameEntryAlertActions
+            } message: {
+                renameEntryAlertMessage
+            }
+            .alert(deleteEntryAlertTitle, isPresented: isDeleteEntryAlertPresented) {
+                deleteEntryAlertActions
+            } message: {
+                Text(deleteEntryAlertMessage)
+            }
+    }
+
+    private var entriesScreenWithPresentation: some View {
+        entriesScreenWithLifecycle
+            .sheet(item: $sampleEntryBeingPreviewed) { entry in
+                EntrySamplePreview(entry: entry)
+            }
+            .sheet(isPresented: $isShowingAddSelectedEntriesToJournalSheet) {
+                NavigationStack {
+                    addSelectedEntriesToJournalDestination
+                }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+            }
+    }
+
+    private var entriesScreenWithLifecycle: some View {
+        entriesScreen
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.visible, for: .navigationBar)
+            .toolbarBackground(Color.homePageBackground, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .onAppear {
+                refreshEntries()
+            }
+            .onChange(of: selectedPage) { newPage in
+                handleSelectedPageChange(newPage)
+            }
+            .onChange(of: activeDraftID) { newDraftID in
+                handleActiveDraftIDChange(newDraftID)
+            }
+            .onChange(of: authStore.userID) { _ in
+                handleUserIDChange()
+            }
+            .onChange(of: selectedEntryTabRawValue) { _ in
+                refreshEntries(forceCloudReload: true)
+            }
+            .onChange(of: selectedEntrySortRawValue) { _ in
+                refreshEntries(forceCloudReload: true)
+            }
+            .onDisappear {
+                dismissAnyKeyboard()
+            }
+            .preferredColorScheme(.light)
+    }
+
+    private var entriesScreen: some View {
         ZStack(alignment: .bottom) {
             Color.homePageBackground
                 .ignoresSafeArea()
@@ -4920,6 +5012,8 @@ struct EntriesView: View {
 
             bottomPrototypeNotice
 
+            selectedEntriesToolbar
+
             if let openingEntryPreview {
                 EntryOpeningOverlay(
                     preview: openingEntryPreview,
@@ -4929,81 +5023,79 @@ struct EntriesView: View {
                     .zIndex(4)
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.visible, for: .navigationBar)
-        .toolbarBackground(Color.homePageBackground, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .environment(\.editMode, $editMode)
-        .onAppear {
+    }
+
+    private var addSelectedEntriesToJournalDestination: some View {
+        AddEntryToJournalPage(
+            selectedJournalTitle: $selectedEntriesJournalTitle,
+            selectedJournalTitles: $selectedEntriesJournalTitles,
+            onSelect: { journalTitle in
+                addSelectedEntriesToJournals(Set<String>([journalTitle]))
+            },
+            onSaveSelection: addSelectedEntriesToJournals
+        )
+    }
+
+    @ViewBuilder
+    private var renameEntryAlertActions: some View {
+        TextField("Entry name", text: $renamedEntryTitle)
+
+        Button("Cancel", role: .cancel) {
+            entryBeingRenamed = nil
+            renamedEntryTitle = ""
+        }
+
+        Button(entryRenameErrorMessage == nil ? "Save" : "Retry") {
+            Task {
+                await renameSelectedEntry()
+            }
+        }
+        .disabled(entryBeingRenamed.map { entryIDsBeingRenamed.contains($0.id) } ?? false)
+    }
+
+    @ViewBuilder
+    private var renameEntryAlertMessage: some View {
+        if let entryRenameErrorMessage {
+            Text(entryRenameErrorMessage)
+        }
+    }
+
+    @ViewBuilder
+    private var deleteEntryAlertActions: some View {
+        Button("Cancel", role: .cancel) {
+            entriesPendingDeletion = []
+            entryDeleteErrorMessage = nil
+        }
+
+        Button(entryDeleteErrorMessage == nil ? "Delete" : "Retry", role: .destructive) {
+            let entriesToDelete = entriesPendingDeletion
+            Task {
+                await deletePendingEntries(entriesToDelete)
+            }
+        }
+    }
+
+    private func handleSelectedPageChange(_ newPage: StoryPage) {
+        if newPage != .entries {
+            dismissAnyKeyboard()
+            openingEntryPreview = nil
+            isFinishingEntryOpening = false
+        }
+
+        if newPage != .create {
             refreshEntries()
         }
-        .onChange(of: selectedPage) { newPage in
-            if newPage != .entries {
-                dismissAnyKeyboard()
-                openingEntryPreview = nil
-                isFinishingEntryOpening = false
-            }
+    }
 
-            if newPage != .create {
-                refreshEntries()
-            }
-        }
-        .onChange(of: activeDraftID) { newDraftID in
-            if newDraftID == nil && selectedPage != .create {
-                refreshEntries(forceCloudReload: true)
-            }
-        }
-        .onChange(of: authStore.userID) { _ in
-            EntriesCloudFetchCache.invalidate(for: nil)
+    private func handleActiveDraftIDChange(_ newDraftID: UUID?) {
+        if newDraftID == nil && selectedPage != .create {
             refreshEntries(forceCloudReload: true)
         }
-        .onChange(of: selectedEntryTabRawValue) { _ in
-            refreshEntries(forceCloudReload: true)
-        }
-        .onChange(of: selectedEntrySortRawValue) { _ in
-            refreshEntries(forceCloudReload: true)
-        }
-        .onDisappear {
-            dismissAnyKeyboard()
-        }
-        .preferredColorScheme(.light)
-        .sheet(item: $sampleEntryBeingPreviewed) { entry in
-            EntrySamplePreview(entry: entry)
-        }
-        .alert("Rename Entry", isPresented: isRenameEntryAlertPresented) {
-            TextField("Entry name", text: $renamedEntryTitle)
+    }
 
-            Button("Cancel", role: .cancel) {
-                entryBeingRenamed = nil
-                renamedEntryTitle = ""
-            }
-
-            Button(entryRenameErrorMessage == nil ? "Save" : "Retry") {
-                Task {
-                    await renameSelectedEntry()
-                }
-            }
-            .disabled(entryBeingRenamed.map { entryIDsBeingRenamed.contains($0.id) } ?? false)
-        } message: {
-            if let entryRenameErrorMessage {
-                Text(entryRenameErrorMessage)
-            }
-        }
-        .alert(deleteEntryAlertTitle, isPresented: isDeleteEntryAlertPresented) {
-            Button("Cancel", role: .cancel) {
-                entriesPendingDeletion = []
-                entryDeleteErrorMessage = nil
-            }
-
-            Button(entryDeleteErrorMessage == nil ? "Delete" : "Retry", role: .destructive) {
-                let entriesToDelete = entriesPendingDeletion
-                Task {
-                    await deletePendingEntries(entriesToDelete)
-                }
-            }
-        } message: {
-            Text(deleteEntryAlertMessage)
-        }
+    private func handleUserIDChange() {
+        EntriesCloudFetchCache.invalidate(for: nil)
+        refreshEntries(forceCloudReload: true)
     }
 
     private var header: some View {
@@ -5014,9 +5106,19 @@ struct EntriesView: View {
 
             Spacer()
 
-            EditButton()
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(Color.homeAccent)
+            Button(editMode == .active ? "Done" : "Select") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if editMode == .active {
+                        editMode = .inactive
+                        selectedEntryIDs = []
+                    } else {
+                        editMode = .active
+                    }
+                }
+            }
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(Color.homeAccent)
+            .disabled(showsSampleEntries)
 
             entryCreateButton
         }
@@ -5189,6 +5291,56 @@ struct EntriesView: View {
     }
 
     @ViewBuilder
+    private var selectedEntriesToolbar: some View {
+        if editMode == .active && !showsSampleEntries && !selectedEntryIDs.isEmpty {
+            HStack(spacing: 12) {
+                Text("\(selectedEntryIDs.count) selected")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    requestDeleteSelectedEntries()
+                } label: {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.red)
+                        .frame(width: 38, height: 38)
+                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete selected entries")
+
+                Button {
+                    openAddSelectedEntriesToJournalPage()
+                } label: {
+                    Label("Add to Journal", systemImage: "book.closed.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 54)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.12), radius: 12, y: 6)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, 82)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .zIndex(3)
+        }
+    }
+
+    @ViewBuilder
     private var bottomPrototypeNotice: some View {
         if showsSampleEntries {
             prototypeNotice
@@ -5309,16 +5461,22 @@ struct EntriesView: View {
                 let completedFallbackIndex = completedStoryboardFallbackIndex(for: item)
 
                 Button {
-                    openEntryItem(
-                        item,
-                        asCompleted: isCompleted,
-                        storyboardImage: isCompleted ? storyboardUIImage(for: item, fallbackIndex: completedFallbackIndex) : nil
-                    )
+                    if editMode == .active {
+                        toggleEntrySelection(item.id)
+                    } else {
+                        openEntryItem(
+                            item,
+                            asCompleted: isCompleted,
+                            storyboardImage: isCompleted ? storyboardUIImage(for: item, fallbackIndex: completedFallbackIndex) : nil
+                        )
+                    }
                 } label: {
                     EntryListRow(
                         entry: displayEntry,
                         category: categoryForEntryItem(item),
-                        completedStoryboardImage: isCompleted ? storyboardImage(for: item, fallbackIndex: completedFallbackIndex) : nil
+                        completedStoryboardImage: isCompleted ? storyboardImage(for: item, fallbackIndex: completedFallbackIndex) : nil,
+                        isSelecting: editMode == .active,
+                        isSelected: selectedEntryIDs.contains(item.id)
                     )
                         .opacity(openingEntryPreview?.id == item.id ? 0.58 : 1)
                 }
@@ -5446,8 +5604,14 @@ struct EntriesView: View {
                                 sortOption: selectedEntrySort,
                                 storyboardImage: storyboardImage(for: item, fallbackIndex: index),
                                 isOpening: openingEntryPreview?.id == item.id,
+                                isSelecting: editMode == .active && !showsSampleEntries,
+                                isSelected: selectedEntryIDs.contains(item.id),
                                 onOpen: {
-                                    openEntryItem(item, asCompleted: true, storyboardImage: storyboardUIImage(for: item, fallbackIndex: index))
+                                    if editMode == .active {
+                                        toggleEntrySelection(item.id)
+                                    } else {
+                                        openEntryItem(item, asCompleted: true, storyboardImage: storyboardUIImage(for: item, fallbackIndex: index))
+                                    }
                                 }
                             )
                             .onAppear {
@@ -5514,26 +5678,36 @@ struct EntriesView: View {
                 storyboardImage: storyboardImage(for: item, fallbackIndex: fallbackIndex),
                 category: categoryForEntryItem(item),
                 isOpening: openingEntryPreview?.id == item.id,
+                isSelecting: editMode == .active && !showsSampleEntries,
+                isSelected: selectedEntryIDs.contains(item.id),
                 onOpen: {
-                    openEntryItem(
-                        item,
-                        asCompleted: true,
-                        storyboardImage: storyboardUIImage(for: item, fallbackIndex: fallbackIndex)
-                    )
+                    if editMode == .active {
+                        toggleEntrySelection(item.id)
+                    } else {
+                        openEntryItem(
+                            item,
+                            asCompleted: true,
+                            storyboardImage: storyboardUIImage(for: item, fallbackIndex: fallbackIndex)
+                        )
+                    }
                 }
             )
         } else {
             EntryGridPreviewCard(
                 entry: displayEntry,
                 sortOption: selectedEntrySort,
-                isEditing: editMode == .active && !showsSampleEntries,
+                isEditing: false,
                 showsActions: !showsSampleEntries,
                 title: entryDisplayTitle(displayEntry),
                 category: categoryForEntryItem(item),
                 isOpening: openingEntryPreview?.id == item.id,
+                isSelecting: editMode == .active && !showsSampleEntries,
+                isSelected: selectedEntryIDs.contains(item.id),
                 onOpen: {
                     if showsSampleEntries {
                         sampleEntryBeingPreviewed = displayEntry
+                    } else if editMode == .active {
+                        toggleEntrySelection(item.id)
                     } else {
                         openEntryItem(item, asCompleted: false)
                     }
@@ -5745,6 +5919,80 @@ struct EntriesView: View {
         item.status == JournalEntryStatus.completed.rawValue
     }
 
+    private var selectedEntryItems: [EntryDisplayItem] {
+        filteredEntryItems.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private func toggleEntrySelection(_ entryID: UUID) {
+        if selectedEntryIDs.contains(entryID) {
+            selectedEntryIDs.remove(entryID)
+        } else {
+            selectedEntryIDs.insert(entryID)
+        }
+    }
+
+    private func openAddSelectedEntriesToJournalPage() {
+        selectedEntriesJournalTitles = []
+        selectedEntriesJournalTitle = nil
+
+        Task {
+            await refreshCloudJournalsBeforeShowingSelectedEntrySheet()
+            isShowingAddSelectedEntriesToJournalSheet = true
+        }
+    }
+
+    private func addSelectedEntriesToJournals(_ journalTitles: Set<String>) {
+        guard !journalTitles.isEmpty else {
+            return
+        }
+
+        selectedEntryItems.forEach { item in
+            let entry = entryForDisplay(item).prototypeEntry()
+            journalTitles.sorted().forEach { journalTitle in
+                StoryEntryStore.upsert(entry, to: journalTitle)
+                EntryJournalLinkStore.save(journalTitle: journalTitle, journalEntryID: entry.id, for: item.id)
+            }
+        }
+
+        Task {
+            await syncSelectedEntryJournalsToCloud(journalTitles)
+        }
+
+        selectedEntriesJournalTitles = journalTitles
+        selectedEntriesJournalTitle = journalTitles.sorted().first
+        selectedEntryIDs = []
+        editMode = .inactive
+        refreshEntries(forceCloudReload: true)
+    }
+
+    private func requestDeleteSelectedEntries() {
+        requestDeleteEntries(selectedEntryItems)
+    }
+
+    private func syncSelectedEntryJournalsToCloud(_ journalTitles: Set<String>) async {
+        guard authStore.userID != nil else {
+            return
+        }
+
+        for journalTitle in journalTitles {
+            await UserChapterStore.syncJournalAndEntriesToCloud(title: journalTitle)
+        }
+    }
+
+    private func refreshCloudJournalsBeforeShowingSelectedEntrySheet() async {
+        guard authStore.userID != nil else {
+            return
+        }
+
+        do {
+            let cloudJournals = try await SupabaseJournalRepository().getJournals()
+            let chapters = cloudJournals.map(PrototypeChapter.init(cloudJournal:))
+            UserChapterStore.replace(with: chapters)
+        } catch {
+            print("[Storytopia] Could not refresh journals before adding selected entries.")
+        }
+    }
+
     private func categoryForEntryItem(_ item: EntryDisplayItem) -> EntriesTab? {
         guard selectedEntryTab == .all else {
             return nil
@@ -5879,6 +6127,10 @@ struct EntriesView: View {
         if failedEntries.isEmpty {
             entriesPendingDeletion = []
             entryDeleteErrorMessage = nil
+            selectedEntryIDs.subtract(entriesToDelete.map(\.id))
+            if selectedEntryIDs.isEmpty {
+                editMode = .inactive
+            }
             refreshEntries(forceCloudReload: true)
         } else {
             entriesPendingDeletion = failedEntries
@@ -6665,9 +6917,18 @@ private struct EntryListRow: View {
     let entry: CreateEntryDraft
     var category: EntriesTab?
     var completedStoryboardImage: CompletedStoryboardImage?
+    var isSelecting = false
+    var isSelected = false
 
     var body: some View {
         HStack(spacing: 10) {
+            if isSelecting {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color.storyPurple : Color.homeBorder)
+                    .frame(width: 22, height: 22)
+            }
+
             entryIcon
                 .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
 
@@ -6696,6 +6957,7 @@ private struct EntryListRow: View {
         .frame(maxWidth: .infinity, minHeight: JournalChapterListMetrics.rowHeight, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityLabel(entryDisplayTitle(entry))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var entryIcon: some View {
@@ -6776,6 +7038,20 @@ private struct EntryCategoryPill: View {
                     .stroke(category.pillBorderColor, lineWidth: 1)
             )
             .accessibilityLabel(category.title)
+    }
+}
+
+private struct EntrySelectionBadge: View {
+    let isSelected: Bool
+
+    var body: some View {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 23, weight: .semibold))
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(isSelected ? Color.white : Color.homeBorder, isSelected ? Color.storyPurple : Color.white)
+            .frame(width: 32, height: 32)
+            .background(Color.white.opacity(0.9), in: Circle())
+            .shadow(color: Color.storyInk.opacity(0.14), radius: 5, y: 2)
     }
 }
 
@@ -6981,6 +7257,8 @@ private struct EntryGridPreviewCard: View {
     let title: String
     var category: EntriesTab?
     var isOpening = false
+    var isSelecting = false
+    var isSelected = false
     let onOpen: () -> Void
     let onDelete: () -> Void
     var onRename: (() -> Void)?
@@ -7012,6 +7290,12 @@ private struct EntryGridPreviewCard: View {
                     .buttonStyle(.plain)
                     .padding(8)
                     .accessibilityLabel("Delete \(title)")
+                }
+
+                if isSelecting {
+                    EntrySelectionBadge(isSelected: isSelected)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
 
                 if let category {
@@ -7050,6 +7334,7 @@ private struct EntryGridPreviewCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title), \(entryPreviewDateText(entry, sortOption: sortOption))")
         .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -7088,6 +7373,8 @@ private struct CompletedEntryGridCard: View {
     let storyboardImage: CompletedStoryboardImage
     let category: EntriesTab?
     let isOpening: Bool
+    let isSelecting: Bool
+    let isSelected: Bool
     let onOpen: () -> Void
     let accessibilityLabel: String
 
@@ -7098,6 +7385,8 @@ private struct CompletedEntryGridCard: View {
         storyboardImage: CompletedStoryboardImage,
         category: EntriesTab? = nil,
         isOpening: Bool = false,
+        isSelecting: Bool = false,
+        isSelected: Bool = false,
         onOpen: @escaping () -> Void
     ) {
         self.entry = entry
@@ -7106,6 +7395,8 @@ private struct CompletedEntryGridCard: View {
         self.storyboardImage = storyboardImage
         self.category = category
         self.isOpening = isOpening
+        self.isSelecting = isSelecting
+        self.isSelected = isSelected
         self.onOpen = onOpen
         accessibilityLabel = "Completed \(title)"
     }
@@ -7133,6 +7424,13 @@ private struct CompletedEntryGridCard: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                             .zIndex(2)
                     }
+
+                    if isSelecting {
+                        EntrySelectionBadge(isSelected: isSelected)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .zIndex(3)
+                    }
                 }
             }
                 .aspectRatio(260.0 / 340.0, contentMode: .fit)
@@ -7151,6 +7449,7 @@ private struct CompletedEntryGridCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(accessibilityLabel), \(entryPreviewDateText(entry, sortOption: sortOption))")
         .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -9951,6 +10250,32 @@ enum UserChapterStore {
                 journalID: journalID,
                 clientEntryIDs: entries.map(\.id)
             )
+        }
+    }
+
+    static func syncJournalAndEntriesToCloud(title: String) async {
+        guard let chapter = load().first(where: { $0.title == title }) else {
+            return
+        }
+
+        do {
+            try await SupabaseJournalRepository().upsertJournal(
+                id: chapter.id,
+                title: chapter.title,
+                subtitle: chapter.subtitle,
+                colorHex: colorHex(for: chapter),
+                symbol: chapter.symbol,
+                kind: chapter.kind == .storyboard ? "storyboard" : "journal",
+                isFavorite: chapter.isFavorite,
+                displayOrder: displayOrder(for: chapter.title)
+            )
+
+            try await SupabaseJournalRepository().replaceJournalEntries(
+                journalID: chapter.id,
+                clientEntryIDs: StoryEntryStore.clientEntryIDs(for: chapter.title)
+            )
+        } catch {
+            print("[Storytopia] Could not sync journal entries to cloud for \(title).")
         }
     }
 

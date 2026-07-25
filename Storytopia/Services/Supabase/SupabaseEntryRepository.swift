@@ -487,7 +487,7 @@ struct SupabaseEntryRepository {
         do {
             return try await client
                 .from("entries")
-                .select("id,user_id,client_entry_id,title,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
+                .select("id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
                 .eq("user_id", value: userID)
                 .order("created_at", ascending: false)
                 .execute()
@@ -509,7 +509,7 @@ struct SupabaseEntryRepository {
         do {
             var query = client
                 .from("entries")
-                .select("id,user_id,client_entry_id,title,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
+                .select("id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
                 .eq("user_id", value: userID)
                 .neq("status", value: JournalEntryStatus.archived.rawValue)
 

@@ -6920,7 +6920,7 @@ private struct JournalEntryPromptsSheet: View {
     }
 }
 
-private struct AddEntryToJournalPage: View {
+struct AddEntryToJournalPage: View {
     @Binding var selectedJournalTitle: String?
     @Binding var selectedJournalTitles: Set<String>
 
@@ -6931,6 +6931,18 @@ private struct AddEntryToJournalPage: View {
     @State private var pendingJournalTitles: Set<String> = []
     @State private var isCreateJournalAlertPresented = false
     @State private var newJournalName = ""
+
+    init(
+        selectedJournalTitle: Binding<String?>,
+        selectedJournalTitles: Binding<Set<String>>,
+        onSelect: @escaping (String) -> Void,
+        onSaveSelection: @escaping (Set<String>) -> Void
+    ) {
+        _selectedJournalTitle = selectedJournalTitle
+        _selectedJournalTitles = selectedJournalTitles
+        self.onSelect = onSelect
+        self.onSaveSelection = onSaveSelection
+    }
 
     private var journals: [PrototypeChapter] {
         DailyJournalData.allChapters()
