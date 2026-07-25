@@ -1,6 +1,32 @@
 import SwiftUI
 import UIKit
 
+private let homeSampleImageNames = [
+    "IMG_9080",
+    "IMG_9144",
+    "IMG_2390",
+    "IMG_2382 2",
+    "IMG_9131",
+    "IMG_9113",
+    "IMG_9127",
+    "IMG_9126",
+    "IMG_9114",
+    "IMG_9102",
+    "IMG_2385 2",
+    "IMG_9140",
+    "IMG_2214"
+]
+
+private func homeSampleImages(startIndex: Int, count: Int) -> [String] {
+    guard !homeSampleImageNames.isEmpty else {
+        return []
+    }
+
+    return (0..<count).map { offset in
+        homeSampleImageNames[(startIndex + offset) % homeSampleImageNames.count]
+    }
+}
+
 struct HomeView: View {
     @Binding var selectedPage: StoryPage
     @State private var selectedChapterPostOption: ChapterPostDisplayOption = .cards
@@ -129,7 +155,7 @@ struct HomeView: View {
                     body: "Added a new page to Summer in the City. The whole chapter is here as a little book.",
                     time: "4:38 PM",
                     location: "Brooklyn, NY",
-                    imageNames: (1...8).map { "storyboard\($0)" }
+                    imageNames: homeSampleImages(startIndex: 0, count: 8)
                 ),
                 username: "mikekogan",
                 dateText: "Wed, Jun 17",
@@ -143,7 +169,7 @@ struct HomeView: View {
                     body: "A chapter preview with one story card centered and the rest fanned into stacks on both sides.",
                     time: "3:58 PM",
                     location: "Brooklyn, NY",
-                    imageNames: (1...8).map { "storyboard\($0)" }
+                    imageNames: homeSampleImages(startIndex: 2, count: 8)
                 ),
                 username: "mikekogan",
                 dateText: "Wed, Jun 17",
@@ -157,7 +183,7 @@ struct HomeView: View {
                     body: "Added a new image to City fragments. Swipe through the collection as a little stack of cards.",
                     time: "3:22 PM",
                     location: "Brooklyn, NY",
-                    imageNames: (9...13).map { "storyboard\($0)" }
+                    imageNames: homeSampleImages(startIndex: 8, count: 5)
                 ),
                 username: "mikekogan",
                 dateText: "Wed, Jun 17",
@@ -171,7 +197,7 @@ struct HomeView: View {
                     body: "Coffee, a window seat, and nowhere I needed to be for an hour.",
                     time: "9:12 AM",
                     location: "Brooklyn, NY",
-                    imageNames: ["storyboard1", "storyboard2", "storyboard3", "storyboard6", "storyboard7"]
+                    imageNames: homeSampleImages(startIndex: 4, count: 5)
                 ),
                 username: "mikekogan",
                 dateText: "Tue, Jun 16",
@@ -185,7 +211,7 @@ struct HomeView: View {
                     body: "We stayed at the table long after dessert and retold the same family stories.",
                     time: "8:04 PM",
                     location: "Home",
-                    imageNames: ["storyboard4", "storyboard5", "storyboard8", "storyboard10"]
+                    imageNames: homeSampleImages(startIndex: 9, count: 4)
                 ),
                 username: "storytopia",
                 dateText: "Sun, Jun 14",
@@ -275,7 +301,7 @@ private struct ChapterPostOptionsSection: View {
     @Binding var selectedOption: ChapterPostDisplayOption
     @State private var selectedPageIndex = 0
 
-    private let chapterPageImageNames = (1...8).map { "storyboard\($0)" }
+    private let chapterPageImageNames = homeSampleImages(startIndex: 0, count: 8)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

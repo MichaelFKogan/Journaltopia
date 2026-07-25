@@ -1561,6 +1561,13 @@ struct CreateEntryView: View {
 
     private var editorWithOverlays: some View {
         editorCore
+        .disabled(isBlockingSaveInProgress)
+        .overlay {
+            if isBlockingSaveInProgress {
+                saveProgressOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
         .overlay(alignment: .bottom) {
             if let addedJournalTitle {
                 addedToJournalToast(journalTitle: addedJournalTitle)
@@ -2343,6 +2350,7 @@ struct CreateEntryView: View {
                 .frame(width: showsToolbarSaveButton ? 94 : 48, alignment: .leading)
                 .buttonStyle(.plain)
                 .accessibilityLabel(presentation.closeButtonAccessibilityLabel)
+                .disabled(isBlockingSaveInProgress)
             }
             .hideSharedBackgroundIfAvailable()
         }
@@ -2453,6 +2461,61 @@ struct CreateEntryView: View {
         return "Save"
     }
 
+    private var isBlockingSaveInProgress: Bool {
+        switch cloudSaveState {
+        case .saving, .uploadingPhotos:
+            return true
+        case .idle, .saved, .savedLocally, .photosUploaded, .failed, .photoUploadFailed:
+            return false
+        }
+    }
+
+    private var hasUnconfirmedCloudSave: Bool {
+        switch cloudSaveState {
+        case .failed, .photoUploadFailed:
+            return true
+        case .idle, .saving, .saved, .savedLocally, .uploadingPhotos, .photosUploaded:
+            return false
+        }
+    }
+
+    private var saveProgressTitle: String {
+        switch cloudSaveState {
+        case .uploadingPhotos:
+            return "Uploading photos..."
+        default:
+            return "Saving..."
+        }
+    }
+
+    private var saveProgressOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+
+            VStack(spacing: 13) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(Color.storyPurple)
+
+                Text(saveProgressTitle)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+            }
+            .padding(.horizontal, 30)
+            .padding(.vertical, 24)
+            .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.storyPurple.opacity(0.16), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.14), radius: 22, y: 10)
+        }
+        .allowsHitTesting(true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(saveProgressTitle)
+    }
+
     private var showsToolbarSavedState: Bool {
         showsToolbarSavedFeedback && isToolbarContentSaved
     }
@@ -2516,7 +2579,11 @@ struct CreateEntryView: View {
     private func requestExit() {
         dismissKeyboard()
 
-        if hasUnsavedDraftChanges {
+        guard !isBlockingSaveInProgress else {
+            return
+        }
+
+        if hasUnsavedDraftChanges || hasUnconfirmedCloudSave {
             isShowingExitConfirmation = true
         } else {
             closeEditorWithoutSaving()
@@ -2545,9 +2612,9 @@ struct CreateEntryView: View {
     private func saveEditedDraftChanges() {
         dismissKeyboard()
         beginToolbarSavedFeedback()
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         Task {
-            try? await Task.sleep(nanoseconds: 120_000_000)
             await saveDraftToLocalAndCloud(forceSave: true, navigatesToOptions: false)
         }
     }
@@ -2555,9 +2622,9 @@ struct CreateEntryView: View {
     private func saveDraftInPlace() {
         dismissKeyboard()
         beginToolbarSavedFeedback()
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         Task {
-            try? await Task.sleep(nanoseconds: 120_000_000)
             await saveDraftToLocalAndCloud(forceSave: false, navigatesToOptions: false)
         }
     }
@@ -2632,7 +2699,10 @@ struct CreateEntryView: View {
 
         Task {
             if hasDraftContent || forceSave {
-                await saveDraftToLocalAndCloud(forceSave: forceSave, navigatesToOptions: false)
+                let saveState = await saveDraftToLocalAndCloud(forceSave: forceSave, navigatesToOptions: false)
+                guard saveState?.isConfirmedSave == true else {
+                    return
+                }
             }
 
             withAnimation(.snappy(duration: 0.32)) {
@@ -2783,13 +2853,14 @@ struct CreateEntryView: View {
         )
     }
 
-    private func saveDraftToLocalAndCloud(forceSave: Bool, navigatesToOptions: Bool) async {
+    @discardableResult
+    private func saveDraftToLocalAndCloud(forceSave: Bool, navigatesToOptions: Bool) async -> EntryCloudSaveState? {
         guard let payload = makeEntryDraftSavePayload(forceSave: forceSave) else {
             cancelToolbarSavedFeedback()
             if navigatesToOptions && canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = true
             }
-            return
+            return nil
         }
 
         setCloudSaveState(payload.photos.isEmpty ? .saving : .uploadingPhotos)
@@ -2801,20 +2872,28 @@ struct CreateEntryView: View {
                 status: currentEntryStatus
             )
             activeDraftID = result.localDraftID
-            let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
-            loadedDraftSnapshot = savedSnapshot
-            toolbarSavedSnapshot = savedSnapshot
             isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
             recentEntryLocations = EntryLocationRecentStore.all
             setCloudSaveState(result.state)
-            completeToolbarSavedFeedback(for: savedSnapshot)
 
-            if navigatesToOptions && canShowEntryOptionsPage {
+            if result.state.isConfirmedSave {
+                let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
+                loadedDraftSnapshot = savedSnapshot
+                toolbarSavedSnapshot = savedSnapshot
+                completeToolbarSavedFeedback(for: savedSnapshot)
+            } else {
+                cancelToolbarSavedFeedback()
+            }
+
+            if result.state.isConfirmedSave && navigatesToOptions && canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = true
             }
+
+            return result.state
         } catch {
             setCloudSaveState(.failed("Could not save this entry locally."))
             cancelToolbarSavedFeedback()
+            return .failed("Could not save this entry locally.")
         }
     }
 
@@ -4551,11 +4630,66 @@ struct CreateEntryView: View {
         }
 
         dismissKeyboard()
-        addCurrentEntry(to: journalTitle)
-        clearEditor()
-        activeDraftID = nil
-        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
-        dismissCreate()
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
+
+        Task {
+            let payload = EntryDraftSavePayload(
+                id: activeDraftID,
+                title: storyTitle,
+                text: entryText,
+                richText: currentEntryRichText(),
+                photos: storyboardPhotos.compactMap { $0 },
+                characters: entryCharacters,
+                artStyle: selectedArtStyle,
+                location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+                date: storyDate,
+                datePrecision: storyDatePrecision,
+                savesDraft: savesDraft,
+                isPrivate: isPrivateEntry,
+                fontChoiceRawValue: selectedFontChoice.rawValue,
+                textColorIndex: selectedTextColorIndex,
+                textSize: previewTextSize,
+                paperStyleRawValue: selectedPaperStyleChoice.rawValue,
+                paperColorIndex: selectedPaperColorIndex,
+                isBold: false,
+                isItalic: false,
+                isUnderlined: false,
+                isStrikethrough: false,
+                isHighlighted: false,
+                textAlignmentRawValue: "leading"
+            )
+
+            let result = try? await EntrySaveService().saveEntryPreservingStatus(
+                payload: payload,
+                isSignedIn: authStore.userID != nil,
+                status: currentEntryStatus
+            )
+
+            guard let result else {
+                setCloudSaveState(.failed("Could not save this entry locally."))
+                return
+            }
+
+            activeDraftID = result.localDraftID
+            isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+            setCloudSaveState(result.state)
+
+            guard result.state.isConfirmedSave,
+                  let savedEntry = currentJournalEntry(id: result.localDraftID) else {
+                return
+            }
+
+            StoryEntryStore.upsert(savedEntry, to: journalTitle)
+            onJournalEntryCreated(journalTitle, savedEntry)
+            EntryJournalLinkStore.save(
+                journalTitle: journalTitle,
+                journalEntryID: savedEntry.id,
+                for: result.localDraftID
+            )
+            clearEditor()
+            activeDraftID = nil
+            dismissCreate()
+        }
     }
 
     private func saveDirectJournalEntryInPlace() {
@@ -4572,19 +4706,7 @@ struct CreateEntryView: View {
             return
         }
 
-        StoryEntryStore.upsert(entry, to: journalTitle)
-        onJournalEntryCreated(journalTitle, entry)
-        EntryJournalLinkStore.save(
-            journalTitle: journalTitle,
-            journalEntryID: entry.id,
-            for: entry.id
-        )
-        activeDraftID = entry.id
-        toolbarSavedJournalEntryID = entry.id
-        let savedSnapshot = currentDraftSnapshot(id: entry.id)
-        toolbarSavedSnapshot = savedSnapshot
-        completeToolbarSavedFeedback(for: savedSnapshot)
-        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         Task {
             let payload = EntryDraftSavePayload(
@@ -4619,6 +4741,29 @@ struct CreateEntryView: View {
             )
             if let result {
                 setCloudSaveState(result.state)
+                activeDraftID = result.localDraftID
+                isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+
+                if result.state.isConfirmedSave,
+                   let savedEntry = currentJournalEntry(id: result.localDraftID) {
+                    StoryEntryStore.upsert(savedEntry, to: journalTitle)
+                    onJournalEntryCreated(journalTitle, savedEntry)
+                    EntryJournalLinkStore.save(
+                        journalTitle: journalTitle,
+                        journalEntryID: savedEntry.id,
+                        for: result.localDraftID
+                    )
+                    toolbarSavedJournalEntryID = result.localDraftID
+                    let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
+                    loadedDraftSnapshot = savedSnapshot
+                    toolbarSavedSnapshot = savedSnapshot
+                    completeToolbarSavedFeedback(for: savedSnapshot)
+                } else {
+                    cancelToolbarSavedFeedback()
+                }
+            } else {
+                setCloudSaveState(.failed("Could not save this entry locally."))
+                cancelToolbarSavedFeedback()
             }
         }
     }

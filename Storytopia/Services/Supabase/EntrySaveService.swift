@@ -41,6 +41,15 @@ enum EntryCloudSaveState: Equatable {
             return false
         }
     }
+
+    var isConfirmedSave: Bool {
+        switch self {
+        case .saved, .savedLocally, .photosUploaded:
+            return true
+        case .idle, .saving, .uploadingPhotos, .failed, .photoUploadFailed:
+            return false
+        }
+    }
 }
 
 struct EntryDraftSavePayload {
