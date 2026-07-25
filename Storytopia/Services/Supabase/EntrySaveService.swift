@@ -169,6 +169,115 @@ enum SupabaseStoryboardError: LocalizedError {
     }
 }
 
+enum SupabaseEntryThumbnailError: LocalizedError {
+    case invalidImage
+    case syncFailed
+    case downloadFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidImage:
+            return "The entry thumbnail could not be prepared for upload."
+        case .syncFailed:
+            return "Entry thumbnail sync failed. Please try again."
+        case .downloadFailed:
+            return "Could not download this entry thumbnail."
+        }
+    }
+}
+
+struct SupabaseEntryThumbnailService {
+    private let client: SupabaseClient
+    private let repository: SupabaseEntryRepository
+    private let bucketName = "storytopia-media"
+
+    init(
+        client: SupabaseClient = SupabaseService.shared,
+        repository: SupabaseEntryRepository = SupabaseEntryRepository()
+    ) {
+        self.client = client
+        self.repository = repository
+    }
+
+    func uploadThumbnail(_ image: UIImage, for entry: JournalEntry) async throws -> JournalEntry {
+        guard let data = image.storytopiaPreparedJPEGData(compressionQuality: 0.86) else {
+            throw SupabaseEntryThumbnailError.invalidImage
+        }
+
+        let storagePath = Self.storagePath(userID: entry.userID, clientEntryID: entry.clientEntryID)
+
+        do {
+            try await client.storage
+                .from(bucketName)
+                .upload(
+                    storagePath,
+                    data: data,
+                    options: FileOptions(
+                        cacheControl: "31536000",
+                        contentType: CreateEntryReferencePhoto.mimeType,
+                        upsert: true
+                    )
+                )
+            SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: storagePath)
+            return try await repository.updateEntryThumbnail(
+                clientEntryID: entry.clientEntryID,
+                storagePath: storagePath,
+                updatedAt: Date()
+            )
+        } catch let error as SupabaseEntryThumbnailError {
+            throw error
+        } catch {
+            throw SupabaseEntryThumbnailError.syncFailed
+        }
+    }
+
+    func downloadThumbnail(storagePath: String, bypassCache: Bool = false) async throws -> UIImage {
+        do {
+            let data: Data
+            if !bypassCache, let cachedData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: storagePath) {
+                data = cachedData
+            } else {
+                data = try await client.storage
+                    .from(bucketName)
+                    .download(path: storagePath)
+                SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: storagePath)
+            }
+
+            guard let image = UIImage(data: data) else {
+                throw SupabaseEntryThumbnailError.downloadFailed
+            }
+            return image
+        } catch let error as SupabaseEntryThumbnailError {
+            throw error
+        } catch {
+            throw SupabaseEntryThumbnailError.downloadFailed
+        }
+    }
+
+    func deleteThumbnail(storagePath: String?) async {
+        guard let storagePath else {
+            return
+        }
+
+        do {
+            try await client.storage
+                .from(bucketName)
+                .remove(paths: [storagePath])
+        } catch {
+            print("[Storytopia] Entry thumbnail delete skipped: \(error.localizedDescription)")
+        }
+    }
+
+    static func storagePath(userID: UUID, clientEntryID: UUID) -> String {
+        [
+            userID.uuidString.lowercased(),
+            "entries",
+            clientEntryID.uuidString.lowercased(),
+            "preview-thumbnail.jpg"
+        ].joined(separator: "/")
+    }
+}
+
 struct SupabaseStoryboardService {
     private let client: SupabaseClient
     private let bucketName = "generated-storyboards"
@@ -392,15 +501,18 @@ struct EntrySaveService {
     private let repository: SupabaseEntryRepository
     private let journalRepository: SupabaseJournalRepository
     private let referencePhotoService: SupabaseReferencePhotoService
+    private let thumbnailService: SupabaseEntryThumbnailService
 
     init(
         repository: SupabaseEntryRepository = SupabaseEntryRepository(),
         journalRepository: SupabaseJournalRepository = SupabaseJournalRepository(),
-        referencePhotoService: SupabaseReferencePhotoService = SupabaseReferencePhotoService()
+        referencePhotoService: SupabaseReferencePhotoService = SupabaseReferencePhotoService(),
+        thumbnailService: SupabaseEntryThumbnailService = SupabaseEntryThumbnailService()
     ) {
         self.repository = repository
         self.journalRepository = journalRepository
         self.referencePhotoService = referencePhotoService
+        self.thumbnailService = thumbnailService
     }
 
     func saveEntryPreservingStatus(
@@ -434,7 +546,7 @@ struct EntrySaveService {
         }
         print("[Storytopia] Supabase entry save payload hasLocation=\(hasLocation), datePrecision=\(payload.datePrecision.rawValue), sendsEntryDate=\(cloudEntryDate != nil).")
 
-        let cloudEntry: JournalEntry
+        var cloudEntry: JournalEntry
         do {
             cloudEntry = try await repository.upsertEntry(
                 clientEntryID: localDraftID,
@@ -466,6 +578,14 @@ struct EntrySaveService {
                 cloudEntry: nil,
                 state: .failed("Saved locally. Cloud save failed.")
             )
+        }
+
+        if let thumbnail = CreateEntryDraftStore.load(id: localDraftID)?.thumbnail {
+            do {
+                cloudEntry = try await thumbnailService.uploadThumbnail(thumbnail, for: cloudEntry)
+            } catch {
+                print("[Storytopia] Entry thumbnail sync failed: \(error.localizedDescription)")
+            }
         }
 
         do {
@@ -567,7 +687,7 @@ struct EntrySaveService {
             return nil
         }
 
-        return try await repository.upsertEntry(
+        let cloudEntry = try await repository.upsertEntry(
             clientEntryID: entry.id,
             title: title,
             content: entry.text,
@@ -591,6 +711,17 @@ struct EntrySaveService {
             textAlignmentRawValue: entry.textAlignmentRawValue,
             status: status
         )
+
+        guard let thumbnail = entry.thumbnail else {
+            return cloudEntry
+        }
+
+        do {
+            return try await thumbnailService.uploadThumbnail(thumbnail, for: cloudEntry)
+        } catch {
+            print("[Storytopia] Entry thumbnail sync failed: \(error.localizedDescription)")
+            return cloudEntry
+        }
     }
 
     func deleteEntry(localDraftID: UUID, cloudEntry: JournalEntry?, isSignedIn: Bool) async throws {
@@ -609,6 +740,7 @@ struct EntrySaveService {
             throw JournalEntryRepositoryError.notAuthenticated
         }
 
+        await thumbnailService.deleteThumbnail(storagePath: cloudEntry.thumbnailStoragePath)
         try await referencePhotoService.deleteReferencePhotos(clientEntryID: cloudEntry.clientEntryID)
         try await journalRepository.deleteJournalEntryMemberships(clientEntryID: cloudEntry.clientEntryID)
         try await repository.deleteEntry(clientEntryID: cloudEntry.clientEntryID)

@@ -5461,7 +5461,7 @@ private enum EntryDisplayItem: Identifiable {
         switch self {
         case .local(let entry, let cloudEntry):
             if let cloudEntry {
-                return CreateEntryDraft.fromCloud(cloudEntry)
+                return CreateEntryDraft.fromCloud(cloudEntry, thumbnail: entry.thumbnail)
             }
 
             return entry
@@ -5840,6 +5840,7 @@ private enum EntriesSessionMemoryCache {
         let cloudEntries: [JournalEntry]
         let cloudEntryCounts: JournalEntrySummaryCounts?
         let cloudEntryThumbnails: [UUID: UIImage]
+        let cloudEntryThumbnailVersions: [UUID: String]
         let cloudStoryboardClientIDs: Set<UUID>
         let failedCloudStoryboardClientIDs: Set<UUID>
         let hasMoreCloudEntries: Bool
@@ -5848,8 +5849,12 @@ private enum EntriesSessionMemoryCache {
     }
 }
 
-private enum EntriesCloudTextThumbnailDiskCache {
+private enum EntriesCloudThumbnailDiskCache {
     static func image(for entry: JournalEntry) -> UIImage? {
+        guard entry.thumbnailStoragePath != nil else {
+            return nil
+        }
+
         guard let data = try? Data(contentsOf: fileURL(for: entry)) else {
             return nil
         }
@@ -5857,11 +5862,11 @@ private enum EntriesCloudTextThumbnailDiskCache {
         return UIImage(data: data)
     }
 
-    static func hasPhotoThumbnail(for entry: JournalEntry) -> Bool {
-        FileManager.default.fileExists(atPath: photoMarkerURL(for: entry).path)
-    }
+    static func store(_ image: UIImage, for entry: JournalEntry) {
+        guard entry.thumbnailStoragePath != nil else {
+            return
+        }
 
-    static func store(_ image: UIImage, for entry: JournalEntry, includesPhotos: Bool = false) {
         guard let data = image.storytopiaPreparedJPEGData(compressionQuality: 0.86) else {
             return
         }
@@ -5872,9 +5877,6 @@ private enum EntriesCloudTextThumbnailDiskCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(for: entry), options: [.atomic])
-            if includesPhotos {
-                try Data().write(to: photoMarkerURL(for: entry), options: [.atomic])
-            }
         } catch {
             print("[Storytopia] Entry thumbnail cache write failed: \(error.localizedDescription)")
         }
@@ -5885,24 +5887,26 @@ private enum EntriesCloudTextThumbnailDiskCache {
             ?? FileManager.default.temporaryDirectory
         return baseURL
             .appendingPathComponent("Storytopia", isDirectory: true)
-            .appendingPathComponent("CloudEntryTextThumbnails", isDirectory: true)
+            .appendingPathComponent("CloudEntryThumbnails", isDirectory: true)
     }
 
     private static func fileURL(for entry: JournalEntry) -> URL {
         cacheDirectory.appendingPathComponent(cacheKey(for: entry))
     }
 
-    private static func photoMarkerURL(for entry: JournalEntry) -> URL {
-        fileURL(for: entry).appendingPathExtension("photos")
-    }
-
     private static func cacheKey(for entry: JournalEntry) -> String {
-        let updatedMilliseconds = Int(entry.updatedAt.timeIntervalSince1970 * 1000)
+        let updatedMilliseconds = Int((entry.thumbnailUpdatedAt ?? entry.updatedAt).timeIntervalSince1970 * 1000)
         return [
             entry.userID.uuidString.lowercased(),
             entry.clientEntryID.uuidString.lowercased(),
+            entry.thumbnailStoragePath ?? "missing",
             "\(updatedMilliseconds)"
-        ].joined(separator: "_") + ".jpg"
+        ]
+        .joined(separator: "_")
+        .map { character in
+            character.isLetter || character.isNumber || character == "." ? character : "_"
+        }
+        .reduce(into: "") { $0.append($1) } + ".jpg"
     }
 }
 
@@ -5943,6 +5947,7 @@ struct EntriesView: View {
     @State private var cloudEntries: [JournalEntry] = []
     @State private var cloudEntryCounts: JournalEntrySummaryCounts?
     @State private var cloudEntryThumbnails: [UUID: UIImage] = [:]
+    @State private var cloudEntryThumbnailVersions: [UUID: String] = [:]
     @State private var isLoadingCloudEntries = false
     @State private var isLoadingMoreCloudEntries = false
     @State private var hasMoreCloudEntries = true
@@ -5953,10 +5958,9 @@ struct EntriesView: View {
     @State private var hasLoadedEntriesForSession = false
     @State private var loadedEntryQueryKey: EntriesCloudFetchCache.EntryQueryKey?
     @State private var entryThumbnailBackfillTask: Task<Void, Never>?
-    @State private var cloudEntryTextThumbnailBackfillTask: Task<Void, Never>?
+    @State private var cloudEntryThumbnailBackfillTask: Task<Void, Never>?
     @State private var completedStoryboardLoadTask: Task<Void, Never>?
-    @State private var cloudPhotoThumbnailIDsBeingLoaded: Set<UUID> = []
-    @State private var cloudPhotoThumbnailIDsLoaded: Set<UUID> = []
+    @State private var cloudThumbnailIDsBeingLoaded: Set<UUID> = []
     private let cloudEntriesPageSize = 30
     @AppStorage("StorytopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedEntriesTab") private var selectedEntryTabRawValue = EntriesTab.all.rawValue
@@ -6162,12 +6166,48 @@ struct EntriesView: View {
         }
 
         if newPage == .entries {
-            loadEntriesForCurrentPageIfNeeded()
+            if let activeDraftID {
+                handleReturnToEntriesFromEditedDraft(activeDraftID)
+            } else {
+                loadEntriesForCurrentPageIfNeeded()
+            }
+        }
+    }
+
+    private func handleReturnToEntriesFromEditedDraft(_ draftID: UUID) {
+        if let draft = CreateEntryDraftStore.load(id: draftID) {
+            if let existingIndex = entries.firstIndex(where: { $0.id == draft.id }) {
+                entries[existingIndex] = draft
+            } else {
+                entries.append(draft)
+            }
+
+            if let thumbnail = draft.thumbnail {
+                cloudEntryThumbnails[draft.id] = thumbnail
+                cloudEntryThumbnailVersions[draft.id] = "local|\(Int(draft.updatedAt.timeIntervalSince1970 * 1000))"
+            }
+            isDraftSaved = true
+            storeCurrentEntriesSessionSnapshot()
+        }
+
+        guard let userID = authStore.userID else {
+            return
+        }
+
+        let queryKey = currentEntryQueryKey(userID: userID)
+        hasLoadedEntriesForSession = true
+        loadedEntryQueryKey = queryKey
+
+        Task {
+            await loadCloudEntriesIfNeeded(forceReload: true, queryKey: queryKey)
+            await loadCloudStoryboardsIfNeeded(forceReload: true, userID: userID)
         }
     }
 
     private func handleActiveDraftIDChange(_ newDraftID: UUID?) {
-        if newDraftID == nil && selectedPage != .create {
+        if newDraftID == nil && selectedPage == .entries {
+            loadEntriesForCurrentPageIfNeeded()
+        } else if newDraftID == nil && selectedPage != .create {
             refreshEntries(forceCloudReload: true)
         }
     }
@@ -6573,7 +6613,7 @@ struct EntriesView: View {
                 .listRowBackground(Color.homePageBackground)
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
-                    loadCloudPhotoThumbnailIfNeeded(for: item)
+                    loadCloudThumbnailIfNeeded(for: item)
                 }
                 .onDrag {
                     draggingEntryID = item.id
@@ -6656,7 +6696,7 @@ struct EntriesView: View {
                                 entryGridCard(for: item, displayEntry: displayEntry)
                                     .onAppear {
                                         loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
-                                        loadCloudPhotoThumbnailIfNeeded(for: item)
+                                        loadCloudThumbnailIfNeeded(for: item)
                                     }
                                     .onDrag {
                                         draggingEntryID = item.id
@@ -6728,7 +6768,7 @@ struct EntriesView: View {
                             )
                             .onAppear {
                                 loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
-                                loadCloudPhotoThumbnailIfNeeded(for: item)
+                                loadCloudThumbnailIfNeeded(for: item)
                             }
                             .onDrag {
                                 draggingEntryID = item.id
@@ -7388,7 +7428,7 @@ struct EntriesView: View {
                     status = .draft
                 }
                 _ = try await EntrySaveService().renameEntry(
-                    entry: entry,
+                    entry: entry.replacingThumbnail(entryThumbnail),
                     title: trimmedTitle,
                     status: status,
                     isSignedIn: true
@@ -7557,7 +7597,7 @@ struct EntriesView: View {
         }
 
         scheduleEntryThumbnailBackfill()
-        scheduleCloudEntryTextThumbnailBackfill()
+        scheduleCloudEntryThumbnailBackfill()
         guard !EntriesCloudFetchCache.hasFreshEntrySummaries(for: queryKey) else {
             Task {
                 await loadCloudStoryboardsIfNeeded(userID: userID)
@@ -7584,6 +7624,7 @@ struct EntriesView: View {
         cloudEntries = snapshot.cloudEntries
         cloudEntryCounts = snapshot.cloudEntryCounts
         cloudEntryThumbnails = snapshot.cloudEntryThumbnails
+        cloudEntryThumbnailVersions = snapshot.cloudEntryThumbnailVersions
         cloudStoryboardClientIDs = snapshot.cloudStoryboardClientIDs
         failedCloudStoryboardClientIDs = snapshot.failedCloudStoryboardClientIDs
         hasMoreCloudEntries = snapshot.hasMoreCloudEntries
@@ -7594,8 +7635,8 @@ struct EntriesView: View {
         isDraftSaved = draftEntryItems.isEmpty == false
         hasLoadedEntriesForSession = true
         loadedEntryQueryKey = queryKey
-        restoreCachedCloudEntryTextThumbnails()
-        scheduleCloudEntryTextThumbnailBackfill()
+        restoreCachedCloudEntryThumbnails()
+        scheduleCloudEntryThumbnailBackfill()
     }
 
     private func storeCurrentEntriesSessionSnapshot() {
@@ -7611,6 +7652,7 @@ struct EntriesView: View {
                 cloudEntries: cloudEntries,
                 cloudEntryCounts: cloudEntryCounts,
                 cloudEntryThumbnails: cloudEntryThumbnails,
+                cloudEntryThumbnailVersions: cloudEntryThumbnailVersions,
                 cloudStoryboardClientIDs: cloudStoryboardClientIDs,
                 failedCloudStoryboardClientIDs: failedCloudStoryboardClientIDs,
                 hasMoreCloudEntries: hasMoreCloudEntries,
@@ -7625,15 +7667,15 @@ struct EntriesView: View {
         cancelThumbnailBackfills()
         hasLoadedEntriesForSession = false
         loadedEntryQueryKey = nil
-        cloudPhotoThumbnailIDsBeingLoaded = []
-        cloudPhotoThumbnailIDsLoaded = []
+        cloudThumbnailIDsBeingLoaded = []
+        cloudEntryThumbnailVersions = [:]
     }
 
     private func cancelThumbnailBackfills() {
         entryThumbnailBackfillTask?.cancel()
         entryThumbnailBackfillTask = nil
-        cloudEntryTextThumbnailBackfillTask?.cancel()
-        cloudEntryTextThumbnailBackfillTask = nil
+        cloudEntryThumbnailBackfillTask?.cancel()
+        cloudEntryThumbnailBackfillTask = nil
         completedStoryboardLoadTask?.cancel()
         completedStoryboardLoadTask = nil
     }
@@ -7647,6 +7689,7 @@ struct EntriesView: View {
             cloudEntries = []
             cloudEntryCounts = nil
             cloudEntryThumbnails = [:]
+            cloudEntryThumbnailVersions = [:]
             cloudEntriesErrorMessage = nil
             cloudStoryboardClientIDs = []
             failedCloudStoryboardClientIDs = []
@@ -7668,11 +7711,16 @@ struct EntriesView: View {
             sampleEntries = EntriesSampleData.entries()
         }
         scheduleEntryThumbnailBackfill()
-        scheduleCloudEntryTextThumbnailBackfill()
+        scheduleCloudEntryThumbnailBackfill()
         isDraftSaved = false
         storeCurrentEntriesSessionSnapshot()
 
-        let didHydrateCachedEntries = hydrateCachedCloudEntries(for: queryKey)
+        if forceCloudReload {
+            cloudEntryThumbnails = [:]
+            cloudEntryThumbnailVersions = [:]
+        }
+
+        let didHydrateCachedEntries = forceCloudReload ? false : hydrateCachedCloudEntries(for: queryKey)
         isLoadingCloudEntries = !didHydrateCachedEntries && filteredEntryItems.isEmpty
         storeCurrentEntriesSessionSnapshot()
 
@@ -7690,13 +7738,13 @@ struct EntriesView: View {
         if cloudEntries != cachedEntries.entries {
             cloudEntries = cachedEntries.entries
         }
-        if cloudEntryCounts != cachedEntries.counts {
-            cloudEntryCounts = cachedEntries.counts
+        if let cachedCounts = cachedEntries.counts, cloudEntryCounts != cachedCounts {
+            cloudEntryCounts = cachedCounts
         }
         hasMoreCloudEntries = cachedEntries.hasMore
         nextCloudEntryOffset = cachedEntries.nextOffset
-        restoreCachedCloudEntryTextThumbnails()
-        scheduleCloudEntryTextThumbnailBackfill()
+        restoreCachedCloudEntryThumbnails()
+        scheduleCloudEntryThumbnailBackfill()
         isDraftSaved = draftEntryItems.isEmpty == false
         cloudEntriesErrorMessage = nil
         isLoadingCloudEntries = false
@@ -7736,8 +7784,8 @@ struct EntriesView: View {
             nextCloudEntryOffset = cachedEntries.nextOffset
             hasLoadedEntriesForSession = true
             loadedEntryQueryKey = queryKey
-            restoreCachedCloudEntryTextThumbnails()
-            scheduleCloudEntryTextThumbnailBackfill()
+            restoreCachedCloudEntryThumbnails()
+            scheduleCloudEntryThumbnailBackfill()
             isDraftSaved = draftEntryItems.isEmpty == false
             cloudEntriesErrorMessage = nil
             isLoadingCloudEntries = false
@@ -7753,27 +7801,32 @@ struct EntriesView: View {
 
         do {
             let repository = SupabaseEntryRepository()
-            let page = try await repository.getEntrySummariesPage(
+            async let pageTask = repository.getEntrySummariesPage(
                 limit: cloudEntriesPageSize,
                 offset: 0,
                 sort: selectedEntrySort.summarySort,
                 statusFilter: selectedEntryTab.summaryStatusFilter
             )
+            async let countsTask = repository.getEntrySummaryCounts()
+
+            let page = try await pageTask
+            let counts = try? await countsTask
+
             guard queryKey == currentEntryQueryKey(userID: userID) else {
                 return
             }
             if cloudEntries != page {
                 cloudEntries = page
             }
-            if cloudEntryCounts != nil {
-                cloudEntryCounts = nil
+            if let counts, cloudEntryCounts != counts {
+                cloudEntryCounts = counts
             }
             hasMoreCloudEntries = page.count == cloudEntriesPageSize
             nextCloudEntryOffset = page.count
             hasLoadedEntriesForSession = true
             loadedEntryQueryKey = queryKey
-            restoreCachedCloudEntryTextThumbnails()
-            scheduleCloudEntryTextThumbnailBackfill()
+            restoreCachedCloudEntryThumbnails()
+            scheduleCloudEntryThumbnailBackfill()
             EntriesCloudFetchCache.storeEntrySummaries(
                 cloudEntries,
                 counts: cloudEntryCounts,
@@ -7827,7 +7880,7 @@ struct EntriesView: View {
             let existingIDs = Set(cloudEntries.map(\.clientEntryID))
             let newEntries = page.filter { !existingIDs.contains($0.clientEntryID) }
             cloudEntries.append(contentsOf: newEntries)
-            restoreCachedCloudEntryTextThumbnails()
+            restoreCachedCloudEntryThumbnails()
             hasMoreCloudEntries = page.count == cloudEntriesPageSize
             nextCloudEntryOffset += page.count
             EntriesCloudFetchCache.storeEntrySummaries(
@@ -8026,89 +8079,124 @@ struct EntriesView: View {
         )
     }
 
-    private func restoreCachedCloudEntryTextThumbnails() {
+    private func restoreCachedCloudEntryThumbnails() {
         var updatedThumbnails = cloudEntryThumbnails
+        var updatedVersions = cloudEntryThumbnailVersions
         var didUpdate = false
         let visibleCloudEntryIDs = Set(cloudEntries.map(\.clientEntryID))
+        let localThumbnailsByID = Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
+            entry.thumbnail.map { (entry.id, $0) }
+        })
 
-        for cloudEntry in cloudEntries where updatedThumbnails[cloudEntry.clientEntryID] == nil {
-            guard let cachedImage = EntriesCloudTextThumbnailDiskCache.image(for: cloudEntry) else {
+        for cloudEntry in cloudEntries {
+            let clientEntryID = cloudEntry.clientEntryID
+
+            if let localThumbnail = localThumbnailsByID[clientEntryID] {
+                let localVersion = cloudThumbnailVersion(for: cloudEntry) ?? "local"
+                if updatedThumbnails[clientEntryID] == nil || updatedVersions[clientEntryID] != localVersion {
+                    didUpdate = true
+                }
+                updatedThumbnails[clientEntryID] = localThumbnail
+                updatedVersions[clientEntryID] = localVersion
                 continue
             }
 
-            updatedThumbnails[cloudEntry.clientEntryID] = cachedImage
-            if EntriesCloudTextThumbnailDiskCache.hasPhotoThumbnail(for: cloudEntry) {
-                cloudPhotoThumbnailIDsLoaded.insert(cloudEntry.clientEntryID)
+            guard let currentVersion = cloudThumbnailVersion(for: cloudEntry) else {
+                if updatedThumbnails.removeValue(forKey: clientEntryID) != nil {
+                    didUpdate = true
+                }
+                updatedVersions.removeValue(forKey: clientEntryID)
+                continue
             }
+
+            if updatedVersions[clientEntryID] != currentVersion {
+                updatedThumbnails.removeValue(forKey: clientEntryID)
+                updatedVersions[clientEntryID] = currentVersion
+                didUpdate = true
+            }
+
+            guard updatedThumbnails[clientEntryID] == nil else {
+                continue
+            }
+
+            guard let cachedImage = EntriesCloudThumbnailDiskCache.image(for: cloudEntry) else {
+                continue
+            }
+
+            updatedThumbnails[clientEntryID] = cachedImage
             didUpdate = true
         }
 
         let trimmedThumbnails = updatedThumbnails.filter { clientEntryID, _ in
             visibleCloudEntryIDs.contains(clientEntryID)
         }
+        let trimmedVersions = updatedVersions.filter { clientEntryID, _ in
+            visibleCloudEntryIDs.contains(clientEntryID)
+        }
 
-        if didUpdate || trimmedThumbnails.count != cloudEntryThumbnails.count {
+        if didUpdate || trimmedThumbnails.count != cloudEntryThumbnails.count || trimmedVersions.count != cloudEntryThumbnailVersions.count {
             cloudEntryThumbnails = trimmedThumbnails
+            cloudEntryThumbnailVersions = trimmedVersions
             storeCurrentEntriesSessionSnapshot()
         }
     }
 
-    private func loadCloudPhotoThumbnailIfNeeded(for item: EntryDisplayItem) {
+    private func loadCloudThumbnailIfNeeded(for item: EntryDisplayItem) {
         guard
             let cloudEntry = item.cloudEntry,
-            !cloudPhotoThumbnailIDsBeingLoaded.contains(item.id),
-            !cloudPhotoThumbnailIDsLoaded.contains(item.id)
+            let thumbnailStoragePath = cloudEntry.thumbnailStoragePath,
+            cloudEntryThumbnails[item.id] == nil,
+            !cloudThumbnailIDsBeingLoaded.contains(item.id)
         else {
             return
         }
 
-        if EntriesCloudTextThumbnailDiskCache.hasPhotoThumbnail(for: cloudEntry) {
-            cloudPhotoThumbnailIDsLoaded.insert(item.id)
-            return
-        }
-
-        cloudPhotoThumbnailIDsBeingLoaded.insert(item.id)
+        cloudThumbnailIDsBeingLoaded.insert(item.id)
         Task {
             defer {
-                cloudPhotoThumbnailIDsBeingLoaded.remove(item.id)
+                cloudThumbnailIDsBeingLoaded.remove(item.id)
             }
 
             do {
-                let referencePhotos = try await SupabaseReferencePhotoService().loadReferencePhotos(entryID: cloudEntry.id)
-                guard !referencePhotos.isEmpty else {
-                    cloudPhotoThumbnailIDsLoaded.insert(item.id)
-                    return
-                }
-
-                let entry = CreateEntryDraft.fromCloud(cloudEntry)
-                guard let thumbnail = renderThumbnail(for: entry, photos: referencePhotos.map(\.image)) else {
-                    return
-                }
-
+                let thumbnail = try await SupabaseEntryThumbnailService().downloadThumbnail(
+                    storagePath: thumbnailStoragePath,
+                    bypassCache: true
+                )
                 cloudEntryThumbnails[item.id] = thumbnail
-                cloudPhotoThumbnailIDsLoaded.insert(item.id)
-                EntriesCloudTextThumbnailDiskCache.store(thumbnail, for: cloudEntry, includesPhotos: true)
+                cloudEntryThumbnailVersions[item.id] = cloudThumbnailVersion(for: cloudEntry)
+                EntriesCloudThumbnailDiskCache.store(thumbnail, for: cloudEntry)
                 storeCurrentEntriesSessionSnapshot()
             } catch {
-                cloudPhotoThumbnailIDsLoaded.insert(item.id)
-                return
+                await backfillCloudThumbnail(for: cloudEntry)
             }
         }
     }
 
+    private func cloudThumbnailVersion(for entry: JournalEntry) -> String? {
+        guard let storagePath = entry.thumbnailStoragePath else {
+            return nil
+        }
+
+        let updatedAt = entry.thumbnailUpdatedAt ?? entry.updatedAt
+        return "\(storagePath)|\(Int(updatedAt.timeIntervalSince1970 * 1000))"
+    }
+
     @MainActor
-    private func backfillCloudEntryTextThumbnailsIfNeeded() async {
-        var updatedThumbnails = cloudEntryThumbnails
-        var didUpdate = false
-        let visibleCloudEntryIDs = Set(cloudEntries.map(\.clientEntryID))
+    private func backfillMissingCloudEntryThumbnailsIfNeeded() async {
+        var backfilledCount = 0
+        var hasMoreMissingThumbnails = false
 
         for (index, cloudEntry) in cloudEntries.enumerated() {
             guard !Task.isCancelled else {
                 return
             }
+            guard backfilledCount < 4 else {
+                hasMoreMissingThumbnails = true
+                break
+            }
 
             let clientEntryID = cloudEntry.clientEntryID
-            guard updatedThumbnails[clientEntryID] == nil else {
+            guard cloudEntry.thumbnailStoragePath == nil, cloudEntryThumbnails[clientEntryID] == nil else {
                 continue
             }
 
@@ -8117,22 +8205,56 @@ struct EntriesView: View {
                 continue
             }
 
-            updatedThumbnails[clientEntryID] = thumbnail
-            EntriesCloudTextThumbnailDiskCache.store(thumbnail, for: cloudEntry)
-            didUpdate = true
+            backfilledCount += 1
+
+            await uploadBackfilledCloudThumbnail(thumbnail, for: cloudEntry)
 
             if index.isMultiple(of: 2) {
                 await Task.yield()
             }
         }
 
-        let trimmedThumbnails = updatedThumbnails.filter { clientEntryID, _ in
-            visibleCloudEntryIDs.contains(clientEntryID)
+        if hasMoreMissingThumbnails {
+            scheduleCloudEntryThumbnailBackfill(delayNanoseconds: 1_500_000_000)
+        }
+    }
+
+    @MainActor
+    private func backfillCloudThumbnail(for cloudEntry: JournalEntry) async {
+        guard cloudEntryThumbnails[cloudEntry.clientEntryID] == nil else {
+            return
         }
 
-        if didUpdate || trimmedThumbnails.count != cloudEntryThumbnails.count {
-            cloudEntryThumbnails = trimmedThumbnails
-            storeCurrentEntriesSessionSnapshot()
+        let entry = CreateEntryDraft.fromCloud(cloudEntry)
+        guard let thumbnail = renderThumbnail(for: entry, photos: []) else {
+            return
+        }
+
+        await uploadBackfilledCloudThumbnail(thumbnail, for: cloudEntry)
+        storeCurrentEntriesSessionSnapshot()
+    }
+
+    @MainActor
+    private func uploadBackfilledCloudThumbnail(_ thumbnail: UIImage, for cloudEntry: JournalEntry) async {
+        do {
+            let updatedEntry = try await SupabaseEntryThumbnailService().uploadThumbnail(thumbnail, for: cloudEntry)
+            if let entryIndex = cloudEntries.firstIndex(where: { $0.clientEntryID == updatedEntry.clientEntryID }) {
+                cloudEntries[entryIndex] = updatedEntry
+            }
+            cloudEntryThumbnails[updatedEntry.clientEntryID] = thumbnail
+            cloudEntryThumbnailVersions[updatedEntry.clientEntryID] = cloudThumbnailVersion(for: updatedEntry)
+            EntriesCloudThumbnailDiskCache.store(thumbnail, for: updatedEntry)
+            if let loadedEntryQueryKey {
+                EntriesCloudFetchCache.storeEntrySummaries(
+                    cloudEntries,
+                    counts: cloudEntryCounts,
+                    hasMore: hasMoreCloudEntries,
+                    nextOffset: nextCloudEntryOffset,
+                    for: loadedEntryQueryKey
+                )
+            }
+        } catch {
+            print("[Storytopia] Legacy entry thumbnail backfill failed: \(error.localizedDescription)")
         }
     }
 
@@ -8198,15 +8320,15 @@ struct EntriesView: View {
         }
     }
 
-    private func scheduleCloudEntryTextThumbnailBackfill() {
-        cloudEntryTextThumbnailBackfillTask?.cancel()
-        cloudEntryTextThumbnailBackfillTask = Task {
+    private func scheduleCloudEntryThumbnailBackfill(delayNanoseconds: UInt64 = 650_000_000) {
+        cloudEntryThumbnailBackfillTask?.cancel()
+        cloudEntryThumbnailBackfillTask = Task {
             await Task.yield()
-            try? await Task.sleep(nanoseconds: 650_000_000)
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
             guard !Task.isCancelled else {
                 return
             }
-            await backfillCloudEntryTextThumbnailsIfNeeded()
+            await backfillMissingCloudEntryThumbnailsIfNeeded()
         }
     }
 

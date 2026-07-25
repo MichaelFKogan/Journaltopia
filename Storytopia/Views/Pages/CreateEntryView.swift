@@ -255,6 +255,15 @@ private struct PendingCreateEntryDraftSave {
     let textAlignmentRawValue: String
 }
 
+private struct EntryPreviewFormattingSummary {
+    let isBold: Bool
+    let isItalic: Bool
+    let isUnderlined: Bool
+    let isStrikethrough: Bool
+    let isHighlighted: Bool
+    let textAlignmentRawValue: String
+}
+
 private struct CharacterEditorSession: Identifiable {
     let id = UUID()
     let character: EntryCharacter?
@@ -2644,15 +2653,15 @@ struct CreateEntryView: View {
             return nil
         }
 
-        let existingDraft = activeDraftID.flatMap(CreateEntryDraftStore.load)
-
         let normalizedLocation = storyLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let richText = currentEntryRichText()
+        let richTextFormatting = currentEntryPreviewFormatting(from: richText)
 
         return PendingCreateEntryDraftSave(
             id: activeDraftID,
             title: storyTitle,
             text: entryText,
-            richText: currentEntryRichText(),
+            richText: richText,
             photos: storyboardPhotos.compactMap { $0 },
             characters: entryCharacters,
             artStyle: selectedArtStyle,
@@ -2666,12 +2675,24 @@ struct CreateEntryView: View {
             textSize: previewTextSize,
             paperStyleRawValue: selectedPaperStyleChoice.rawValue,
             paperColorIndex: selectedPaperColorIndex,
-            isBold: existingDraft?.isBold ?? false,
-            isItalic: existingDraft?.isItalic ?? false,
-            isUnderlined: existingDraft?.isUnderlined ?? false,
-            isStrikethrough: existingDraft?.isStrikethrough ?? false,
-            isHighlighted: existingDraft?.isHighlighted ?? false,
-            textAlignmentRawValue: existingDraft?.textAlignmentRawValue ?? "leading"
+            isBold: richTextFormatting.isBold,
+            isItalic: richTextFormatting.isItalic,
+            isUnderlined: richTextFormatting.isUnderlined,
+            isStrikethrough: richTextFormatting.isStrikethrough,
+            isHighlighted: richTextFormatting.isHighlighted,
+            textAlignmentRawValue: richTextFormatting.textAlignmentRawValue
+        )
+    }
+
+    private func currentEntryPreviewFormatting(from richText: NotebookRichTextDocument?) -> EntryPreviewFormattingSummary {
+        let runs = richText?.formattingRuns ?? []
+        return EntryPreviewFormattingSummary(
+            isBold: runs.contains { $0.isBold },
+            isItalic: runs.contains { $0.isItalic },
+            isUnderlined: runs.contains { $0.isUnderlined },
+            isStrikethrough: runs.contains { $0.isStrikethrough },
+            isHighlighted: false,
+            textAlignmentRawValue: "leading"
         )
     }
 
