@@ -1513,18 +1513,26 @@ struct CreateEntryView: View {
 
     private var editorCore: some View {
         NavigationStack {
-            ZStack {
-                pageBackground
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        dismissKeyboard()
+            if canShowEntryOptionsPage {
+                editorNavigationRoot
+                    .navigationDestination(isPresented: $isShowingEntryOptionsPage) {
+                        entryOptionsPage
                     }
+            } else {
+                editorNavigationRoot
+            }
+        }
+    }
 
-                layoutPage
-            }
-            .navigationDestination(isPresented: $isShowingEntryOptionsPage) {
-                entryOptionsPage
-            }
+    private var editorNavigationRoot: some View {
+        ZStack {
+            pageBackground
+                .ignoresSafeArea()
+                .onTapGesture {
+                    dismissKeyboard()
+                }
+
+            layoutPage
         }
     }
 
@@ -1831,12 +1839,20 @@ struct CreateEntryView: View {
         }
         .onAppear {
             configureDirectJournalEntryIfNeeded()
+            if !canShowEntryOptionsPage {
+                isShowingEntryOptionsPage = false
+            }
             loadLinkedJournalTitle(for: activeDraftID)
             loadSavedDraftIfNeeded()
             currentEntryStatus = resolvedCurrentEntryStatus()
         }
         .onChange(of: activeDraftID) { newDraftID in
             handleActiveDraftChange(newDraftID)
+        }
+        .onChange(of: canShowEntryOptionsPage) { canShowOptions in
+            if !canShowOptions {
+                isShowingEntryOptionsPage = false
+            }
         }
         .onChange(of: cloudSaveState) { newState in
             updateSavedConfirmationReveal(for: newState)
@@ -2285,12 +2301,13 @@ struct CreateEntryView: View {
                     Image(systemName: presentation.closeButtonSystemName)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(Color.storyInk.opacity(0.72))
-                        .frame(width: 44, height: 44)
+                        .frame(width: 36, height: 34)
                         .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
                         )
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .frame(width: showsToolbarSaveButton ? 88 : 44, alignment: .leading)
@@ -2349,13 +2366,14 @@ struct CreateEntryView: View {
                             .lineLimit(1)
 
                     }
-                    .frame(width: 88, height: 44)
+                    .frame(width: 76, height: 34)
                     .foregroundStyle(toolbarSaveButtonColor)
                     .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
                     )
+                    .frame(width: 88, height: 44)
                     .contentShape(Rectangle())
                     .opacity(canUseToolbarSaveButton || isToolbarSaveInProgress ? 1 : 0.52)
                     .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
@@ -2726,7 +2744,7 @@ struct CreateEntryView: View {
     private func saveDraftToLocalAndCloud(forceSave: Bool, navigatesToOptions: Bool) async {
         guard let payload = makeEntryDraftSavePayload(forceSave: forceSave) else {
             cancelToolbarSavedFeedback()
-            if navigatesToOptions {
+            if navigatesToOptions && canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = true
             }
             return
@@ -2749,7 +2767,7 @@ struct CreateEntryView: View {
             setCloudSaveState(result.state)
             completeToolbarSavedFeedback(for: savedSnapshot)
 
-            if navigatesToOptions {
+            if navigatesToOptions && canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = true
             }
         } catch {
@@ -5149,21 +5167,6 @@ struct CreateEntryView: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
-    }
-
-    private func smartGenerationBenefit(_ title: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Color.storyPurple)
-                .frame(width: 12)
-
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.storyInk.opacity(0.76))
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
     }
 
     private func compactStoryboardPreview(layout: StoryboardLayoutOption) -> some View {

@@ -23,6 +23,7 @@ struct JournalView: View {
     @State private var journalNavigationPath: [JournalRoute] = []
     @State private var areJournalPagesExpanded = false
     @State private var isJournalDetailVisible = false
+    @State private var draggingJournalID: UUID?
     @Namespace private var journalOpenNamespace
     @AppStorage("StorytopiaSelectedJournalLayout") private var selectedJournalLayoutRawValue = JournalDisplayLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedJournalSort") private var selectedJournalSortRawValue = JournalSortOption.updated.rawValue
@@ -51,7 +52,11 @@ struct JournalView: View {
     }
 
     private var sortedChapters: [PrototypeChapter] {
-        chapters.sorted { lhs, rhs in
+        if selectedJournalSort == .manual {
+            return chapters
+        }
+
+        return chapters.sorted { lhs, rhs in
             switch selectedJournalSort {
             case .created:
                 if lhs.createdAt == rhs.createdAt {
@@ -63,6 +68,8 @@ struct JournalView: View {
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
                 return lhs.updatedAt > rhs.updatedAt
+            case .manual:
+                return false
             }
         }
     }
@@ -206,6 +213,9 @@ struct JournalView: View {
                     .font(.system(size: 12, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
             }
             .foregroundStyle(Color.storyInk)
             .padding(.horizontal, 9)
@@ -314,6 +324,20 @@ struct JournalView: View {
                     .accessibilityAction {
                         openJournal(chapter, dayOffset: index)
                     }
+                    .onDrag {
+                        draggingJournalID = chapter.id
+                        return NSItemProvider(object: chapter.id.uuidString as NSString)
+                    }
+                    .onDrop(
+                        of: [UTType.text],
+                        delegate: JournalGridDropDelegate(
+                            chapter: chapter,
+                            chapters: $chapters,
+                            draggingJournalID: $draggingJournalID,
+                            isEnabled: selectedJournalSort == .manual,
+                            onReorder: persistManualJournalOrder
+                        )
+                    )
                     .allowsHitTesting(openingJournal == nil && journalNavigationPath.isEmpty)
                 }
             }
@@ -617,7 +641,15 @@ struct JournalView: View {
     }
 
     private func moveChapters(from source: IndexSet, to destination: Int) {
+        guard selectedJournalSort == .manual else {
+            return
+        }
+
         chapters.move(fromOffsets: source, toOffset: destination)
+        persistManualJournalOrder()
+    }
+
+    private func persistManualJournalOrder() {
         UserChapterStore.replace(with: chapters.filter { UserChapterStore.contains(title: $0.title) })
         UserChapterStore.syncOrderToCloud(chapters)
     }
@@ -852,6 +884,7 @@ private struct JournalRoute: Hashable, Identifiable {
 }
 
 private enum JournalSortOption: String, CaseIterable, Identifiable {
+    case manual
     case updated
     case created
 
@@ -861,6 +894,8 @@ private enum JournalSortOption: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .manual:
+            return "Manual"
         case .updated:
             return "Recently Updated"
         case .created:
@@ -874,11 +909,48 @@ private enum JournalSortOption: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .manual:
+            return "line.3.horizontal"
         case .updated:
             return "clock.arrow.circlepath"
         case .created:
             return "plus.circle"
         }
+    }
+}
+
+private struct JournalGridDropDelegate: DropDelegate {
+    let chapter: PrototypeChapter
+    @Binding var chapters: [PrototypeChapter]
+    @Binding var draggingJournalID: UUID?
+    let isEnabled: Bool
+    let onReorder: () -> Void
+
+    func dropEntered(info _: DropInfo) {
+        guard
+            isEnabled,
+            let draggingJournalID,
+            draggingJournalID != chapter.id,
+            let fromIndex = chapters.firstIndex(where: { $0.id == draggingJournalID }),
+            let toIndex = chapters.firstIndex(where: { $0.id == chapter.id })
+        else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            let movedChapter = chapters.remove(at: fromIndex)
+            chapters.insert(movedChapter, at: toIndex)
+        }
+        onReorder()
+    }
+
+    func dropUpdated(info _: DropInfo) -> DropProposal? {
+        isEnabled ? DropProposal(operation: .move) : nil
+    }
+
+    func performDrop(info _: DropInfo) -> Bool {
+        draggingJournalID = nil
+        return isEnabled
     }
 }
 
@@ -1033,8 +1105,8 @@ private struct JournalOpeningBook: View {
             LinearGradient(
                 colors: [
                     Color.clear,
-                    Color.white.opacity(0.26),
                     Color.white.opacity(0.16),
+                    Color.white.opacity(0.08),
                     Color.clear
                 ],
                 startPoint: .leading,
@@ -1119,7 +1191,7 @@ private struct JournalCoverCard: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.homeBorder, lineWidth: 1)
         )
-        .shadow(color: Color.storyInk.opacity(0.09), radius: 8, y: 4)
+        .shadow(color: Color.storyInk.opacity(0.13), radius: 10, y: 5)
     }
 
     private var journalTitleScrim: some View {
@@ -1201,8 +1273,8 @@ private struct JournalCoverCard: View {
             LinearGradient(
                 colors: [
                     Color.clear,
-                    Color.white.opacity(0.26),
                     Color.white.opacity(0.16),
+                    Color.white.opacity(0.08),
                     Color.clear
                 ],
                 startPoint: .leading,
@@ -5399,6 +5471,36 @@ private enum EntryDisplayItem: Identifiable {
     }
 }
 
+private struct EntryDropDelegate: DropDelegate {
+    let item: EntryDisplayItem
+    let items: [EntryDisplayItem]
+    @Binding var draggingEntryID: UUID?
+    let isEnabled: Bool
+    let onReorder: (UUID, UUID) -> Void
+
+    func dropEntered(info _: DropInfo) {
+        guard
+            isEnabled,
+            let draggingEntryID,
+            draggingEntryID != item.id,
+            items.contains(where: { $0.id == draggingEntryID })
+        else {
+            return
+        }
+
+        onReorder(draggingEntryID, item.id)
+    }
+
+    func dropUpdated(info _: DropInfo) -> DropProposal? {
+        isEnabled ? DropProposal(operation: .move) : nil
+    }
+
+    func performDrop(info _: DropInfo) -> Bool {
+        draggingEntryID = nil
+        return isEnabled
+    }
+}
+
 private struct EntryOpeningPreview: Identifiable {
     let entry: CreateEntryDraft
     let sortOption: EntrySortOption
@@ -5473,7 +5575,7 @@ private extension CreateEntryDraft {
             thumbnail: thumbnail,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt,
-            displayOrder: nil
+            displayOrder: entry.displayOrder
         )
     }
 
@@ -5517,7 +5619,7 @@ private enum EntriesCloudFetchCache {
 
     static func entrySummaries(for key: EntryQueryKey) -> CachedEntrySummaries? {
         guard
-            let cached = entrySummariesByKey[key],
+            let cached = cachedEntrySummaries(for: key),
             Date().timeIntervalSince(cached.loadedAt) < freshnessInterval
         else {
             return nil
@@ -5526,18 +5628,26 @@ private enum EntriesCloudFetchCache {
         return cached
     }
 
+    static func staleEntrySummaries(for key: EntryQueryKey) -> CachedEntrySummaries? {
+        cachedEntrySummaries(for: key)
+    }
+
     static func storeEntrySummaries(
         _ entries: [JournalEntry],
+        counts: JournalEntrySummaryCounts?,
         hasMore: Bool,
         nextOffset: Int,
         for key: EntryQueryKey
     ) {
-        entrySummariesByKey[key] = CachedEntrySummaries(
+        let cached = CachedEntrySummaries(
             entries: entries,
+            counts: counts,
             hasMore: hasMore,
             nextOffset: nextOffset,
             loadedAt: Date()
         )
+        entrySummariesByKey[key] = cached
+        storeEntrySummariesOnDisk(cached, for: key)
     }
 
     static func shouldLoadStoryboards(for userID: UUID) -> Bool {
@@ -5561,6 +5671,7 @@ private enum EntriesCloudFetchCache {
 
         entrySummariesByKey = entrySummariesByKey.filter { $0.key.userID != userID }
         storyboardLoadDateByUserID.removeValue(forKey: userID)
+        removeDiskEntrySummaries(for: userID)
     }
 
     struct EntryQueryKey: Hashable {
@@ -5571,9 +5682,130 @@ private enum EntriesCloudFetchCache {
 
     struct CachedEntrySummaries {
         let entries: [JournalEntry]
+        let counts: JournalEntrySummaryCounts?
         let hasMore: Bool
         let nextOffset: Int
         let loadedAt: Date
+    }
+
+    private static func cachedEntrySummaries(for key: EntryQueryKey) -> CachedEntrySummaries? {
+        if let cached = entrySummariesByKey[key] {
+            return cached
+        }
+
+        guard let cached = diskEntrySummaries(for: key) else {
+            return nil
+        }
+
+        entrySummariesByKey[key] = cached
+        return cached
+    }
+
+    private static func diskEntrySummaries(for key: EntryQueryKey) -> CachedEntrySummaries? {
+        guard let diskCache = loadDiskCache()[key.diskKey] else {
+            return nil
+        }
+
+        return CachedEntrySummaries(
+            entries: diskCache.entries,
+            counts: diskCache.counts,
+            hasMore: diskCache.hasMore,
+            nextOffset: diskCache.nextOffset,
+            loadedAt: diskCache.loadedAt
+        )
+    }
+
+    private static func storeEntrySummariesOnDisk(_ cached: CachedEntrySummaries, for key: EntryQueryKey) {
+        var diskCache = loadDiskCache()
+        diskCache[key.diskKey] = DiskCachedEntrySummaries(
+            entries: cached.entries,
+            counts: cached.counts,
+            hasMore: cached.hasMore,
+            nextOffset: cached.nextOffset,
+            loadedAt: cached.loadedAt
+        )
+        saveDiskCache(diskCache)
+    }
+
+    private static func removeDiskEntrySummaries(for userID: UUID) {
+        var diskCache = loadDiskCache()
+        diskCache = diskCache.filter { !$0.key.hasPrefix(userID.uuidString.lowercased() + "|") }
+        saveDiskCache(diskCache)
+    }
+
+    private static func loadDiskCache() -> [String: DiskCachedEntrySummaries] {
+        guard
+            let data = try? Data(contentsOf: diskCacheURL),
+            let cache = try? JSONDecoder().decode([String: DiskCachedEntrySummaries].self, from: data)
+        else {
+            return [:]
+        }
+
+        return cache
+    }
+
+    private static func saveDiskCache(_ cache: [String: DiskCachedEntrySummaries]) {
+        guard let data = try? JSONEncoder().encode(cache) else {
+            return
+        }
+
+        let directoryURL = diskCacheURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: nil)
+        try? data.write(to: diskCacheURL, options: [.atomic])
+    }
+
+    private static var diskCacheURL: URL {
+        let baseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return baseURL
+            .appendingPathComponent("Storytopia", isDirectory: true)
+            .appendingPathComponent("EntriesCloudFetchCache.json")
+    }
+
+    private struct DiskCachedEntrySummaries: Codable {
+        let entries: [JournalEntry]
+        let counts: JournalEntrySummaryCounts?
+        let hasMore: Bool
+        let nextOffset: Int
+        let loadedAt: Date
+    }
+}
+
+private extension EntriesCloudFetchCache.EntryQueryKey {
+    var diskKey: String {
+        [
+            userID.uuidString.lowercased(),
+            sort.cacheIdentifier,
+            statusFilter.cacheIdentifier
+        ].joined(separator: "|")
+    }
+}
+
+private extension EntrySummarySort {
+    var cacheIdentifier: String {
+        switch self {
+        case .entryDate:
+            return "entryDate"
+        case .createdAt:
+            return "createdAt"
+        case .updatedAt:
+            return "updatedAt"
+        case .manual:
+            return "manual"
+        }
+    }
+}
+
+private extension EntrySummaryStatusFilter {
+    var cacheIdentifier: String {
+        switch self {
+        case .all:
+            return "all"
+        case .drafts:
+            return "drafts"
+        case .completed:
+            return "completed"
+        }
     }
 }
 
@@ -5601,6 +5833,9 @@ struct EntriesView: View {
     @State private var sampleEntryBeingPreviewed: CreateEntryDraft?
     @State private var entriesPendingDeletion: [EntryDisplayItem] = []
     @State private var entryDeleteErrorMessage: String?
+    @State private var draggingEntryID: UUID?
+    @State private var manualEntryOrderOverrides: [UUID: Int] = [:]
+    @State private var manualEntryOrderSaveTask: Task<Void, Never>?
     @State private var entryRenameErrorMessage: String?
     @State private var entryIDsBeingDeleted: Set<UUID> = []
     @State private var entryIDsBeingRenamed: Set<UUID> = []
@@ -5820,7 +6055,7 @@ struct EntriesView: View {
             isFinishingEntryOpening = false
         }
 
-        if newPage != .create {
+        if newPage == .entries {
             refreshEntries()
         }
     }
@@ -5832,8 +6067,7 @@ struct EntriesView: View {
     }
 
     private func handleUserIDChange() {
-        EntriesCloudFetchCache.invalidate(for: nil)
-        refreshEntries(forceCloudReload: true)
+        refreshEntries()
     }
 
     private var header: some View {
@@ -6232,6 +6466,20 @@ struct EntriesView: View {
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
                 }
+                .onDrag {
+                    draggingEntryID = item.id
+                    return NSItemProvider(object: item.id.uuidString as NSString)
+                }
+                .onDrop(
+                    of: [UTType.text],
+                    delegate: EntryDropDelegate(
+                        item: item,
+                        items: filteredEntryItems,
+                        draggingEntryID: $draggingEntryID,
+                        isEnabled: selectedEntrySort == .manual,
+                        onReorder: moveEntryItem
+                    )
+                )
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
                     Button {
                         beginRenaming(displayEntry)
@@ -6300,6 +6548,20 @@ struct EntriesView: View {
                                     .onAppear {
                                         loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
                                     }
+                                    .onDrag {
+                                        draggingEntryID = item.id
+                                        return NSItemProvider(object: item.id.uuidString as NSString)
+                                    }
+                                    .onDrop(
+                                        of: [UTType.text],
+                                        delegate: EntryDropDelegate(
+                                            item: item,
+                                            items: filteredEntryItems,
+                                            draggingEntryID: $draggingEntryID,
+                                            isEnabled: selectedEntrySort == .manual,
+                                            onReorder: moveEntryItem
+                                        )
+                                    )
                             }
                         }
 
@@ -6357,6 +6619,20 @@ struct EntriesView: View {
                             .onAppear {
                                 loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
                             }
+                            .onDrag {
+                                draggingEntryID = item.id
+                                return NSItemProvider(object: item.id.uuidString as NSString)
+                            }
+                            .onDrop(
+                                of: [UTType.text],
+                                delegate: EntryDropDelegate(
+                                    item: item,
+                                    items: completedEntryItems,
+                                    draggingEntryID: $draggingEntryID,
+                                    isEnabled: selectedEntrySort == .manual,
+                                    onReorder: moveEntryItem
+                                )
+                            )
                         }
 
                         if isLoadingMoreCloudEntries {
@@ -6625,6 +6901,30 @@ struct EntriesView: View {
     }
 
     private func sortEntryItems(_ lhs: EntryDisplayItem, _ rhs: EntryDisplayItem) -> Bool {
+        if selectedEntrySort == .manual {
+            switch (manualEntryOrderOverrides[lhs.id], manualEntryOrderOverrides[rhs.id]) {
+            case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+                return lhsOrder < rhsOrder
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                break
+            }
+
+            switch (lhs.entry.displayOrder, rhs.entry.displayOrder) {
+            case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+                return lhsOrder < rhsOrder
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return lhs.createdAt > rhs.createdAt
+            }
+        }
+
         let lhsDate = sortDate(for: lhs)
         let rhsDate = sortDate(for: rhs)
 
@@ -6637,6 +6937,8 @@ struct EntriesView: View {
 
     private func sortDate(for item: EntryDisplayItem) -> Date {
         switch selectedEntrySort {
+        case .manual:
+            return item.createdAt
         case .entryDate:
             let entry = item.entry
             return entry.datePrecision == .noDate ? item.createdAt : entry.date
@@ -6995,12 +7297,138 @@ struct EntriesView: View {
     }
 
     private func moveEntries(from source: IndexSet, to destination: Int) {
-        guard authStore.userID == nil, selectedEntryTab == .drafts, filteredEntryItems.allSatisfy(\.isLocal) else {
+        guard selectedEntrySort == .manual else {
             return
         }
 
-        entries.move(fromOffsets: source, toOffset: destination)
-        CreateEntryDraftStore.saveOrder(entries.map(\.id))
+        var visibleItems = filteredEntryItems
+        visibleItems.move(fromOffsets: source, toOffset: destination)
+        persistManualEntryOrder(visibleItems.map(\.id))
+    }
+
+    private func moveEntryItem(_ draggedID: UUID, before targetID: UUID) {
+        guard selectedEntrySort == .manual else {
+            return
+        }
+
+        var visibleItems = filteredEntryItems
+        guard
+            let fromIndex = visibleItems.firstIndex(where: { $0.id == draggedID }),
+            let toIndex = visibleItems.firstIndex(where: { $0.id == targetID }),
+            fromIndex != toIndex
+        else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            let item = visibleItems.remove(at: fromIndex)
+            visibleItems.insert(item, at: toIndex)
+            persistManualEntryOrder(visibleItems.map(\.id))
+        }
+    }
+
+    private func persistManualEntryOrder(_ orderedIDs: [UUID]) {
+        guard !orderedIDs.isEmpty else {
+            return
+        }
+
+        applyManualEntryOrder(orderedIDs)
+
+        if authStore.userID == nil {
+            CreateEntryDraftStore.saveOrder(entries.map(\.id))
+        } else {
+            persistManualCloudEntryOrder()
+        }
+    }
+
+    private func persistManualCloudEntryOrder() {
+        guard authStore.userID != nil else {
+            return
+        }
+
+        let orderedClientEntryIDs = cloudEntries.map(\.clientEntryID)
+        guard !orderedClientEntryIDs.isEmpty else {
+            return
+        }
+
+        manualEntryOrderSaveTask?.cancel()
+        manualEntryOrderSaveTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            do {
+                try await SupabaseEntryRepository().updateEntryDisplayOrder(orderedClientEntryIDs)
+                await MainActor.run {
+                    if let userID = authStore.userID {
+                        EntriesCloudFetchCache.invalidate(for: userID)
+                    }
+                    cloudEntriesErrorMessage = nil
+                }
+            } catch {
+                await MainActor.run {
+                    cloudEntriesErrorMessage = "Could not save manual entry order."
+                }
+            }
+        }
+    }
+
+    private func applyManualEntryOrder(_ orderedIDs: [UUID]) {
+        let orderByID = Dictionary(uniqueKeysWithValues: orderedIDs.enumerated().map { ($0.element, $0.offset) })
+        manualEntryOrderOverrides.merge(orderByID) { _, newValue in newValue }
+
+        entries.sort { lhs, rhs in
+            switch (orderByID[lhs.id], orderByID[rhs.id]) {
+            case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+                return lhsOrder < rhsOrder
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return sortLocalEntriesByManualOrder(lhs, rhs)
+            }
+        }
+
+        cloudEntries.sort { lhs, rhs in
+            switch (orderByID[lhs.clientEntryID], orderByID[rhs.clientEntryID]) {
+            case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+                return lhsOrder < rhsOrder
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return sortCloudEntriesByManualOrder(lhs, rhs)
+            }
+        }
+    }
+
+    private func sortLocalEntriesByManualOrder(_ lhs: CreateEntryDraft, _ rhs: CreateEntryDraft) -> Bool {
+        switch (lhs.displayOrder, rhs.displayOrder) {
+        case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+            return lhsOrder < rhsOrder
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            return lhs.createdAt > rhs.createdAt
+        }
+    }
+
+    private func sortCloudEntriesByManualOrder(_ lhs: JournalEntry, _ rhs: JournalEntry) -> Bool {
+        switch (lhs.displayOrder, rhs.displayOrder) {
+        case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+            return lhsOrder < rhsOrder
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            return lhs.createdAt > rhs.createdAt
+        }
     }
 
     private func refreshEntries(forceCloudReload: Bool = false) {
@@ -7028,14 +7456,33 @@ struct EntriesView: View {
         if entries.isEmpty && showsPrototypeData && sampleEntries.isEmpty {
             sampleEntries = EntriesSampleData.entries()
         }
-        backfillEntryThumbnailsIfNeeded()
+        scheduleEntryThumbnailBackfill()
         isDraftSaved = false
-        isLoadingCloudEntries = true
+
+        let didHydrateCachedEntries = hydrateCachedCloudEntries(for: userID)
+        isLoadingCloudEntries = !didHydrateCachedEntries && filteredEntryItems.isEmpty
 
         Task {
             await loadCloudEntriesIfNeeded(forceReload: forceCloudReload)
             await loadCloudStoryboardsIfNeeded(forceReload: forceCloudReload, userID: userID)
         }
+    }
+
+    private func hydrateCachedCloudEntries(for userID: UUID) -> Bool {
+        let queryKey = currentEntryQueryKey(userID: userID)
+        guard let cachedEntries = EntriesCloudFetchCache.staleEntrySummaries(for: queryKey) else {
+            return false
+        }
+
+        cloudEntries = cachedEntries.entries
+        cloudEntryCounts = cachedEntries.counts
+        hasMoreCloudEntries = cachedEntries.hasMore
+        nextCloudEntryOffset = cachedEntries.nextOffset
+        scheduleCloudEntryThumbnailBackfill()
+        isDraftSaved = draftEntryItems.isEmpty == false
+        cloudEntriesErrorMessage = nil
+        isLoadingCloudEntries = false
+        return true
     }
 
     private func loadCloudEntriesIfNeeded(forceReload: Bool = false) async {
@@ -7052,12 +7499,15 @@ struct EntriesView: View {
         let queryKey = currentEntryQueryKey(userID: userID)
         if !forceReload, let cachedEntries = EntriesCloudFetchCache.entrySummaries(for: queryKey) {
             cloudEntries = cachedEntries.entries
+            if let cachedCounts = cachedEntries.counts {
+                cloudEntryCounts = cachedCounts
+            }
             hasMoreCloudEntries = cachedEntries.hasMore
             nextCloudEntryOffset = cachedEntries.nextOffset
             if cloudEntryCounts == nil {
                 cloudEntryCounts = try? await SupabaseEntryRepository().getEntrySummaryCounts()
             }
-            backfillCloudEntryThumbnailsIfNeeded()
+            scheduleCloudEntryThumbnailBackfill()
             isDraftSaved = draftEntryItems.isEmpty == false
             cloudEntriesErrorMessage = nil
             isLoadingCloudEntries = false
@@ -7086,11 +7536,12 @@ struct EntriesView: View {
             nextCloudEntryOffset = page.count
             EntriesCloudFetchCache.storeEntrySummaries(
                 cloudEntries,
+                counts: cloudEntryCounts,
                 hasMore: hasMoreCloudEntries,
                 nextOffset: nextCloudEntryOffset,
                 for: queryKey
             )
-            backfillCloudEntryThumbnailsIfNeeded()
+            scheduleCloudEntryThumbnailBackfill()
             isDraftSaved = draftEntryItems.isEmpty == false
             cloudEntriesErrorMessage = nil
         } catch {
@@ -7139,11 +7590,12 @@ struct EntriesView: View {
             nextCloudEntryOffset += page.count
             EntriesCloudFetchCache.storeEntrySummaries(
                 cloudEntries,
+                counts: cloudEntryCounts,
                 hasMore: hasMoreCloudEntries,
                 nextOffset: nextCloudEntryOffset,
                 for: currentEntryQueryKey(userID: userID)
             )
-            backfillCloudEntryThumbnailsIfNeeded()
+            scheduleCloudEntryThumbnailBackfill()
             if selectedEntryTab != .drafts {
                 await loadCloudStoryboardsIfNeeded(forceReload: true, userID: userID)
             }
@@ -7355,6 +7807,13 @@ struct EntriesView: View {
         }
     }
 
+    private func scheduleCloudEntryThumbnailBackfill() {
+        Task {
+            await Task.yield()
+            backfillCloudEntryThumbnailsIfNeeded()
+        }
+    }
+
     private func backfillEntryThumbnailsIfNeeded() {
         var didCreateThumbnail = false
         let storedRendererVersion = UserDefaults.standard.integer(forKey: thumbnailRendererVersionKey)
@@ -7393,6 +7852,13 @@ struct EntriesView: View {
 
         if didCreateThumbnail {
             entries = CreateEntryDraftStore.loadAll()
+        }
+    }
+
+    private func scheduleEntryThumbnailBackfill() {
+        Task {
+            await Task.yield()
+            backfillEntryThumbnailsIfNeeded()
         }
     }
 
@@ -7802,6 +8268,9 @@ private func entryDisplayTitle(_ entry: CreateEntryDraft) -> String {
 
 private func entryPreviewDateText(_ entry: CreateEntryDraft, sortOption: EntrySortOption) -> String {
     switch sortOption {
+    case .manual:
+        let displayDate = entry.datePrecision == .noDate ? entry.createdAt : entry.date
+        return displayDate.formatted(date: .abbreviated, time: .omitted)
     case .entryDate:
         let displayDate = entry.datePrecision == .noDate ? entry.createdAt : entry.date
         return displayDate.formatted(date: .abbreviated, time: .omitted)
@@ -8544,6 +9013,7 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
 }
 
 private enum EntrySortOption: String, CaseIterable, Identifiable {
+    case manual
     case entryDate
     case cloudCreated
     case updated
@@ -8554,6 +9024,8 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .manual:
+            return "Manual"
         case .entryDate:
             return "Story Date"
         case .cloudCreated:
@@ -8565,6 +9037,8 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
 
     var shortTitle: String {
         switch self {
+        case .manual:
+            return "Manual"
         case .entryDate:
             return "Story Date"
         case .cloudCreated:
@@ -8576,6 +9050,8 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .manual:
+            return "line.3.horizontal"
         case .entryDate:
             return "calendar"
         case .cloudCreated:
@@ -8587,6 +9063,8 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
 
     var summarySort: EntrySummarySort {
         switch self {
+        case .manual:
+            return .manual
         case .entryDate:
             return .entryDate
         case .cloudCreated:

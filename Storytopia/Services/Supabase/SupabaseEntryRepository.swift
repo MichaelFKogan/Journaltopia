@@ -27,6 +27,7 @@ struct JournalEntry: Identifiable, Codable, Equatable, Sendable {
     let isStrikethrough: Bool?
     let isHighlighted: Bool?
     let textAlignmentRawValue: String?
+    let displayOrder: Int?
     let createdAt: Date
     let updatedAt: Date
 
@@ -55,12 +56,13 @@ struct JournalEntry: Identifiable, Codable, Equatable, Sendable {
         case isStrikethrough = "is_strikethrough"
         case isHighlighted = "is_highlighted"
         case textAlignmentRawValue = "text_alignment_raw_value"
+        case displayOrder = "display_order"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
 }
 
-struct JournalEntrySummaryCounts: Equatable, Sendable {
+struct JournalEntrySummaryCounts: Codable, Equatable, Sendable {
     let all: Int
     let drafts: Int
     let completed: Int
@@ -90,6 +92,7 @@ struct JournalEntryPayload: Encodable, Sendable {
     let isStrikethrough: Bool?
     let isHighlighted: Bool?
     let textAlignmentRawValue: String?
+    let displayOrder: Int?
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -115,6 +118,7 @@ struct JournalEntryPayload: Encodable, Sendable {
         case isStrikethrough = "is_strikethrough"
         case isHighlighted = "is_highlighted"
         case textAlignmentRawValue = "text_alignment_raw_value"
+        case displayOrder = "display_order"
     }
 }
 
@@ -122,6 +126,14 @@ struct JournalEntryUpdate: Encodable, Sendable {
     let title: String?
     let content: String?
     let status: String?
+}
+
+private struct JournalEntryDisplayOrderUpdate: Encodable, Sendable {
+    let displayOrder: Int
+
+    enum CodingKeys: String, CodingKey {
+        case displayOrder = "display_order"
+    }
 }
 
 enum JournalCoverSource: String, Codable, Sendable {
@@ -649,6 +661,8 @@ struct SupabaseJournalRepository {
 
 struct SupabaseEntryRepository {
     private let client: SupabaseClient
+    private static let entrySummaryColumns = "id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,display_order,created_at,updated_at"
+    private static let legacyEntrySummaryColumns = "id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at"
 
     init(client: SupabaseClient = SupabaseService.shared) {
         self.client = client
@@ -676,13 +690,23 @@ struct SupabaseEntryRepository {
         do {
             return try await client
                 .from("entries")
-                .select("id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
+                .select(Self.entrySummaryColumns)
                 .eq("user_id", value: userID)
                 .order("created_at", ascending: false)
                 .execute()
                 .value
         } catch {
-            throw JournalEntryRepositoryError.operationFailed
+            do {
+                return try await client
+                    .from("entries")
+                    .select(Self.legacyEntrySummaryColumns)
+                    .eq("user_id", value: userID)
+                    .order("created_at", ascending: false)
+                    .execute()
+                    .value
+            } catch {
+                throw JournalEntryRepositoryError.operationFailed
+            }
         }
     }
 
@@ -696,44 +720,91 @@ struct SupabaseEntryRepository {
         let rangeEnd = max(offset, offset + limit - 1)
 
         do {
-            var query = client
-                .from("entries")
-                .select("id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at")
-                .eq("user_id", value: userID)
-                .neq("status", value: JournalEntryStatus.archived.rawValue)
-
-            switch statusFilter {
-            case .all:
-                break
-            case .drafts:
-                query = query.neq("status", value: JournalEntryStatus.completed.rawValue)
-            case .completed:
-                query = query.eq("status", value: JournalEntryStatus.completed.rawValue)
-            }
-
-            switch sort {
-            case .entryDate:
-                return try await query
-                    .order("entry_date", ascending: false)
-                    .order("created_at", ascending: false)
-                    .range(from: offset, to: rangeEnd)
-                    .execute()
-                    .value
-            case .createdAt:
-                return try await query
-                    .order("created_at", ascending: false)
-                    .range(from: offset, to: rangeEnd)
-                    .execute()
-                    .value
-            case .updatedAt:
-                return try await query
-                    .order("updated_at", ascending: false)
-                    .range(from: offset, to: rangeEnd)
-                    .execute()
-                    .value
-            }
+            return try await getEntrySummariesPage(
+                userID: userID,
+                limit: limit,
+                offset: offset,
+                rangeEnd: rangeEnd,
+                sort: sort,
+                statusFilter: statusFilter,
+                selectsDisplayOrder: true
+            )
         } catch {
-            throw JournalEntryRepositoryError.operationFailed
+            do {
+                return try await getEntrySummariesPage(
+                    userID: userID,
+                    limit: limit,
+                    offset: offset,
+                    rangeEnd: rangeEnd,
+                    sort: sort,
+                    statusFilter: statusFilter,
+                    selectsDisplayOrder: false
+                )
+            } catch {
+                throw JournalEntryRepositoryError.operationFailed
+            }
+        }
+    }
+
+    private func getEntrySummariesPage(
+        userID: UUID,
+        limit _: Int,
+        offset: Int,
+        rangeEnd: Int,
+        sort: EntrySummarySort,
+        statusFilter: EntrySummaryStatusFilter,
+        selectsDisplayOrder: Bool
+    ) async throws -> [JournalEntry] {
+        var query = client
+            .from("entries")
+            .select(selectsDisplayOrder ? Self.entrySummaryColumns : Self.legacyEntrySummaryColumns)
+            .eq("user_id", value: userID)
+            .neq("status", value: JournalEntryStatus.archived.rawValue)
+
+        switch statusFilter {
+        case .all:
+            break
+        case .drafts:
+            query = query.neq("status", value: JournalEntryStatus.completed.rawValue)
+        case .completed:
+            query = query.eq("status", value: JournalEntryStatus.completed.rawValue)
+        }
+
+        switch sort {
+        case .entryDate:
+            return try await query
+                .order("entry_date", ascending: false)
+                .order("created_at", ascending: false)
+                .range(from: offset, to: rangeEnd)
+                .execute()
+                .value
+        case .createdAt:
+            return try await query
+                .order("created_at", ascending: false)
+                .range(from: offset, to: rangeEnd)
+                .execute()
+                .value
+        case .updatedAt:
+            return try await query
+                .order("updated_at", ascending: false)
+                .range(from: offset, to: rangeEnd)
+                .execute()
+                .value
+        case .manual:
+            if selectsDisplayOrder {
+                return try await query
+                    .order("display_order", ascending: true)
+                    .order("created_at", ascending: false)
+                    .range(from: offset, to: rangeEnd)
+                    .execute()
+                    .value
+            }
+
+            return try await query
+                .order("created_at", ascending: false)
+                .range(from: offset, to: rangeEnd)
+                .execute()
+                .value
         }
     }
 
@@ -808,7 +879,8 @@ struct SupabaseEntryRepository {
                         isUnderlined: nil,
                         isStrikethrough: nil,
                         isHighlighted: nil,
-                        textAlignmentRawValue: nil
+                        textAlignmentRawValue: nil,
+                        displayOrder: nil
                     )
                 )
                 .select()
@@ -872,6 +944,7 @@ struct SupabaseEntryRepository {
         isStrikethrough: Bool? = nil,
         isHighlighted: Bool? = nil,
         textAlignmentRawValue: String? = nil,
+        displayOrder: Int? = nil,
         status: JournalEntryStatus = .draft
     ) async throws -> JournalEntry {
         let userID = try await authenticatedUserID()
@@ -909,7 +982,8 @@ struct SupabaseEntryRepository {
                         isUnderlined: isUnderlined,
                         isStrikethrough: isStrikethrough,
                         isHighlighted: isHighlighted,
-                        textAlignmentRawValue: textAlignmentRawValue?.trimmedOrNil
+                        textAlignmentRawValue: textAlignmentRawValue?.trimmedOrNil,
+                        displayOrder: displayOrder
                     ),
                     onConflict: "user_id,client_entry_id"
                 )
@@ -917,6 +991,23 @@ struct SupabaseEntryRepository {
                 .single()
                 .execute()
                 .value
+        } catch {
+            throw JournalEntryRepositoryError.operationFailed
+        }
+    }
+
+    func updateEntryDisplayOrder(_ orderedClientEntryIDs: [UUID]) async throws {
+        let userID = try await authenticatedUserID()
+
+        do {
+            for (displayOrder, clientEntryID) in orderedClientEntryIDs.enumerated() {
+                try await client
+                    .from("entries")
+                    .update(JournalEntryDisplayOrderUpdate(displayOrder: displayOrder))
+                    .eq("client_entry_id", value: clientEntryID)
+                    .eq("user_id", value: userID)
+                    .execute()
+            }
         } catch {
             throw JournalEntryRepositoryError.operationFailed
         }
@@ -988,6 +1079,7 @@ enum EntrySummarySort: Sendable, Hashable {
     case entryDate
     case createdAt
     case updatedAt
+    case manual
 }
 
 enum EntrySummaryStatusFilter: Sendable, Hashable {
