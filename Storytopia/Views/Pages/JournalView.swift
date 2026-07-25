@@ -8537,7 +8537,7 @@ private struct EntryListRow: View {
         }
         .frame(maxWidth: .infinity, minHeight: JournalChapterListMetrics.rowHeight, alignment: .leading)
         .contentShape(Rectangle())
-        .accessibilityLabel(entryDisplayTitle(entry))
+        .accessibilityLabel("\(entryDisplayTitle(entry)), \(entryDateDisplay.inlineText)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
