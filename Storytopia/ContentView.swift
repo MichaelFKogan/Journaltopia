@@ -24,13 +24,12 @@ struct ContentView: View {
     @State private var isOpeningCompletedEntryFromEntries: Bool
 
     init() {
-        let drafts = CreateEntryDraftStore.loadAll()
         _entryText = State(initialValue: "")
         _draftStoryTitle = State(initialValue: "")
         _draftStoryboardPhotos = State(initialValue: Array(repeating: nil, count: 5))
-        _isDraftSaved = State(initialValue: !drafts.isEmpty)
+        _isDraftSaved = State(initialValue: CreateEntryDraftStore.hasSavedDrafts())
         _activeDraftID = State(initialValue: nil)
-        _generatedStoryboards = State(initialValue: GeneratedStoryboardStore.load())
+        _generatedStoryboards = State(initialValue: [])
         _completedEntryOpenedStoryboardImage = State(initialValue: nil)
         _isOpeningEntryFromEntries = State(initialValue: false)
         _isOpeningCompletedEntryFromEntries = State(initialValue: false)
@@ -187,9 +186,10 @@ struct ContentView: View {
             return
         }
 
-        let drafts = CreateEntryDraftStore.loadAll()
-        isDraftSaved = !drafts.isEmpty
-        generatedStoryboards = GeneratedStoryboardStore.load()
+        isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
+        if selectedPage == .create || pageBehindCreate == .profile {
+            generatedStoryboards = GeneratedStoryboardStore.load()
+        }
         activeDraftID = nil
         completedEntryOpenedStoryboardImage = nil
         isOpeningEntryFromEntries = false

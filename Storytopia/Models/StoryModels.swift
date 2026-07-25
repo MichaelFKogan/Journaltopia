@@ -446,6 +446,36 @@ enum CreateEntryDraftStore {
             .sorted(by: sortDrafts)
     }
 
+    static func hasSavedDrafts() -> Bool {
+        if let draftURLs = try? FileManager.default.contentsOfDirectory(
+            at: draftsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ), !draftURLs.isEmpty {
+            return true
+        }
+
+        if !StorytopiaLocalAccountScope.isAnonymous,
+           let anonymousDraftURLs = try? FileManager.default.contentsOfDirectory(
+                at: anonymousDraftsDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+           ),
+           !anonymousDraftURLs.isEmpty {
+            return true
+        }
+
+        if let legacyDraftURLs = try? FileManager.default.contentsOfDirectory(
+            at: legacyDraftsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ), !legacyDraftURLs.isEmpty {
+            return true
+        }
+
+        return FileManager.default.fileExists(atPath: legacyDraftDirectory.appendingPathComponent(metadataFileName).path)
+    }
+
     static func load(id: UUID) -> CreateEntryDraft? {
         migrateLegacyDraftIfNeeded()
         return loadDraft(at: directory(for: id))

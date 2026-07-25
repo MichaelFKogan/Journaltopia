@@ -2169,9 +2169,16 @@ struct CreateEntryView: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(Color.storyInk.opacity(0.72))
-                        .frame(width: 30, height: 30)
+                        .frame(width: 40, height: 38)
+                        .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
+                        )
+                        .frame(width: 48, height: 48)
                         .contentShape(Rectangle())
                 }
+                .frame(width: showsToolbarSaveButton ? 94 : 48, alignment: .leading)
                 .buttonStyle(.plain)
                 .accessibilityLabel("Back")
             }
@@ -2301,16 +2308,16 @@ struct CreateEntryView: View {
                     Image(systemName: presentation.closeButtonSystemName)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(Color.storyInk.opacity(0.72))
-                        .frame(width: 36, height: 34)
+                        .frame(width: 40, height: 38)
                         .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
                         )
-                        .frame(width: 44, height: 44)
+                        .frame(width: 48, height: 48)
                         .contentShape(Rectangle())
                 }
-                .frame(width: showsToolbarSaveButton ? 88 : 44, alignment: .leading)
+                .frame(width: showsToolbarSaveButton ? 94 : 48, alignment: .leading)
                 .buttonStyle(.plain)
                 .accessibilityLabel(presentation.closeButtonAccessibilityLabel)
             }
@@ -2366,14 +2373,14 @@ struct CreateEntryView: View {
                             .lineLimit(1)
 
                     }
-                    .frame(width: 76, height: 34)
+                    .frame(width: 82, height: 38)
                     .foregroundStyle(toolbarSaveButtonColor)
                     .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
                     )
-                    .frame(width: 88, height: 44)
+                    .frame(width: 94, height: 48)
                     .contentShape(Rectangle())
                     .opacity(canUseToolbarSaveButton || isToolbarSaveInProgress ? 1 : 0.52)
                     .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
@@ -3080,6 +3087,13 @@ struct CreateEntryView: View {
 
     private var entryDraftBottomBar: some View {
         VStack(spacing: 0) {
+            if showsComposeFlowControls {
+                bottomToolbarNextButton
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
             photosAttachedTab
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
@@ -3276,31 +3290,25 @@ struct CreateEntryView: View {
     }
 
     private var unifiedEditorToolbar: some View {
-        HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    toolbarActionButton(title: "Font", systemName: "textformat") {
-                        openFontOptions()
-                    }
-
-                    toolbarActionButton(title: "Paper", systemName: "doc.text", accessibilityLabel: "Background") {
-                        openPaperOptions()
-                    }
-
-                    toolbarActionButton(title: "Journal", systemName: "book.closed") {
-                        openAddToJournalPage()
-                    }
-
-                    toolbarActionButton(title: "Prompts", systemName: "lightbulb") {
-                        openJournalPromptsSheet()
-                    }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                toolbarActionButton(title: "Font", systemName: "textformat") {
+                    openFontOptions()
                 }
-                .padding(.trailing, 2)
-            }
 
-            if showsComposeFlowControls {
-                bottomToolbarNextButton
+                toolbarActionButton(title: "Paper", systemName: "doc.text", accessibilityLabel: "Background") {
+                    openPaperOptions()
+                }
+
+                toolbarActionButton(title: "Journal", systemName: "book.closed") {
+                    openAddToJournalPage()
+                }
+
+                toolbarActionButton(title: "Prompts", systemName: "lightbulb") {
+                    openJournalPromptsSheet()
+                }
             }
+            .padding(.trailing, 2)
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)
@@ -4077,7 +4085,7 @@ struct CreateEntryView: View {
 
     private var entryOptionsStepContent: some View {
         VStack(alignment: .leading, spacing: 14) {
-            smartGenerationCard
+            entryDetailsInfoBanner
 
             if !isSmartGenerationEnabled {
                 storyboardLayoutPickerSection
@@ -5015,81 +5023,29 @@ struct CreateEntryView: View {
         .accessibilityLabel(title)
     }
 
-    private var smartGenerationCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .top, spacing: 7) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(Color.storyPurple)
-                            .frame(width: 18, height: 18)
+    private var entryDetailsInfoBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+                .frame(width: 22, height: 22)
 
-                        Text("Your memories become\na graphic novel.")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Color.storyInk)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.86)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Your memories become a graphic novel.")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                    Text("Storytopia transforms your journal entry into a comic page where you are the main character.")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.storyInk.opacity(0.8))
-                        .lineSpacing(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                smartGenerationHeroArt
-                    .frame(width: 112, height: 108)
-                    .padding(.top, -3)
-                    .padding(.trailing, -2)
+                Text("Choose the style, story details, and journal before generating your storyboard.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.storyInk.opacity(0.75))
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 16)
-            .padding(.bottom, 13)
 
-            Divider()
-                .overlay(Color.storyBorder.opacity(0.45))
-
-            HStack(spacing: 0) {
-                smartGenerationFeatureTile(systemName: "sparkles", title: "Understands\nyour story")
-                smartGenerationFeatureDivider
-                smartGenerationFeatureTile(systemName: "photo", title: "Uses your\nphotos")
-                smartGenerationFeatureDivider
-                smartGenerationFeatureTile(systemName: "rectangle.split.3x1", title: "Designs the\nbest layout")
-                smartGenerationFeatureDivider
-                smartGenerationFeatureTile(systemName: "gauge.with.dots.needle.33percent", title: "Creates\ncinematic\npacing")
-                smartGenerationFeatureDivider
-                smartGenerationFeatureTile(systemName: "paintbrush", title: "Matches your\nart style")
-            }
-            .padding(.vertical, 10)
-
-            HStack(spacing: 7) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 11, weight: .bold))
-
-                Text("2-6 panels")
-                    .font(.system(size: 11, weight: .bold))
-
-                Circle()
-                    .fill(Color.storyPurple)
-                    .frame(width: 3.5, height: 3.5)
-
-                Text("Unique for every story")
-                    .font(.system(size: 11, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-            .foregroundStyle(Color.storyPurple)
-            .padding(.horizontal, 13)
-            .frame(height: 26)
-            .background(Color.storyPurple.opacity(0.09), in: Capsule())
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 13)
+            Spacer(minLength: 0)
         }
+        .padding(14)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -5102,71 +5058,6 @@ struct CreateEntryView: View {
                 dismissKeyboard()
             }
         )
-    }
-
-    private var smartGenerationHeroArt: some View {
-        ZStack(alignment: .bottomTrailing) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.93, green: 0.96, blue: 1.0),
-                            Color.storyCream.opacity(0.82)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-
-            Image(artStyleAssetName(for: selectedArtStyle))
-                .resizable()
-                .scaledToFill()
-                .frame(width: 98, height: 94)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.white.opacity(0.85), lineWidth: 1)
-                )
-                .rotationEffect(.degrees(-2))
-                .shadow(color: Color.storyInk.opacity(0.14), radius: 8, y: 4)
-                .offset(x: 3, y: 3)
-
-            VStack(spacing: 4) {
-                ForEach(0..<3, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(Color.white.opacity(0.74))
-                        .frame(width: CGFloat(30 - index * 5), height: 3)
-                }
-            }
-            .padding(.trailing, 8)
-            .padding(.bottom, 8)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private var smartGenerationFeatureDivider: some View {
-        Rectangle()
-            .fill(Color.storyBorder.opacity(0.36))
-            .frame(width: 0.7, height: 42)
-    }
-
-    private func smartGenerationFeatureTile(systemName: String, title: String) -> some View {
-        VStack(spacing: 5) {
-            Image(systemName: systemName)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.storyPurple)
-                .frame(height: 16)
-
-            Text(title)
-                .font(.system(size: 8.5, weight: .bold))
-                .foregroundStyle(Color.storyInk)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-                .minimumScaleFactor(0.7)
-                .frame(height: 28, alignment: .top)
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
     }
 
     private func compactStoryboardPreview(layout: StoryboardLayoutOption) -> some View {
