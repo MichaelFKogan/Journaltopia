@@ -15,6 +15,7 @@ struct JournalView: View {
     @State private var journalBeingRenamed: PrototypeChapter?
     @State private var renamedJournalTitle = ""
     @State private var journalsPendingDeletion: [PrototypeChapter] = []
+    @State private var journalBeingCustomized: PrototypeChapter?
     @State private var isCreateJournalAlertPresented = false
     @State private var newJournalTitle = ""
     @State private var openingJournal: JournalOpeningContext?
@@ -152,6 +153,12 @@ struct JournalView: View {
         } message: {
             Text(deleteJournalAlertMessage)
         }
+        .sheet(item: $journalBeingCustomized) { chapter in
+            JournalCustomizationSheet(
+                chapter: refreshedChapter(chapter),
+                onSave: applyJournalCustomization
+            )
+        }
     }
 
     private var header: some View {
@@ -285,9 +292,10 @@ struct JournalView: View {
                 ForEach(Array(sortedChapters.enumerated()), id: \.element.id) { index, chapter in
                     JournalCoverCard(
                         chapter: chapter,
-                        coverImage: nil,
+                        coverImage: JournalCoverStore.image(for: chapter.title),
                         fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
                         isEditing: editMode == .active,
+                        onCustomize: { beginCustomizing(chapter) },
                         onRename: { beginRenaming(chapter) },
                         onDelete: { requestDeleteJournals([chapter]) }
                     )
@@ -384,7 +392,7 @@ struct JournalView: View {
             } label: {
                 JournalChapterListRow(
                     chapter: chapter,
-                    coverImage: nil,
+                    coverImage: JournalCoverStore.image(for: chapter.title),
                     fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index)
                 )
             }
@@ -462,6 +470,44 @@ struct JournalView: View {
     private func beginRenaming(_ chapter: PrototypeChapter) {
         journalBeingRenamed = chapter
         renamedJournalTitle = chapter.title
+    }
+
+    private func beginCustomizing(_ chapter: PrototypeChapter) {
+        journalBeingCustomized = refreshedChapter(chapter)
+    }
+
+    private func refreshedChapter(_ chapter: PrototypeChapter) -> PrototypeChapter {
+        chapters.first { $0.id == chapter.id } ?? chapter
+    }
+
+    private func applyJournalCustomization(_ customization: JournalCustomization) {
+        guard let index = chapters.firstIndex(where: { $0.id == customization.chapterID }) else {
+            journalBeingCustomized = nil
+            return
+        }
+
+        let updatedChapter = PrototypeChapter(
+            id: chapters[index].id,
+            title: chapters[index].title,
+            subtitle: chapters[index].subtitle,
+            color: customization.color,
+            symbol: chapters[index].symbol,
+            coverImageName: customization.coverImageName,
+            kind: chapters[index].kind,
+            isFavorite: chapters[index].isFavorite,
+            createdAt: chapters[index].createdAt,
+            updatedAt: Date(),
+            entries: chapters[index].entries
+        )
+
+        chapters[index] = updatedChapter
+        UserChapterStore.updateAppearance(
+            id: updatedChapter.id,
+            color: updatedChapter.color,
+            coverImageName: updatedChapter.coverImageName
+        )
+        UserChapterStore.syncToCloud(updatedChapter)
+        journalBeingCustomized = nil
     }
 
     private func renameSelectedJournal() {
@@ -579,7 +625,7 @@ struct JournalView: View {
         let context = JournalOpeningContext(
             chapter: chapter,
             dayOffset: dayOffset,
-            coverImage: nil,
+            coverImage: JournalCoverStore.image(for: chapter.title),
             fallbackImageName: fallbackCoverImageName(for: chapter, at: dayOffset)
         )
 
@@ -777,8 +823,8 @@ private enum JournalDisplayLayout: String {
     }
 }
 
-private func journalFallbackCoverImageName(for _: PrototypeChapter, at _: Int) -> String? {
-    nil
+private func journalFallbackCoverImageName(for chapter: PrototypeChapter, at _: Int) -> String? {
+    chapter.coverImageName
 }
 
 private struct JournalRoute: Hashable, Identifiable {
@@ -810,9 +856,9 @@ private enum JournalSortOption: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .updated:
-            return "Last Updated"
+            return "Recently Updated"
         case .created:
-            return "Created At"
+            return "Date Created"
         }
     }
 
@@ -978,6 +1024,7 @@ private struct JournalCoverCard: View {
     let coverImage: UIImage?
     let fallbackImageName: String?
     let isEditing: Bool
+    let onCustomize: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
 
@@ -1010,6 +1057,10 @@ private struct JournalCoverCard: View {
                 .accessibilityLabel("Delete \(chapter.title)")
             } else {
                 Menu {
+                    Button(action: onCustomize) {
+                        Label("Change Cover", systemImage: "photo.on.rectangle")
+                    }
+
                     Button(action: onRename) {
                         Label("Rename", systemImage: "pencil")
                     }
@@ -1130,6 +1181,312 @@ private struct JournalCoverCard: View {
         .frame(width: 22)
         .frame(maxHeight: .infinity)
         .allowsHitTesting(false)
+    }
+}
+
+private struct JournalCustomization {
+    let chapterID: UUID
+    let color: Color
+    let coverImageName: String?
+}
+
+private struct JournalCustomizationSheet: View {
+    let chapter: PrototypeChapter
+    let onSave: (JournalCustomization) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedColorHex: String
+    @State private var selectedCoverImageName: String?
+
+    init(
+        chapter: PrototypeChapter,
+        onSave: @escaping (JournalCustomization) -> Void
+    ) {
+        self.chapter = chapter
+        self.onSave = onSave
+        _selectedColorHex = State(initialValue: JournalColorOption.hexString(for: chapter.color))
+        _selectedCoverImageName = State(initialValue: chapter.coverImageName)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    preview
+                    colorSection
+                    coverSection
+                }
+                .padding(18)
+            }
+            .background(Color.homePageBackground)
+            .navigationTitle("Journal Cover")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        onSave(
+                            JournalCustomization(
+                                chapterID: chapter.id,
+                                color: selectedColor,
+                                coverImageName: selectedCoverImageName
+                            )
+                        )
+                        dismiss()
+                    }
+                    .fontWeight(.bold)
+                }
+            }
+        }
+    }
+
+    private var selectedColor: Color {
+        Color(hex: selectedColorHex) ?? chapter.color
+    }
+
+    private var coverImageCandidates: [String] {
+        var seen = Set<String>()
+        return chapter.entries
+            .flatMap(\.imageNames)
+            .filter { imageName in
+                UIImage(named: imageName) != nil && seen.insert(imageName).inserted
+            }
+    }
+
+    private var preview: some View {
+        JournalCoverPreview(
+            title: chapter.title,
+            entryCount: chapter.entries.count,
+            color: selectedColor,
+            coverImage: JournalCoverStore.image(for: chapter.title),
+            fallbackImageName: selectedCoverImageName
+        )
+        .frame(maxWidth: 210)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var colorSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Color")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyInk)
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5), spacing: 10) {
+                ForEach(JournalColorOption.all) { option in
+                    Button {
+                        selectedColorHex = option.hex
+                    } label: {
+                        Circle()
+                            .fill(option.color)
+                            .frame(width: 42, height: 42)
+                            .overlay {
+                                if selectedColorHex == option.hex {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 15, weight: .heavy))
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                            .overlay {
+                                Circle()
+                                    .stroke(Color.white, lineWidth: 2)
+                            }
+                            .shadow(color: option.color.opacity(0.24), radius: 5, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(option.name)
+                }
+            }
+        }
+    }
+
+    private var coverSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Cover Photo")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Spacer()
+
+                Button("Use Color") {
+                    selectedCoverImageName = nil
+                }
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.homeAccent)
+            }
+
+            if coverImageCandidates.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Label("Storyboard image choices will appear here.", systemImage: "photo.on.rectangle")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+
+                    Text("Images from entries in this journal can be used as covers.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.homeBorder, lineWidth: 1)
+                )
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                    ForEach(coverImageCandidates, id: \.self) { imageName in
+                        Button {
+                            selectedCoverImageName = imageName
+                        } label: {
+                            Image(imageName)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(height: 86)
+                                .frame(maxWidth: .infinity)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(
+                                            selectedCoverImageName == imageName ? Color.homeAccent : Color.white.opacity(0.9),
+                                            lineWidth: selectedCoverImageName == imageName ? 3 : 1
+                                        )
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Use image as cover")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct JournalCoverPreview: View {
+    let title: String
+    let entryCount: Int
+    let color: Color
+    let coverImage: UIImage?
+    let fallbackImageName: String?
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                if let coverImage {
+                    Image(uiImage: coverImage)
+                        .resizable()
+                        .scaledToFill()
+                } else if let fallbackImageName {
+                    Image(fallbackImageName)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    color
+                }
+            }
+            .aspectRatio(JournalOpeningBook.compactAspectRatio, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .clipped()
+
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.black.opacity(coverImage != nil || fallbackImageName != nil ? 0.72 : 0.18)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            journalSpine
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.white)
+                    .lineLimit(1)
+
+                Text("\(entryCount) \(entryCount == 1 ? "entry" : "entries")")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.92))
+            }
+            .padding(.leading, 28)
+            .padding(.trailing, 12)
+            .padding(.bottom, 12)
+        }
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.homeBorder, lineWidth: 1)
+        )
+        .shadow(color: Color.storyInk.opacity(0.09), radius: 8, y: 4)
+    }
+
+    private var journalSpine: some View {
+        ZStack(alignment: .leading) {
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.42),
+                    Color.black.opacity(0.28),
+                    Color.black.opacity(0.16),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.white.opacity(0.26),
+                    Color.white.opacity(0.16),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 12.5)
+            .padding(.leading, 14.25)
+            .blendMode(.screen)
+        }
+        .frame(width: 22)
+        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct JournalColorOption: Identifiable {
+    let name: String
+    let hex: String
+
+    var id: String {
+        hex
+    }
+
+    var color: Color {
+        Color(hex: hex) ?? Color.storyPurple
+    }
+
+    static let all: [JournalColorOption] = [
+        JournalColorOption(name: "Indigo", hex: "#3D2678"),
+        JournalColorOption(name: "Berry", hex: "#7D2148"),
+        JournalColorOption(name: "Terracotta", hex: "#A24A35"),
+        JournalColorOption(name: "Gold", hex: "#B87522"),
+        JournalColorOption(name: "Moss", hex: "#245C48"),
+        JournalColorOption(name: "Teal", hex: "#16636C"),
+        JournalColorOption(name: "Ocean", hex: "#214D83"),
+        JournalColorOption(name: "Violet", hex: "#683BA0"),
+        JournalColorOption(name: "Charcoal", hex: "#2E3142"),
+        JournalColorOption(name: "Rose", hex: "#B45467")
+    ]
+
+    static func hexString(for color: Color) -> String {
+        UIColor(color).storytopiaHexString ?? "#3D2678"
     }
 }
 
@@ -5439,6 +5796,7 @@ struct EntriesView: View {
                 } label: {
                     EntryListRow(
                         entry: entry,
+                        sortOption: selectedEntrySort,
                         category: category,
                         completedStoryboardImage: category == .completed
                             ? .asset(CompletedStoryboardSample.imageName(for: completedSampleFallbackIndex(for: entry)))
@@ -5473,6 +5831,7 @@ struct EntriesView: View {
                 } label: {
                     EntryListRow(
                         entry: displayEntry,
+                        sortOption: selectedEntrySort,
                         category: categoryForEntryItem(item),
                         completedStoryboardImage: isCompleted ? storyboardImage(for: item, fallbackIndex: completedFallbackIndex) : nil,
                         isSelecting: editMode == .active,
@@ -6915,6 +7274,7 @@ private struct EntrySamplePreview: View {
 
 private struct EntryListRow: View {
     let entry: CreateEntryDraft
+    let sortOption: EntrySortOption
     var category: EntriesTab?
     var completedStoryboardImage: CompletedStoryboardImage?
     var isSelecting = false
@@ -7017,8 +7377,7 @@ private struct EntryListRow: View {
     }
 
     private var entryDateText: String {
-        let displayDate = entry.datePrecision == .noDate ? entry.createdAt : entry.date
-        return displayDate.formatted(date: .abbreviated, time: .omitted)
+        entryPreviewDateText(entry, sortOption: sortOption)
     }
 }
 
@@ -7817,9 +8176,9 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
         case .entryDate:
             return "Story Date"
         case .cloudCreated:
-            return "Created At"
+            return "Date Created"
         case .updated:
-            return "Last Updated"
+            return "Recently Updated"
         }
     }
 
@@ -7828,9 +8187,9 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
         case .entryDate:
             return "Story Date"
         case .cloudCreated:
-            return "Created At"
+            return "Date Created"
         case .updated:
-            return "Last Updated"
+            return "Recently Updated"
         }
     }
 
@@ -10039,6 +10398,7 @@ enum UserChapterStore {
         let symbol: String
         let kind: String
         let colorHex: String?
+        let coverImageName: String?
         let createdAt: Date?
         let updatedAt: Date?
     }
@@ -10053,7 +10413,7 @@ enum UserChapterStore {
                 subtitle: record.subtitle,
                 color: color(for: record),
                 symbol: record.symbol,
-                coverImageName: nil,
+                coverImageName: record.coverImageName,
                 kind: record.kind == "storyboard" ? .storyboard : .journal,
                 isFavorite: false,
                 createdAt: record.createdAt ?? Date(),
@@ -10085,6 +10445,7 @@ enum UserChapterStore {
             symbol: chapter.symbol,
             kind: chapter.kind == .storyboard ? "storyboard" : "journal",
             colorHex: colorHex(for: chapter),
+            coverImageName: chapter.coverImageName,
             createdAt: chapter.createdAt,
             updatedAt: Date()
         )
@@ -10114,6 +10475,7 @@ enum UserChapterStore {
                 symbol: record.symbol,
                 kind: record.kind,
                 colorHex: record.colorHex,
+                coverImageName: record.coverImageName,
                 createdAt: record.createdAt,
                 updatedAt: Date()
             )
@@ -10128,13 +10490,16 @@ enum UserChapterStore {
 
     static func replace(with chapters: [PrototypeChapter]) {
         let updatedRecords = chapters.map { chapter in
-            Record(
+            let existingRecord = record(for: chapter)
+
+            return Record(
                 id: chapter.id,
                 title: chapter.title,
                 subtitle: chapter.subtitle,
                 symbol: chapter.symbol,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 colorHex: colorHex(for: chapter),
+                coverImageName: chapter.coverImageName ?? existingRecord?.coverImageName,
                 createdAt: chapter.createdAt,
                 updatedAt: chapter.updatedAt
             )
@@ -10170,6 +10535,7 @@ enum UserChapterStore {
                 symbol: record.symbol,
                 kind: record.kind,
                 colorHex: record.colorHex,
+                coverImageName: record.coverImageName,
                 createdAt: record.createdAt,
                 updatedAt: now
             )
@@ -10184,6 +10550,32 @@ enum UserChapterStore {
 
     static func id(for title: String) -> UUID? {
         records.first { $0.title == title }?.id
+    }
+
+    static func updateAppearance(id: UUID, color: Color, coverImageName: String?) {
+        let updatedRecords = records.map { record in
+            guard (record.id ?? stableID(for: record.title, occurrence: 0)) == id else {
+                return record
+            }
+
+            return Record(
+                id: record.id ?? id,
+                title: record.title,
+                subtitle: record.subtitle,
+                symbol: record.symbol,
+                kind: record.kind,
+                colorHex: colorHex(for: color),
+                coverImageName: coverImageName,
+                createdAt: record.createdAt,
+                updatedAt: Date()
+            )
+        }
+
+        guard let data = try? JSONEncoder().encode(updatedRecords) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: storageKey)
     }
 
     static func syncToCloud(_ chapter: PrototypeChapter) {
@@ -10283,6 +10675,16 @@ enum UserChapterStore {
         loadMigratedRecords()
     }
 
+    private static func record(for chapter: PrototypeChapter) -> Record? {
+        records.first {
+            if let id = $0.id, id == chapter.id {
+                return true
+            }
+
+            return $0.title == chapter.title
+        }
+    }
+
     private static func loadMigratedRecords() -> [Record] {
         guard
             let data = UserDefaults.standard.data(forKey: storageKey),
@@ -10321,6 +10723,7 @@ enum UserChapterStore {
                 symbol: record.symbol,
                 kind: record.kind,
                 colorHex: record.colorHex,
+                coverImageName: record.coverImageName,
                 createdAt: record.createdAt,
                 updatedAt: record.updatedAt ?? record.createdAt ?? Date()
             )
@@ -10353,7 +10756,11 @@ enum UserChapterStore {
     }
 
     private static func colorHex(for chapter: PrototypeChapter) -> String {
-        UIColor(chapter.color).storytopiaHexString ?? "#3D2678"
+        colorHex(for: chapter.color)
+    }
+
+    private static func colorHex(for color: Color) -> String {
+        UIColor(color).storytopiaHexString ?? "#3D2678"
     }
 
     private static func displayOrder(for title: String) -> Int {

@@ -1584,12 +1584,14 @@ struct CreateEntryView: View {
                 .presentationBackground(.clear)
             }
         }
-        .fullScreenCover(isPresented: $isPreviewingCompletedStoryboard) {
+        .sheet(isPresented: $isPreviewingCompletedStoryboard) {
             if let completedEntryOpenedStoryboardImage {
                 ReferencePhotoViewer(image: completedEntryOpenedStoryboardImage) {
                     isPreviewingCompletedStoryboard = false
                 }
                 .presentationBackground(.clear)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
             }
         }
     }
@@ -2937,8 +2939,6 @@ struct CreateEntryView: View {
                     .frame(maxWidth: .infinity, minHeight: scrollContentHeight, maxHeight: .infinity)
 
                     VStack(alignment: .leading, spacing: 0) {
-                        completedEntryStoryboardHeader(containerWidth: proxy.size.width)
-
                         NotebookEditorContent(
                             storyTitle: $storyTitle,
                             entryText: $entryText,
@@ -2977,6 +2977,8 @@ struct CreateEntryView: View {
                         )
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                    completedEntryStoryboardHeader(containerWidth: proxy.size.width)
                 }
                 .frame(maxWidth: .infinity, minHeight: scrollContentHeight)
             }
@@ -3007,35 +3009,44 @@ struct CreateEntryView: View {
     @ViewBuilder
     private func completedEntryStoryboardHeader(containerWidth: CGFloat) -> some View {
         if let completedEntryOpenedStoryboardImage {
-            let imageWidth = containerWidth * 0.95
+            let imageWidth = min(containerWidth * 0.34, 180)
             let aspectRatio = max(completedEntryOpenedStoryboardImage.size.width / completedEntryOpenedStoryboardImage.size.height, 0.1)
             let imageHeight = imageWidth / aspectRatio
-            let desiredHeight = imageHeight + 40
-            let alignedHeight = ceil(desiredHeight / NotebookMetrics.ruleSpacing) * NotebookMetrics.ruleSpacing
 
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 Image(uiImage: completedEntryOpenedStoryboardImage)
                     .resizable()
                     .scaledToFit()
                     .frame(width: imageWidth, height: imageHeight)
                     .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .stroke(Color.white.opacity(0.78), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.white.opacity(0.82), lineWidth: 1)
                     )
+                    .shadow(color: Color.storyInk.opacity(0.08), radius: 3, y: 1)
+                    .zIndex(1)
 
-                StoryPhotoTape(width: 70, height: 18, rotation: -2)
-                    .offset(y: -(imageHeight / 2))
+                Image(systemName: "paperclip")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.74, green: 0.76, blue: 0.82))
+                    .rotationEffect(.degrees(-34))
+                    .shadow(color: Color.white.opacity(0.75), radius: 1, y: 1)
+                    .shadow(color: Color.storyInk.opacity(0.12), radius: 1, y: 1)
+                    .offset(x: 1, y: -13)
+                    .zIndex(2)
             }
-            .shadow(color: Color.storyInk.opacity(0.16), radius: 7, y: 4)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 28)
-            .frame(height: alignedHeight, alignment: .top)
+            .frame(width: imageWidth, height: imageHeight)
             .contentShape(Rectangle())
             .onTapGesture {
                 isPreviewingCompletedStoryboard = true
             }
+            .rotationEffect(.degrees(2))
+            .shadow(color: Color.storyInk.opacity(0.16), radius: 7, y: 4)
+            .frame(maxWidth: .infinity, alignment: .topTrailing)
+            .padding(.top, 24)
+            .padding(.trailing, 20)
+            .zIndex(3)
             .accessibilityLabel("Open storyboard full screen")
             .accessibilityAddTraits(.isButton)
         }
@@ -8873,7 +8884,7 @@ struct ReferencePhotoViewer: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 38, height: 38)
-                    .background(Color.storyPurple.opacity(0.94), in: Circle())
+                    .background(.gray.opacity(0.62), in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close photo viewer")
