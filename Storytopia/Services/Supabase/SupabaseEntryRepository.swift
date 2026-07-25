@@ -124,6 +124,164 @@ struct JournalEntryUpdate: Encodable, Sendable {
     let status: String?
 }
 
+enum JournalCoverSource: String, Codable, Sendable {
+    case color
+    case asset
+    case local
+    case unsplash
+}
+
+struct JournalRemoteCover: Codable, Equatable, Sendable {
+    let source: JournalCoverSource
+    let imageURL: String
+    let thumbnailURL: String?
+    let attributionName: String?
+    let attributionURL: String?
+    let downloadLocation: String?
+
+    var imageNSURL: URL? {
+        URL(string: imageURL)
+    }
+
+    var thumbnailNSURL: URL? {
+        thumbnailURL.flatMap(URL.init(string:))
+    }
+}
+
+struct UnsplashCoverPhoto: Identifiable, Codable, Equatable, Sendable {
+    let id: String
+    let colorHex: String?
+    let imageURL: String
+    let thumbnailURL: String
+    let attributionName: String
+    let attributionURL: String
+    let downloadLocation: String
+}
+
+enum UnsplashCoverServiceError: LocalizedError {
+    case misconfigured
+    case invalidResponse
+    case requestFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .misconfigured:
+            return "Unsplash covers are not configured yet."
+        case .invalidResponse:
+            return "Unsplash covers could not be loaded."
+        case .requestFailed(let message):
+            return message
+        }
+    }
+}
+
+struct UnsplashCoverService {
+    private struct CoverFunctionRequest: Encodable {
+        let action: String
+        let query: String?
+        let page: Int?
+        let perPage: Int?
+        let downloadLocation: String?
+
+        enum CodingKeys: String, CodingKey {
+            case action
+            case query
+            case page
+            case perPage = "per_page"
+            case downloadLocation = "download_location"
+        }
+    }
+
+    private struct SearchResponse: Decodable {
+        let results: [UnsplashCoverPhoto]
+    }
+
+    private struct ErrorResponse: Decodable {
+        let error: String?
+    }
+
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func search(query: String, page: Int = 1, perPage: Int = 18) async throws -> [UnsplashCoverPhoto] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            return []
+        }
+
+        let request = CoverFunctionRequest(
+            action: "search",
+            query: trimmedQuery,
+            page: page,
+            perPage: perPage,
+            downloadLocation: nil
+        )
+
+        return try await perform(request, responseType: SearchResponse.self).results
+    }
+
+    func trackDownload(for photo: UnsplashCoverPhoto) async throws {
+        try await trackDownload(downloadLocation: photo.downloadLocation)
+    }
+
+    func trackDownload(downloadLocation: String) async throws {
+        let request = CoverFunctionRequest(
+            action: "track_download",
+            query: nil,
+            page: nil,
+            perPage: nil,
+            downloadLocation: downloadLocation
+        )
+
+        _ = try await perform(request, responseType: EmptyResponse.self)
+    }
+
+    private func perform<Response: Decodable>(
+        _ payload: CoverFunctionRequest,
+        responseType: Response.Type
+    ) async throws -> Response {
+        let request = try coverFunctionRequest(payload)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw UnsplashCoverServiceError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data).error)
+                ?? UnsplashCoverServiceError.invalidResponse.localizedDescription
+            throw UnsplashCoverServiceError.requestFailed(message)
+        }
+
+        do {
+            return try JSONDecoder().decode(Response.self, from: data)
+        } catch {
+            throw UnsplashCoverServiceError.invalidResponse
+        }
+    }
+
+    private func coverFunctionRequest(_ payload: CoverFunctionRequest) throws -> URLRequest {
+        let projectURL = try StorytopiaSupabaseConfig.projectURL
+        let anonKey = try StorytopiaSupabaseConfig.anonKey
+        let functionURL = projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("unsplash-cover")
+
+        var request = URLRequest(url: functionURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try JSONEncoder().encode(payload)
+        return request
+    }
+}
+
+private struct EmptyResponse: Decodable {}
+
 struct StoryJournal: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let userID: UUID
@@ -132,6 +290,12 @@ struct StoryJournal: Identifiable, Codable, Equatable, Sendable {
     let colorHex: String?
     let symbol: String?
     let coverStoragePath: String?
+    let coverSource: String?
+    let coverImageURL: String?
+    let coverThumbURL: String?
+    let coverAttributionName: String?
+    let coverAttributionURL: String?
+    let coverDownloadLocation: String?
     let kind: String
     let isFavorite: Bool
     let displayOrder: Int
@@ -146,6 +310,12 @@ struct StoryJournal: Identifiable, Codable, Equatable, Sendable {
         case colorHex = "color_hex"
         case symbol
         case coverStoragePath = "cover_storage_path"
+        case coverSource = "cover_source"
+        case coverImageURL = "cover_image_url"
+        case coverThumbURL = "cover_thumb_url"
+        case coverAttributionName = "cover_attribution_name"
+        case coverAttributionURL = "cover_attribution_url"
+        case coverDownloadLocation = "cover_download_location"
         case kind
         case isFavorite = "is_favorite"
         case displayOrder = "display_order"
@@ -161,6 +331,12 @@ private struct StoryJournalPayload: Encodable, Sendable {
     let subtitle: String?
     let colorHex: String?
     let symbol: String?
+    let coverSource: String?
+    let coverImageURL: String?
+    let coverThumbURL: String?
+    let coverAttributionName: String?
+    let coverAttributionURL: String?
+    let coverDownloadLocation: String?
     let kind: String
     let isFavorite: Bool
     let displayOrder: Int
@@ -172,6 +348,12 @@ private struct StoryJournalPayload: Encodable, Sendable {
         case subtitle
         case colorHex = "color_hex"
         case symbol
+        case coverSource = "cover_source"
+        case coverImageURL = "cover_image_url"
+        case coverThumbURL = "cover_thumb_url"
+        case coverAttributionName = "cover_attribution_name"
+        case coverAttributionURL = "cover_attribution_url"
+        case coverDownloadLocation = "cover_download_location"
         case kind
         case isFavorite = "is_favorite"
         case displayOrder = "display_order"
@@ -309,6 +491,7 @@ struct SupabaseJournalRepository {
         subtitle: String?,
         colorHex: String?,
         symbol: String?,
+        remoteCover: JournalRemoteCover? = nil,
         kind: String,
         isFavorite: Bool,
         displayOrder: Int
@@ -327,6 +510,12 @@ struct SupabaseJournalRepository {
                         subtitle: subtitle?.trimmedOrNil,
                         colorHex: colorHex?.trimmedOrNil,
                         symbol: symbol?.trimmedOrNil,
+                        coverSource: remoteCover?.source.rawValue,
+                        coverImageURL: remoteCover?.imageURL.trimmedOrNil,
+                        coverThumbURL: remoteCover?.thumbnailURL?.trimmedOrNil,
+                        coverAttributionName: remoteCover?.attributionName?.trimmedOrNil,
+                        coverAttributionURL: remoteCover?.attributionURL?.trimmedOrNil,
+                        coverDownloadLocation: remoteCover?.downloadLocation?.trimmedOrNil,
                         kind: kind,
                         isFavorite: isFavorite,
                         displayOrder: displayOrder

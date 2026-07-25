@@ -292,7 +292,8 @@ struct JournalView: View {
                 ForEach(Array(sortedChapters.enumerated()), id: \.element.id) { index, chapter in
                     JournalCoverCard(
                         chapter: chapter,
-                        coverImage: JournalCoverStore.image(for: chapter.title),
+                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                        remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                         fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
                         isEditing: editMode == .active,
                         onCustomize: { beginCustomizing(chapter) },
@@ -337,6 +338,7 @@ struct JournalView: View {
                         JournalOpeningBook(
                             chapter: openingJournal.chapter,
                             coverImage: openingJournal.coverImage,
+                            remoteCoverURL: openingJournal.remoteCoverURL,
                             fallbackImageName: openingJournal.fallbackImageName,
                             isOpen: isJournalOpening,
                             pagesExpanded: areJournalPagesExpanded
@@ -392,7 +394,8 @@ struct JournalView: View {
             } label: {
                 JournalChapterListRow(
                     chapter: chapter,
-                    coverImage: JournalCoverStore.image(for: chapter.title),
+                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                    remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                     fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index)
                 )
             }
@@ -493,6 +496,7 @@ struct JournalView: View {
             color: customization.color,
             symbol: chapters[index].symbol,
             coverImageName: customization.coverImageName,
+            remoteCover: customization.remoteCover,
             kind: chapters[index].kind,
             isFavorite: chapters[index].isFavorite,
             createdAt: chapters[index].createdAt,
@@ -504,7 +508,8 @@ struct JournalView: View {
         UserChapterStore.updateAppearance(
             id: updatedChapter.id,
             color: updatedChapter.color,
-            coverImageName: updatedChapter.coverImageName
+            coverImageName: updatedChapter.coverImageName,
+            remoteCover: updatedChapter.remoteCover
         )
         UserChapterStore.syncToCloud(updatedChapter)
         journalBeingCustomized = nil
@@ -625,7 +630,8 @@ struct JournalView: View {
         let context = JournalOpeningContext(
             chapter: chapter,
             dayOffset: dayOffset,
-            coverImage: JournalCoverStore.image(for: chapter.title),
+            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+            remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
             fallbackImageName: fallbackCoverImageName(for: chapter, at: dayOffset)
         )
 
@@ -880,10 +886,32 @@ private struct JournalOpeningContext: Identifiable {
     let chapter: PrototypeChapter
     let dayOffset: Int
     let coverImage: UIImage?
+    let remoteCoverURL: URL?
     let fallbackImageName: String?
 
     var id: UUID {
         chapter.id
+    }
+}
+
+private extension StoryJournal {
+    var remoteCover: JournalRemoteCover? {
+        guard
+            coverSource == JournalCoverSource.unsplash.rawValue,
+            let coverImageURL,
+            !coverImageURL.isEmpty
+        else {
+            return nil
+        }
+
+        return JournalRemoteCover(
+            source: .unsplash,
+            imageURL: coverImageURL,
+            thumbnailURL: coverThumbURL,
+            attributionName: coverAttributionName,
+            attributionURL: coverAttributionURL,
+            downloadLocation: coverDownloadLocation
+        )
     }
 }
 
@@ -892,6 +920,7 @@ private struct JournalOpeningBook: View {
 
     let chapter: PrototypeChapter
     let coverImage: UIImage?
+    let remoteCoverURL: URL?
     let fallbackImageName: String?
     let isOpen: Bool
     let pagesExpanded: Bool
@@ -973,6 +1002,8 @@ private struct JournalOpeningBook: View {
                     Image(uiImage: coverImage)
                         .resizable()
                         .scaledToFill()
+                } else if let remoteCoverURL {
+                    RemoteCoverImage(url: remoteCoverURL, placeholderColor: chapter.color)
                 } else if let fallbackImageName {
                     Image(fallbackImageName)
                         .resizable()
@@ -1022,6 +1053,7 @@ private struct JournalOpeningBook: View {
 private struct JournalCoverCard: View {
     let chapter: PrototypeChapter
     let coverImage: UIImage?
+    let remoteCoverURL: URL?
     let fallbackImageName: String?
     let isEditing: Bool
     let onCustomize: () -> Void
@@ -1133,7 +1165,7 @@ private struct JournalCoverCard: View {
     }
 
     private var hasImageCover: Bool {
-        coverImage != nil || fallbackImageName != nil
+        coverImage != nil || remoteCoverURL != nil || fallbackImageName != nil
     }
 
     @ViewBuilder
@@ -1142,6 +1174,8 @@ private struct JournalCoverCard: View {
             Image(uiImage: coverImage)
                 .resizable()
                 .scaledToFill()
+        } else if let remoteCoverURL {
+            RemoteCoverImage(url: remoteCoverURL, placeholderColor: chapter.color)
         } else if let fallbackImageName {
             Image(fallbackImageName)
                 .resizable()
@@ -1188,6 +1222,7 @@ private struct JournalCustomization {
     let chapterID: UUID
     let color: Color
     let coverImageName: String?
+    let remoteCover: JournalRemoteCover?
 }
 
 private struct JournalCustomizationSheet: View {
@@ -1196,6 +1231,14 @@ private struct JournalCustomizationSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedColorHex: String
     @State private var selectedCoverImageName: String?
+    @State private var selectedRemoteCover: JournalRemoteCover?
+    @State private var unsplashQuery: String
+    @State private var unsplashPhotos: [UnsplashCoverPhoto] = []
+    @State private var unsplashResultsCache: [String: [UnsplashCoverPhoto]] = [:]
+    @State private var isSearchingUnsplash = false
+    @State private var unsplashErrorMessage: String?
+    @FocusState private var isUnsplashSearchFocused: Bool
+    private let unsplashService = UnsplashCoverService()
 
     init(
         chapter: PrototypeChapter,
@@ -1205,17 +1248,40 @@ private struct JournalCustomizationSheet: View {
         self.onSave = onSave
         _selectedColorHex = State(initialValue: JournalColorOption.hexString(for: chapter.color))
         _selectedCoverImageName = State(initialValue: chapter.coverImageName)
+        _selectedRemoteCover = State(initialValue: chapter.remoteCover)
+        _unsplashQuery = State(initialValue: "")
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    preview
-                    colorSection
-                    coverSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        preview
+                        colorSection
+                        coverSection
+                    }
+                    .padding(18)
+                    .padding(.bottom, isUnsplashSearchFocused ? 180 : 24)
                 }
-                .padding(18)
+                .scrollDismissesKeyboard(.interactively)
+                .background {
+                    Color.homePageBackground
+                        .onTapGesture {
+                            isUnsplashSearchFocused = false
+                        }
+                }
+                .onChange(of: isUnsplashSearchFocused) { isFocused in
+                    guard isFocused else {
+                        return
+                    }
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo("unsplash-search-field", anchor: .center)
+                        }
+                    }
+                }
             }
             .background(Color.homePageBackground)
             .navigationTitle("Journal Cover")
@@ -1229,14 +1295,30 @@ private struct JournalCustomizationSheet: View {
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
+                        let remoteCover = selectedRemoteCover
                         onSave(
                             JournalCustomization(
                                 chapterID: chapter.id,
                                 color: selectedColor,
-                                coverImageName: selectedCoverImageName
+                                coverImageName: selectedCoverImageName,
+                                remoteCover: remoteCover
                             )
                         )
+                        if let downloadLocation = remoteCover?.downloadLocation {
+                            Task {
+                                try? await unsplashService.trackDownload(downloadLocation: downloadLocation)
+                            }
+                        }
                         dismiss()
+                    }
+                    .fontWeight(.bold)
+                }
+
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+
+                    Button("Done") {
+                        isUnsplashSearchFocused = false
                     }
                     .fontWeight(.bold)
                 }
@@ -1258,14 +1340,34 @@ private struct JournalCustomizationSheet: View {
     }
 
     private var preview: some View {
-        JournalCoverPreview(
-            title: chapter.title,
-            entryCount: chapter.entries.count,
-            color: selectedColor,
-            coverImage: JournalCoverStore.image(for: chapter.title),
-            fallbackImageName: selectedCoverImageName
-        )
-        .frame(maxWidth: 210)
+        VStack(spacing: 8) {
+            JournalCoverPreview(
+                title: chapter.title,
+                entryCount: chapter.entries.count,
+                color: selectedColor,
+                coverImage: selectedRemoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                remoteCoverURL: selectedRemoteCover?.thumbnailNSURL ?? selectedRemoteCover?.imageNSURL,
+                fallbackImageName: selectedCoverImageName,
+                attributionName: selectedRemoteCover?.attributionName
+            )
+            .frame(maxWidth: 210)
+
+            Group {
+                if
+                    let attributionName = selectedRemoteCover?.attributionName,
+                    let attributionURL = selectedRemoteCover?.attributionURL,
+                    let url = URL(string: attributionURL)
+                {
+                    Link("Photo by \(attributionName) on Unsplash", destination: url)
+                        .foregroundStyle(Color.homeAccent)
+                } else {
+                    Text(" ")
+                        .foregroundStyle(Color.clear)
+                }
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .frame(height: 16)
+        }
         .frame(maxWidth: .infinity)
     }
 
@@ -1314,6 +1416,7 @@ private struct JournalCustomizationSheet: View {
 
                 Button("Use Color") {
                     selectedCoverImageName = nil
+                    selectedRemoteCover = nil
                 }
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(Color.homeAccent)
@@ -1341,8 +1444,10 @@ private struct JournalCustomizationSheet: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
                     ForEach(coverImageCandidates, id: \.self) { imageName in
                         Button {
-                            selectedCoverImageName = imageName
+                            selectStoryboardCoverImage(named: imageName)
                         } label: {
+                            let isSelected = selectedCoverImageName == imageName && selectedRemoteCover == nil
+
                             Image(imageName)
                                 .resizable()
                                 .scaledToFill()
@@ -1352,9 +1457,15 @@ private struct JournalCustomizationSheet: View {
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                                         .stroke(
-                                            selectedCoverImageName == imageName ? Color.homeAccent : Color.white.opacity(0.9),
-                                            lineWidth: selectedCoverImageName == imageName ? 3 : 1
+                                            isSelected ? Color.homeAccent : Color.white.opacity(0.9),
+                                            lineWidth: 2
                                         )
+                                }
+                                .overlay(alignment: .topTrailing) {
+                                    if isSelected {
+                                        selectedCoverBadge
+                                            .padding(6)
+                                    }
                                 }
                         }
                         .buttonStyle(.plain)
@@ -1362,6 +1473,196 @@ private struct JournalCustomizationSheet: View {
                     }
                 }
             }
+
+            unsplashSection
+        }
+    }
+
+    private var unsplashSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Unsplash")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyInk)
+
+            HStack(spacing: 8) {
+                TextField("Search cover photos", text: $unsplashQuery)
+                    .focused($isUnsplashSearchFocused)
+                    .textInputAutocapitalization(.words)
+                    .submitLabel(.search)
+                    .onSubmit {
+                        searchUnsplash()
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 40)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.homeBorder, lineWidth: 1)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                Button {
+                    searchUnsplash()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 40)
+                        .background(Color.homeAccent, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSearchingUnsplash)
+                .accessibilityLabel("Search Unsplash")
+            }
+            .frame(height: 40)
+            .id("unsplash-search-field")
+            .zIndex(2)
+
+            if isSearchingUnsplash {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+            } else if let unsplashErrorMessage {
+                Text(unsplashErrorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.storyRose)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if unsplashPhotos.isEmpty {
+                Text("Search Unsplash when you're ready to browse cover photos.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.homeMutedText)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                    ForEach(unsplashPhotos) { photo in
+                        Button {
+                            selectUnsplashPhoto(photo)
+                        } label: {
+                            let isSelected = selectedRemoteCover?.imageURL == photo.imageURL
+
+                            ZStack(alignment: .bottomLeading) {
+                                Group {
+                                    if let thumbnailURL = URL(string: photo.thumbnailURL) {
+                                        RemoteCoverImage(url: thumbnailURL, placeholderColor: Color.homeCardGray)
+                                    } else {
+                                        Color.homeCardGray
+                                    }
+                                }
+                                .frame(height: 96)
+                                .frame(maxWidth: .infinity)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                                Text(photo.attributionName)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .lineLimit(1)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.black.opacity(0.38))
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(
+                                        isSelected ? Color.homeAccent : Color.white.opacity(0.9),
+                                        lineWidth: 2
+                                    )
+                            }
+                            .overlay(alignment: .topTrailing) {
+                                if isSelected {
+                                    selectedCoverBadge
+                                        .padding(6)
+                                }
+                            }
+                            .frame(height: 96)
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Use Unsplash photo by \(photo.attributionName)")
+                    }
+                }
+                .padding(.top, 2)
+                .zIndex(1)
+            }
+        }
+    }
+
+    private var selectedCoverBadge: some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 11, weight: .heavy))
+            .foregroundStyle(.white)
+            .frame(width: 24, height: 24)
+            .background(Color.homeAccent, in: Circle())
+            .overlay(
+                Circle()
+                    .stroke(Color.white, lineWidth: 2)
+            )
+            .shadow(color: Color.storyInk.opacity(0.22), radius: 4, y: 2)
+    }
+
+    private func searchUnsplash() {
+        let query = unsplashQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, !isSearchingUnsplash else {
+            return
+        }
+        isUnsplashSearchFocused = false
+        let cacheKey = normalizedUnsplashQuery(query)
+
+        if let cachedPhotos = unsplashResultsCache[cacheKey] {
+            unsplashPhotos = cachedPhotos
+            unsplashErrorMessage = nil
+            return
+        }
+
+        isSearchingUnsplash = true
+        unsplashErrorMessage = nil
+
+        Task {
+            do {
+                let photos = try await unsplashService.search(query: query)
+                await MainActor.run {
+                    unsplashPhotos = photos
+                    unsplashResultsCache[cacheKey] = photos
+                    isSearchingUnsplash = false
+                }
+            } catch {
+                await MainActor.run {
+                    unsplashErrorMessage = error.localizedDescription
+                    isSearchingUnsplash = false
+                }
+            }
+        }
+    }
+
+    private func normalizedUnsplashQuery(_ query: String) -> String {
+        query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func selectStoryboardCoverImage(named imageName: String) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            selectedCoverImageName = imageName
+            selectedRemoteCover = nil
+        }
+    }
+
+    private func selectUnsplashPhoto(_ photo: UnsplashCoverPhoto) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            selectedCoverImageName = nil
+            selectedRemoteCover = JournalRemoteCover(
+                source: .unsplash,
+                imageURL: photo.imageURL,
+                thumbnailURL: photo.thumbnailURL,
+                attributionName: photo.attributionName,
+                attributionURL: photo.attributionURL,
+                downloadLocation: photo.downloadLocation
+            )
         }
     }
 }
@@ -1371,7 +1672,9 @@ private struct JournalCoverPreview: View {
     let entryCount: Int
     let color: Color
     let coverImage: UIImage?
+    let remoteCoverURL: URL?
     let fallbackImageName: String?
+    let attributionName: String?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -1380,6 +1683,8 @@ private struct JournalCoverPreview: View {
                     Image(uiImage: coverImage)
                         .resizable()
                         .scaledToFill()
+                } else if let remoteCoverURL {
+                    RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
                 } else if let fallbackImageName {
                     Image(fallbackImageName)
                         .resizable()
@@ -1395,7 +1700,7 @@ private struct JournalCoverPreview: View {
             LinearGradient(
                 colors: [
                     Color.clear,
-                    Color.black.opacity(coverImage != nil || fallbackImageName != nil ? 0.72 : 0.18)
+                    Color.black.opacity(coverImage != nil || remoteCoverURL != nil || fallbackImageName != nil ? 0.72 : 0.18)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -1412,6 +1717,13 @@ private struct JournalCoverPreview: View {
                 Text("\(entryCount) \(entryCount == 1 ? "entry" : "entries")")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.92))
+
+                if let attributionName {
+                    Text("Photo by \(attributionName) on Unsplash")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.86))
+                        .lineLimit(1)
+                }
             }
             .padding(.leading, 28)
             .padding(.trailing, 12)
@@ -1457,6 +1769,73 @@ private struct JournalCoverPreview: View {
         .frame(maxHeight: .infinity)
         .frame(maxWidth: .infinity, alignment: .leading)
         .allowsHitTesting(false)
+    }
+}
+
+private struct RemoteCoverImage: View {
+    let url: URL
+    let placeholderColor: Color
+    @State private var loadedImage: UIImage?
+    @State private var loadedURL: URL?
+
+    var body: some View {
+        Group {
+            if let loadedImage, loadedURL == url {
+                Image(uiImage: loadedImage)
+                    .resizable()
+                    .scaledToFill()
+            } else if let cachedImage = JournalRemoteCoverImageCache.image(for: url) {
+                Image(uiImage: cachedImage)
+                    .resizable()
+                    .scaledToFill()
+                    .onAppear {
+                        loadedImage = cachedImage
+                        loadedURL = url
+                    }
+            } else {
+                placeholderColor
+                    .task(id: url) {
+                        await loadImage()
+                    }
+            }
+        }
+    }
+
+    private func loadImage() async {
+        if let cachedImage = JournalRemoteCoverImageCache.image(for: url) {
+            loadedImage = cachedImage
+            loadedURL = url
+            return
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard
+                let httpResponse = response as? HTTPURLResponse,
+                (200..<300).contains(httpResponse.statusCode),
+                let image = UIImage(data: data)
+            else {
+                return
+            }
+
+            JournalRemoteCoverImageCache.save(image, for: url)
+            loadedImage = image
+            loadedURL = url
+        } catch {
+            return
+        }
+    }
+}
+
+private enum JournalRemoteCoverImageCache {
+    private static let cache = NSCache<NSURL, UIImage>()
+
+    static func image(for url: URL) -> UIImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    static func save(_ image: UIImage, for url: URL) {
+        cache.setObject(image, forKey: url as NSURL)
     }
 }
 
@@ -1754,7 +2133,8 @@ struct ClassicJournalView: View {
             } label: {
                 JournalChapterListRow(
                     chapter: chapter,
-                    coverImage: nil,
+                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                    remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                     fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index)
                 )
             }
@@ -4630,6 +5010,7 @@ enum DailyJournalData {
             color: chapter.color,
             symbol: "calendar",
             coverImageName: chapter.coverImageName,
+            remoteCover: chapter.remoteCover,
             kind: .journal,
             isFavorite: chapter.isFavorite,
             createdAt: chapter.createdAt,
@@ -8250,6 +8631,7 @@ private enum JournalChapterListMetrics {
 private struct JournalChapterListRow: View {
     let chapter: PrototypeChapter
     let coverImage: UIImage?
+    let remoteCoverURL: URL?
     let fallbackImageName: String?
 
     var body: some View {
@@ -8257,6 +8639,7 @@ private struct JournalChapterListRow: View {
             JournalListCover(
                 color: chapter.color,
                 coverImage: coverImage,
+                remoteCoverURL: remoteCoverURL,
                 fallbackImageName: fallbackImageName,
                 width: JournalChapterListMetrics.coverWidth,
                 height: JournalChapterListMetrics.coverHeight
@@ -8288,6 +8671,7 @@ private struct JournalChapterListRow: View {
 private struct JournalListCover: View {
     let color: Color
     let coverImage: UIImage?
+    let remoteCoverURL: URL?
     let fallbackImageName: String?
     var width: CGFloat
     var height: CGFloat
@@ -8309,6 +8693,10 @@ private struct JournalListCover: View {
                     .scaledToFill()
                     .overlay(Color.black.opacity(0.12))
                     .clipped()
+            } else if let remoteCoverURL {
+                RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
+                .overlay(Color.black.opacity(0.12))
+                .clipped()
             } else if let fallbackImageName {
                 Image(fallbackImageName)
                     .resizable()
@@ -8365,6 +8753,8 @@ private struct JournalListCover: View {
 private struct NotebookCover: View {
     let color: Color
     let symbol: String?
+    var coverImage: UIImage?
+    var remoteCoverURL: URL?
     let imageName: String?
     var width: CGFloat = 48
     var height: CGFloat = 58
@@ -8374,7 +8764,17 @@ private struct NotebookCover: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(color)
 
-            if let imageName {
+            if let coverImage {
+                Image(uiImage: coverImage)
+                    .resizable()
+                    .scaledToFill()
+                    .overlay(Color.black.opacity(0.12))
+                    .clipped()
+            } else if let remoteCoverURL {
+                RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
+                .overlay(Color.black.opacity(0.12))
+                .clipped()
+            } else if let imageName {
                 Image(imageName)
                     .resizable()
                     .scaledToFill()
@@ -8582,7 +8982,9 @@ private struct PrototypeChapterDetailView: View {
             NotebookCover(
                 color: chapter.color,
                 symbol: nil,
-                imageName: nil,
+                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
+                imageName: chapter.coverImageName,
                 width: 122,
                 height: 158
             )
@@ -10198,6 +10600,7 @@ struct PrototypeChapter: Identifiable {
     let color: Color
     let symbol: String
     let coverImageName: String?
+    let remoteCover: JournalRemoteCover?
     let kind: Kind
     let isFavorite: Bool
     let createdAt: Date
@@ -10219,6 +10622,7 @@ struct PrototypeChapter: Identifiable {
         color: Color,
         symbol: String,
         coverImageName: String?,
+        remoteCover: JournalRemoteCover? = nil,
         kind: Kind,
         isFavorite: Bool,
         createdAt: Date = Date(),
@@ -10231,6 +10635,7 @@ struct PrototypeChapter: Identifiable {
         self.color = color
         self.symbol = symbol
         self.coverImageName = coverImageName
+        self.remoteCover = remoteCover
         self.kind = kind
         self.isFavorite = isFavorite
         self.createdAt = createdAt
@@ -10246,6 +10651,7 @@ struct PrototypeChapter: Identifiable {
             color: cloudJournal.colorHex.flatMap(Color.init(hex:)) ?? Color.storyPurple,
             symbol: cloudJournal.symbol ?? "book.closed.fill",
             coverImageName: nil,
+            remoteCover: cloudJournal.remoteCover,
             kind: cloudJournal.kind == "storyboard" ? .storyboard : .journal,
             isFavorite: cloudJournal.isFavorite,
             createdAt: cloudJournal.createdAt,
@@ -10262,6 +10668,7 @@ struct PrototypeChapter: Identifiable {
             color: color,
             symbol: symbol,
             coverImageName: coverImageName,
+            remoteCover: remoteCover,
             kind: kind,
             isFavorite: isFavorite,
             createdAt: createdAt,
@@ -10399,6 +10806,7 @@ enum UserChapterStore {
         let kind: String
         let colorHex: String?
         let coverImageName: String?
+        let remoteCover: JournalRemoteCover?
         let createdAt: Date?
         let updatedAt: Date?
     }
@@ -10414,6 +10822,7 @@ enum UserChapterStore {
                 color: color(for: record),
                 symbol: record.symbol,
                 coverImageName: record.coverImageName,
+                remoteCover: record.remoteCover,
                 kind: record.kind == "storyboard" ? .storyboard : .journal,
                 isFavorite: false,
                 createdAt: record.createdAt ?? Date(),
@@ -10446,6 +10855,7 @@ enum UserChapterStore {
             kind: chapter.kind == .storyboard ? "storyboard" : "journal",
             colorHex: colorHex(for: chapter),
             coverImageName: chapter.coverImageName,
+            remoteCover: chapter.remoteCover,
             createdAt: chapter.createdAt,
             updatedAt: Date()
         )
@@ -10476,6 +10886,7 @@ enum UserChapterStore {
                 kind: record.kind,
                 colorHex: record.colorHex,
                 coverImageName: record.coverImageName,
+                remoteCover: record.remoteCover,
                 createdAt: record.createdAt,
                 updatedAt: Date()
             )
@@ -10500,6 +10911,7 @@ enum UserChapterStore {
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 colorHex: colorHex(for: chapter),
                 coverImageName: chapter.coverImageName ?? existingRecord?.coverImageName,
+                remoteCover: chapter.remoteCover ?? existingRecord?.remoteCover,
                 createdAt: chapter.createdAt,
                 updatedAt: chapter.updatedAt
             )
@@ -10536,6 +10948,7 @@ enum UserChapterStore {
                 kind: record.kind,
                 colorHex: record.colorHex,
                 coverImageName: record.coverImageName,
+                remoteCover: record.remoteCover,
                 createdAt: record.createdAt,
                 updatedAt: now
             )
@@ -10552,7 +10965,12 @@ enum UserChapterStore {
         records.first { $0.title == title }?.id
     }
 
-    static func updateAppearance(id: UUID, color: Color, coverImageName: String?) {
+    static func updateAppearance(
+        id: UUID,
+        color: Color,
+        coverImageName: String?,
+        remoteCover: JournalRemoteCover?
+    ) {
         let updatedRecords = records.map { record in
             guard (record.id ?? stableID(for: record.title, occurrence: 0)) == id else {
                 return record
@@ -10566,6 +10984,7 @@ enum UserChapterStore {
                 kind: record.kind,
                 colorHex: colorHex(for: color),
                 coverImageName: coverImageName,
+                remoteCover: remoteCover,
                 createdAt: record.createdAt,
                 updatedAt: Date()
             )
@@ -10590,6 +11009,7 @@ enum UserChapterStore {
                 subtitle: chapter.subtitle,
                 colorHex: colorHex(for: chapter),
                 symbol: chapter.symbol,
+                remoteCover: chapter.remoteCover,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 isFavorite: chapter.isFavorite,
                 displayOrder: displayOrder(for: chapter.title)
@@ -10616,6 +11036,7 @@ enum UserChapterStore {
                         subtitle: chapter.subtitle,
                         colorHex: colorHex(for: chapter),
                         symbol: chapter.symbol,
+                        remoteCover: chapter.remoteCover,
                         kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                         isFavorite: chapter.isFavorite,
                         displayOrder: offset
@@ -10657,6 +11078,7 @@ enum UserChapterStore {
                 subtitle: chapter.subtitle,
                 colorHex: colorHex(for: chapter),
                 symbol: chapter.symbol,
+                remoteCover: chapter.remoteCover,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 isFavorite: chapter.isFavorite,
                 displayOrder: displayOrder(for: chapter.title)
@@ -10724,6 +11146,7 @@ enum UserChapterStore {
                 kind: record.kind,
                 colorHex: record.colorHex,
                 coverImageName: record.coverImageName,
+                remoteCover: record.remoteCover,
                 createdAt: record.createdAt,
                 updatedAt: record.updatedAt ?? record.createdAt ?? Date()
             )
