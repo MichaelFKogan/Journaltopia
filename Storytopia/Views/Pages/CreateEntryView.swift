@@ -255,6 +255,15 @@ private struct PendingCreateEntryDraftSave {
     let textAlignmentRawValue: String
 }
 
+private struct EntryPreviewFormattingSummary {
+    let isBold: Bool
+    let isItalic: Bool
+    let isUnderlined: Bool
+    let isStrikethrough: Bool
+    let isHighlighted: Bool
+    let textAlignmentRawValue: String
+}
+
 private struct CharacterEditorSession: Identifiable {
     let id = UUID()
     let character: EntryCharacter?
@@ -1552,6 +1561,13 @@ struct CreateEntryView: View {
 
     private var editorWithOverlays: some View {
         editorCore
+        .disabled(isBlockingSaveInProgress)
+        .overlay {
+            if isBlockingSaveInProgress {
+                saveProgressOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
         .overlay(alignment: .bottom) {
             if let addedJournalTitle {
                 addedToJournalToast(journalTitle: addedJournalTitle)
@@ -2334,6 +2350,7 @@ struct CreateEntryView: View {
                 .frame(width: showsToolbarSaveButton ? 94 : 48, alignment: .leading)
                 .buttonStyle(.plain)
                 .accessibilityLabel(presentation.closeButtonAccessibilityLabel)
+                .disabled(isBlockingSaveInProgress)
             }
             .hideSharedBackgroundIfAvailable()
         }
@@ -2444,6 +2461,61 @@ struct CreateEntryView: View {
         return "Save"
     }
 
+    private var isBlockingSaveInProgress: Bool {
+        switch cloudSaveState {
+        case .saving, .uploadingPhotos:
+            return true
+        case .idle, .saved, .savedLocally, .photosUploaded, .failed, .photoUploadFailed:
+            return false
+        }
+    }
+
+    private var hasUnconfirmedCloudSave: Bool {
+        switch cloudSaveState {
+        case .failed, .photoUploadFailed:
+            return true
+        case .idle, .saving, .saved, .savedLocally, .uploadingPhotos, .photosUploaded:
+            return false
+        }
+    }
+
+    private var saveProgressTitle: String {
+        switch cloudSaveState {
+        case .uploadingPhotos:
+            return "Uploading photos..."
+        default:
+            return "Saving..."
+        }
+    }
+
+    private var saveProgressOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+
+            VStack(spacing: 13) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(Color.storyPurple)
+
+                Text(saveProgressTitle)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+            }
+            .padding(.horizontal, 30)
+            .padding(.vertical, 24)
+            .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.storyPurple.opacity(0.16), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.14), radius: 22, y: 10)
+        }
+        .allowsHitTesting(true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(saveProgressTitle)
+    }
+
     private var showsToolbarSavedState: Bool {
         showsToolbarSavedFeedback && isToolbarContentSaved
     }
@@ -2507,7 +2579,11 @@ struct CreateEntryView: View {
     private func requestExit() {
         dismissKeyboard()
 
-        if hasUnsavedDraftChanges {
+        guard !isBlockingSaveInProgress else {
+            return
+        }
+
+        if hasUnsavedDraftChanges || hasUnconfirmedCloudSave {
             isShowingExitConfirmation = true
         } else {
             closeEditorWithoutSaving()
@@ -2536,9 +2612,9 @@ struct CreateEntryView: View {
     private func saveEditedDraftChanges() {
         dismissKeyboard()
         beginToolbarSavedFeedback()
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         Task {
-            try? await Task.sleep(nanoseconds: 120_000_000)
             await saveDraftToLocalAndCloud(forceSave: true, navigatesToOptions: false)
         }
     }
@@ -2546,9 +2622,9 @@ struct CreateEntryView: View {
     private func saveDraftInPlace() {
         dismissKeyboard()
         beginToolbarSavedFeedback()
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         Task {
-            try? await Task.sleep(nanoseconds: 120_000_000)
             await saveDraftToLocalAndCloud(forceSave: false, navigatesToOptions: false)
         }
     }
@@ -2623,7 +2699,10 @@ struct CreateEntryView: View {
 
         Task {
             if hasDraftContent || forceSave {
-                await saveDraftToLocalAndCloud(forceSave: forceSave, navigatesToOptions: false)
+                let saveState = await saveDraftToLocalAndCloud(forceSave: forceSave, navigatesToOptions: false)
+                guard saveState?.isConfirmedSave == true else {
+                    return
+                }
             }
 
             withAnimation(.snappy(duration: 0.32)) {
@@ -2644,15 +2723,15 @@ struct CreateEntryView: View {
             return nil
         }
 
-        let existingDraft = activeDraftID.flatMap(CreateEntryDraftStore.load)
-
         let normalizedLocation = storyLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let richText = currentEntryRichText()
+        let richTextFormatting = currentEntryPreviewFormatting(from: richText)
 
         return PendingCreateEntryDraftSave(
             id: activeDraftID,
             title: storyTitle,
             text: entryText,
-            richText: currentEntryRichText(),
+            richText: richText,
             photos: storyboardPhotos.compactMap { $0 },
             characters: entryCharacters,
             artStyle: selectedArtStyle,
@@ -2666,12 +2745,24 @@ struct CreateEntryView: View {
             textSize: previewTextSize,
             paperStyleRawValue: selectedPaperStyleChoice.rawValue,
             paperColorIndex: selectedPaperColorIndex,
-            isBold: existingDraft?.isBold ?? false,
-            isItalic: existingDraft?.isItalic ?? false,
-            isUnderlined: existingDraft?.isUnderlined ?? false,
-            isStrikethrough: existingDraft?.isStrikethrough ?? false,
-            isHighlighted: existingDraft?.isHighlighted ?? false,
-            textAlignmentRawValue: existingDraft?.textAlignmentRawValue ?? "leading"
+            isBold: richTextFormatting.isBold,
+            isItalic: richTextFormatting.isItalic,
+            isUnderlined: richTextFormatting.isUnderlined,
+            isStrikethrough: richTextFormatting.isStrikethrough,
+            isHighlighted: richTextFormatting.isHighlighted,
+            textAlignmentRawValue: richTextFormatting.textAlignmentRawValue
+        )
+    }
+
+    private func currentEntryPreviewFormatting(from richText: NotebookRichTextDocument?) -> EntryPreviewFormattingSummary {
+        let runs = richText?.formattingRuns ?? []
+        return EntryPreviewFormattingSummary(
+            isBold: runs.contains { $0.isBold },
+            isItalic: runs.contains { $0.isItalic },
+            isUnderlined: runs.contains { $0.isUnderlined },
+            isStrikethrough: runs.contains { $0.isStrikethrough },
+            isHighlighted: false,
+            textAlignmentRawValue: "leading"
         )
     }
 
@@ -2762,13 +2853,14 @@ struct CreateEntryView: View {
         )
     }
 
-    private func saveDraftToLocalAndCloud(forceSave: Bool, navigatesToOptions: Bool) async {
+    @discardableResult
+    private func saveDraftToLocalAndCloud(forceSave: Bool, navigatesToOptions: Bool) async -> EntryCloudSaveState? {
         guard let payload = makeEntryDraftSavePayload(forceSave: forceSave) else {
             cancelToolbarSavedFeedback()
             if navigatesToOptions && canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = true
             }
-            return
+            return nil
         }
 
         setCloudSaveState(payload.photos.isEmpty ? .saving : .uploadingPhotos)
@@ -2780,20 +2872,28 @@ struct CreateEntryView: View {
                 status: currentEntryStatus
             )
             activeDraftID = result.localDraftID
-            let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
-            loadedDraftSnapshot = savedSnapshot
-            toolbarSavedSnapshot = savedSnapshot
             isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
             recentEntryLocations = EntryLocationRecentStore.all
             setCloudSaveState(result.state)
-            completeToolbarSavedFeedback(for: savedSnapshot)
 
-            if navigatesToOptions && canShowEntryOptionsPage {
+            if result.state.isConfirmedSave {
+                let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
+                loadedDraftSnapshot = savedSnapshot
+                toolbarSavedSnapshot = savedSnapshot
+                completeToolbarSavedFeedback(for: savedSnapshot)
+            } else {
+                cancelToolbarSavedFeedback()
+            }
+
+            if result.state.isConfirmedSave && navigatesToOptions && canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = true
             }
+
+            return result.state
         } catch {
             setCloudSaveState(.failed("Could not save this entry locally."))
             cancelToolbarSavedFeedback()
+            return .failed("Could not save this entry locally.")
         }
     }
 
@@ -3256,12 +3356,10 @@ struct CreateEntryView: View {
                     }
                     .padding(.horizontal, 16)
 
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        photoStripContent
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 4)
-                    }
-                    .frame(height: 76)
+                    referencePhotoExplainerText
+                        .padding(.horizontal, 16)
+
+                    referencePhotoStripRow
 
                     Divider()
                         .overlay(Color.storyBorder.opacity(0.48))
@@ -4530,11 +4628,66 @@ struct CreateEntryView: View {
         }
 
         dismissKeyboard()
-        addCurrentEntry(to: journalTitle)
-        clearEditor()
-        activeDraftID = nil
-        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
-        dismissCreate()
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
+
+        Task {
+            let payload = EntryDraftSavePayload(
+                id: activeDraftID,
+                title: storyTitle,
+                text: entryText,
+                richText: currentEntryRichText(),
+                photos: storyboardPhotos.compactMap { $0 },
+                characters: entryCharacters,
+                artStyle: selectedArtStyle,
+                location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+                date: storyDate,
+                datePrecision: storyDatePrecision,
+                savesDraft: savesDraft,
+                isPrivate: isPrivateEntry,
+                fontChoiceRawValue: selectedFontChoice.rawValue,
+                textColorIndex: selectedTextColorIndex,
+                textSize: previewTextSize,
+                paperStyleRawValue: selectedPaperStyleChoice.rawValue,
+                paperColorIndex: selectedPaperColorIndex,
+                isBold: false,
+                isItalic: false,
+                isUnderlined: false,
+                isStrikethrough: false,
+                isHighlighted: false,
+                textAlignmentRawValue: "leading"
+            )
+
+            let result = try? await EntrySaveService().saveEntryPreservingStatus(
+                payload: payload,
+                isSignedIn: authStore.userID != nil,
+                status: currentEntryStatus
+            )
+
+            guard let result else {
+                setCloudSaveState(.failed("Could not save this entry locally."))
+                return
+            }
+
+            activeDraftID = result.localDraftID
+            isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+            setCloudSaveState(result.state)
+
+            guard result.state.isConfirmedSave,
+                  let savedEntry = currentJournalEntry(id: result.localDraftID) else {
+                return
+            }
+
+            StoryEntryStore.upsert(savedEntry, to: journalTitle)
+            onJournalEntryCreated(journalTitle, savedEntry)
+            EntryJournalLinkStore.save(
+                journalTitle: journalTitle,
+                journalEntryID: savedEntry.id,
+                for: result.localDraftID
+            )
+            clearEditor()
+            activeDraftID = nil
+            dismissCreate()
+        }
     }
 
     private func saveDirectJournalEntryInPlace() {
@@ -4551,19 +4704,7 @@ struct CreateEntryView: View {
             return
         }
 
-        StoryEntryStore.upsert(entry, to: journalTitle)
-        onJournalEntryCreated(journalTitle, entry)
-        EntryJournalLinkStore.save(
-            journalTitle: journalTitle,
-            journalEntryID: entry.id,
-            for: entry.id
-        )
-        activeDraftID = entry.id
-        toolbarSavedJournalEntryID = entry.id
-        let savedSnapshot = currentDraftSnapshot(id: entry.id)
-        toolbarSavedSnapshot = savedSnapshot
-        completeToolbarSavedFeedback(for: savedSnapshot)
-        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+        setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         Task {
             let payload = EntryDraftSavePayload(
@@ -4598,6 +4739,29 @@ struct CreateEntryView: View {
             )
             if let result {
                 setCloudSaveState(result.state)
+                activeDraftID = result.localDraftID
+                isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+
+                if result.state.isConfirmedSave,
+                   let savedEntry = currentJournalEntry(id: result.localDraftID) {
+                    StoryEntryStore.upsert(savedEntry, to: journalTitle)
+                    onJournalEntryCreated(journalTitle, savedEntry)
+                    EntryJournalLinkStore.save(
+                        journalTitle: journalTitle,
+                        journalEntryID: savedEntry.id,
+                        for: result.localDraftID
+                    )
+                    toolbarSavedJournalEntryID = result.localDraftID
+                    let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
+                    loadedDraftSnapshot = savedSnapshot
+                    toolbarSavedSnapshot = savedSnapshot
+                    completeToolbarSavedFeedback(for: savedSnapshot)
+                } else {
+                    cancelToolbarSavedFeedback()
+                }
+            } else {
+                setCloudSaveState(.failed("Could not save this entry locally."))
+                cancelToolbarSavedFeedback()
             }
         }
     }
@@ -4756,6 +4920,13 @@ struct CreateEntryView: View {
         }
     }
 
+    private var referencePhotoExplainerText: some View {
+        Text("Use this to add reference photos: scenery, objects, or people. These help build your storyboard image.")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.storyInk.opacity(0.62))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var storyDetailsHeader: some View {
         HStack(alignment: .center, spacing: 6) {
             Image(systemName: "calendar.badge.clock")
@@ -4899,23 +5070,35 @@ struct CreateEntryView: View {
                 }
             }
 
-            if nextAvailablePhotoSlot != nil {
+            if hasStoryboardPhotos, nextAvailablePhotoSlot != nil {
                 addPhotoStripButton
             }
+        }
+    }
 
-            if !hasStoryboardPhotos {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Add Reference Photos")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.storyPurple)
-
-                    Text("Up to 5 photos")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.storyInk.opacity(0.66))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.76)
-                }
+    @ViewBuilder
+    private var referencePhotoStripRow: some View {
+        if hasStoryboardPhotos {
+            ScrollView(.horizontal, showsIndicators: false) {
+                photoStripContent
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
             }
+            .frame(height: 76)
+        } else {
+            Button {
+                dismissKeyboard()
+                openPhotoSourceSheet()
+            } label: {
+                addReferencePhotoTileLabel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                    .frame(height: 76, alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add reference photos")
         }
     }
 
@@ -4935,10 +5118,32 @@ struct CreateEntryView: View {
             }
             .padding(.horizontal, 16)
 
+            characterPhotoExplainerText
+                .padding(.horizontal, 16)
+
+            characterPhotoStripRow
+        }
+    }
+
+    @ViewBuilder
+    private var characterPhotoStripRow: some View {
+        if entryCharacters.isEmpty {
+            Button {
+                dismissKeyboard()
+                characterEditorSession = CharacterEditorSession(character: nil)
+            } label: {
+                addCharacterTileLabel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
+                    .frame(height: 92, alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add character")
+        } else {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 10) {
-                    addCharacterTile
-
                     ForEach(entryCharacters) { character in
                         CharacterStripThumbnail(
                             character: character,
@@ -4951,6 +5156,8 @@ struct CreateEntryView: View {
                             }
                         )
                     }
+
+                    addCharacterTile
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 2)
@@ -4959,36 +5166,71 @@ struct CreateEntryView: View {
         }
     }
 
+    private var characterPhotoExplainerText: some View {
+        Text("Use this to add character references, and single out people from group photos. If your story has more than one character, reference them here.")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.storyInk.opacity(0.62))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var addCharacterTile: some View {
+        Button {
+            dismissKeyboard()
+            characterEditorSession = CharacterEditorSession(character: nil)
+        } label: {
+            addCharacterTileLabel
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add character")
+        .frame(height: 76)
+    }
+
+    private var addCharacterTileLabel: some View {
         HStack(spacing: 8) {
-            Button {
-                dismissKeyboard()
-                characterEditorSession = CharacterEditorSession(character: nil)
-            } label: {
-                StoryboardPhotoStripAddButton(
-                    systemName: "person.crop.circle.badge.plus",
-                    iconColor: Color.storyPurple,
-                    size: 52,
-                    iconWeight: .semibold,
-                    shape: .circle
-                )
+            StoryboardPhotoStripAddButton(
+                systemName: entryCharacters.isEmpty ? "person.crop.circle.badge.plus" : "plus",
+                iconColor: entryCharacters.isEmpty ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                size: 58,
+                iconWeight: entryCharacters.isEmpty ? .semibold : .light,
+                shape: .circle
+            )
+
+            if entryCharacters.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Add Character")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+
+                    Text("Choose a portrait")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.66))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Add character")
+        }
+    }
+
+    private var addReferencePhotoTileLabel: some View {
+        HStack(spacing: 9) {
+            StoryboardPhotoStripAddButton(
+                systemName: "camera",
+                iconColor: Color.storyPurple,
+                iconWeight: .semibold
+            )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("Add Character")
+                Text("Add Reference Photos")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.storyPurple)
 
-                Text("Choose a portrait")
+                Text("Up to 5 photos")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.storyInk.opacity(0.66))
                     .lineLimit(1)
                     .minimumScaleFactor(0.76)
             }
         }
-        .frame(height: 76)
     }
 
     private var addPhotoStripButton: some View {
@@ -8257,6 +8499,9 @@ struct CharacterStripThumbnail: View {
     let tapAction: () -> Void
     let removeAction: () -> Void
 
+    private let imageSize: CGFloat = 58
+    private let badgeOverflow: CGFloat = 5
+
     var body: some View {
         VStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
@@ -8264,7 +8509,7 @@ struct CharacterStripThumbnail: View {
                     Image(uiImage: character.image)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 58, height: 58)
+                        .frame(width: imageSize, height: imageSize)
                         .clipped()
                         .clipShape(Circle())
                         .overlay(
@@ -8285,7 +8530,7 @@ struct CharacterStripThumbnail: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Remove \(character.name)")
-                .offset(x: 5, y: -5)
+                .offset(x: badgeOverflow, y: -badgeOverflow)
 
                 if character.role == .mainCharacter {
                     Image(systemName: "star.fill")
@@ -8293,11 +8538,12 @@ struct CharacterStripThumbnail: View {
                         .foregroundStyle(.white)
                         .frame(width: 17, height: 17)
                         .background(Color.storyPurple.opacity(0.95), in: Circle())
-                        .offset(x: -39, y: -5)
+                        .offset(x: -39, y: -badgeOverflow)
                         .accessibilityHidden(true)
                 }
             }
-            .frame(width: 66, height: 62)
+            .frame(width: imageSize + (badgeOverflow * 2), height: imageSize + badgeOverflow)
+            .padding(.top, badgeOverflow)
 
             Text(character.name)
                 .font(.system(size: 10, weight: .bold))
@@ -8306,7 +8552,7 @@ struct CharacterStripThumbnail: View {
                 .minimumScaleFactor(0.72)
                 .frame(width: 66)
         }
-        .frame(width: 66, height: 82, alignment: .top)
+        .frame(width: 68, height: 88, alignment: .top)
     }
 }
 

@@ -26,7 +26,7 @@ struct JournalView: View {
     @State private var draggingJournalID: UUID?
     @Namespace private var journalOpenNamespace
     @AppStorage("StorytopiaSelectedJournalLayout") private var selectedJournalLayoutRawValue = JournalDisplayLayout.grid.rawValue
-    @AppStorage("StorytopiaSelectedJournalSort") private var selectedJournalSortRawValue = JournalSortOption.updated.rawValue
+    @AppStorage("StorytopiaSelectedJournalSort") private var selectedJournalSortRawValue = JournalSortOption.manual.rawValue
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -44,7 +44,7 @@ struct JournalView: View {
 
     private var selectedJournalSort: JournalSortOption {
         get {
-            JournalSortOption(rawValue: selectedJournalSortRawValue) ?? .updated
+            JournalSortOption(rawValue: selectedJournalSortRawValue) ?? .manual
         }
         nonmutating set {
             selectedJournalSortRawValue = newValue.rawValue
@@ -163,6 +163,7 @@ struct JournalView: View {
         .sheet(item: $journalBeingCustomized) { chapter in
             JournalCustomizationSheet(
                 chapter: refreshedChapter(chapter),
+                initialStoryboardCovers: storyboardCoverCandidates(for: refreshedChapter(chapter)),
                 onSave: applyJournalCustomization
             )
         }
@@ -507,10 +508,38 @@ struct JournalView: View {
         chapters.first { $0.id == chapter.id } ?? chapter
     }
 
+    private func storyboardCoverCandidates(for chapter: PrototypeChapter) -> [JournalStoryboardCoverCandidate] {
+        let entryIDs = Set(chapter.entries.map(\.id))
+        guard !entryIDs.isEmpty else {
+            return []
+        }
+
+        var seen = Set<UUID>()
+        return GeneratedStoryboardStore.load()
+            .filter { storyboard in
+                guard
+                    let clientEntryID = storyboard.clientEntryID,
+                    entryIDs.contains(clientEntryID)
+                else {
+                    return false
+                }
+
+                return storyboard.isPrimary && seen.insert(storyboard.id).inserted
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+            .map(JournalStoryboardCoverCandidate.init(storyboard:))
+    }
+
     private func applyJournalCustomization(_ customization: JournalCustomization) {
         guard let index = chapters.firstIndex(where: { $0.id == customization.chapterID }) else {
             journalBeingCustomized = nil
             return
+        }
+
+        if let storedCoverImage = customization.storedCoverImage {
+            JournalCoverStore.save(storedCoverImage, for: chapters[index].title)
+        } else if customization.clearsStoredCover {
+            JournalCoverStore.delete(title: chapters[index].title)
         }
 
         let updatedChapter = PrototypeChapter(
@@ -732,7 +761,11 @@ struct JournalView: View {
     }
 
     private func dailyJournalDetail(for chapter: PrototypeChapter, dayOffset: Int) -> some View {
-        DailyJournalData.detailView(for: chapter, dayOffset: dayOffset) { entry in
+        DailyJournalData.detailView(
+            for: chapter,
+            dayOffset: dayOffset,
+            onChapterUpdated: updateChapterFromDetail
+        ) { entry in
             guard let chapterIndex = chapters.firstIndex(where: { $0.id == chapter.id }) else {
                 return
             }
@@ -743,6 +776,14 @@ struct JournalView: View {
                 chapters[chapterIndex].entries.insert(entry, at: 0)
             }
         }
+    }
+
+    private func updateChapterFromDetail(_ updatedChapter: PrototypeChapter) {
+        guard let chapterIndex = chapters.firstIndex(where: { $0.id == updatedChapter.id }) else {
+            return
+        }
+
+        chapters[chapterIndex] = updatedChapter
     }
 
     private func fallbackCoverImageName(for chapter: PrototypeChapter, at index: Int) -> String? {
@@ -763,10 +804,14 @@ struct JournalView: View {
                 let cloudChapters = cloudJournals.map(PrototypeChapter.init(cloudJournal:))
 
                 await MainActor.run {
-                    UserChapterStore.replace(with: cloudChapters)
+                    let mergedCloudChapters = Self.cloudChapters(
+                        cloudChapters,
+                        preservingOrderOf: chapters
+                    )
+                    UserChapterStore.replace(with: mergedCloudChapters)
                     StoryEntryStore.replaceCloudMemberships(
                         memberships,
-                        journals: cloudChapters,
+                        journals: mergedCloudChapters,
                         entries: cloudEntries
                     )
                     chapters = DailyJournalData.allChapters()
@@ -775,6 +820,28 @@ struct JournalView: View {
                 print("[Storytopia] Cloud journals load failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    private static func cloudChapters(
+        _ cloudChapters: [PrototypeChapter],
+        preservingOrderOf currentChapters: [PrototypeChapter]
+    ) -> [PrototypeChapter] {
+        guard !currentChapters.isEmpty else {
+            return cloudChapters
+        }
+
+        var remainingCloudChapters = cloudChapters
+        let orderedExistingChapters = currentChapters.compactMap { currentChapter -> PrototypeChapter? in
+            guard let cloudIndex = remainingCloudChapters.firstIndex(where: { cloudChapter in
+                cloudChapter.id == currentChapter.id || cloudChapter.title == currentChapter.title
+            }) else {
+                return nil
+            }
+
+            return remainingCloudChapters.remove(at: cloudIndex)
+        }
+
+        return orderedExistingChapters + remainingCloudChapters
     }
 
     private var noSearchResults: some View {
@@ -1295,15 +1362,37 @@ private struct JournalCustomization {
     let color: Color
     let coverImageName: String?
     let remoteCover: JournalRemoteCover?
+    let storedCoverImage: UIImage?
+    let clearsStoredCover: Bool
+}
+
+private struct JournalStoryboardCoverCandidate: Identifiable {
+    let id: UUID
+    let clientEntryID: UUID?
+    let image: UIImage
+    let createdAt: Date
+
+    init(storyboard: GeneratedStoryboard) {
+        id = storyboard.id
+        clientEntryID = storyboard.clientEntryID
+        image = storyboard.image
+        createdAt = storyboard.createdAt
+    }
 }
 
 private struct JournalCustomizationSheet: View {
     let chapter: PrototypeChapter
+    let initialStoryboardCovers: [JournalStoryboardCoverCandidate]
     let onSave: (JournalCustomization) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedColorHex: String
     @State private var selectedCoverImageName: String?
     @State private var selectedRemoteCover: JournalRemoteCover?
+    @State private var selectedStoredCoverImage: UIImage?
+    @State private var selectedStoryboardCoverID: UUID?
+    @State private var storyboardCoverCandidates: [JournalStoryboardCoverCandidate]
+    @State private var isLoadingStoryboardCovers = false
+    @State private var clearsStoredCover = false
     @State private var unsplashQuery: String
     @State private var unsplashPhotos: [UnsplashCoverPhoto] = []
     @State private var unsplashResultsCache: [String: [UnsplashCoverPhoto]] = [:]
@@ -1314,13 +1403,17 @@ private struct JournalCustomizationSheet: View {
 
     init(
         chapter: PrototypeChapter,
+        initialStoryboardCovers: [JournalStoryboardCoverCandidate] = [],
         onSave: @escaping (JournalCustomization) -> Void
     ) {
         self.chapter = chapter
+        self.initialStoryboardCovers = initialStoryboardCovers
         self.onSave = onSave
         _selectedColorHex = State(initialValue: JournalColorOption.hexString(for: chapter.color))
         _selectedCoverImageName = State(initialValue: chapter.coverImageName)
         _selectedRemoteCover = State(initialValue: chapter.remoteCover)
+        _selectedStoredCoverImage = State(initialValue: JournalCoverStore.image(for: chapter.title))
+        _storyboardCoverCandidates = State(initialValue: initialStoryboardCovers)
         _unsplashQuery = State(initialValue: "")
     }
 
@@ -1373,7 +1466,9 @@ private struct JournalCustomizationSheet: View {
                                 chapterID: chapter.id,
                                 color: selectedColor,
                                 coverImageName: selectedCoverImageName,
-                                remoteCover: remoteCover
+                                remoteCover: remoteCover,
+                                storedCoverImage: selectedStoredCoverImage,
+                                clearsStoredCover: clearsStoredCover
                             )
                         )
                         if let downloadLocation = remoteCover?.downloadLocation {
@@ -1396,6 +1491,9 @@ private struct JournalCustomizationSheet: View {
                 }
             }
         }
+        .task {
+            await loadCloudStoryboardCoverCandidatesIfNeeded()
+        }
     }
 
     private var selectedColor: Color {
@@ -1417,7 +1515,7 @@ private struct JournalCustomizationSheet: View {
                 title: chapter.title,
                 entryCount: chapter.entries.count,
                 color: selectedColor,
-                coverImage: selectedRemoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                coverImage: selectedRemoteCover == nil ? selectedStoredCoverImage : nil,
                 remoteCoverURL: selectedRemoteCover?.thumbnailNSURL ?? selectedRemoteCover?.imageNSURL,
                 fallbackImageName: selectedCoverImageName,
                 attributionName: selectedRemoteCover?.attributionName
@@ -1489,18 +1587,21 @@ private struct JournalCustomizationSheet: View {
                 Button("Use Color") {
                     selectedCoverImageName = nil
                     selectedRemoteCover = nil
+                    selectedStoredCoverImage = nil
+                    selectedStoryboardCoverID = nil
+                    clearsStoredCover = true
                 }
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(Color.homeAccent)
             }
 
-            if coverImageCandidates.isEmpty {
+            if storyboardCoverCandidates.isEmpty && coverImageCandidates.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
                     Label("Storyboard image choices will appear here.", systemImage: "photo.on.rectangle")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.homeMutedText)
 
-                    Text("Images from entries in this journal can be used as covers.")
+                    Text("Completed storyboard images from entries in this journal can be used as covers.")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.homeMutedText.opacity(0.82))
                         .fixedSize(horizontal: false, vertical: true)
@@ -1514,25 +1615,43 @@ private struct JournalCustomizationSheet: View {
                 )
             } else {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                    ForEach(storyboardCoverCandidates) { candidate in
+                        Button {
+                            selectStoryboardCover(candidate)
+                        } label: {
+                            let isSelected = selectedStoryboardCoverID == candidate.id
+                                && selectedRemoteCover == nil
+                                && selectedCoverImageName == nil
+
+                            CoverPhotoTile(isSelected: isSelected) {
+                                Image(uiImage: candidate.image)
+                                    .resizable()
+                                    .scaledToFill()
+                            }
+                                .overlay(alignment: .topTrailing) {
+                                    if isSelected {
+                                        selectedCoverBadge
+                                            .padding(6)
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Use storyboard image as cover")
+                    }
+
                     ForEach(coverImageCandidates, id: \.self) { imageName in
                         Button {
                             selectStoryboardCoverImage(named: imageName)
                         } label: {
-                            let isSelected = selectedCoverImageName == imageName && selectedRemoteCover == nil
+                            let isSelected = selectedCoverImageName == imageName
+                                && selectedRemoteCover == nil
+                                && selectedStoryboardCoverID == nil
 
-                            Image(imageName)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(height: 86)
-                                .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(
-                                            isSelected ? Color.homeAccent : Color.white.opacity(0.9),
-                                            lineWidth: 2
-                                        )
-                                }
+                            CoverPhotoTile(isSelected: isSelected) {
+                                Image(imageName)
+                                    .resizable()
+                                    .scaledToFill()
+                            }
                                 .overlay(alignment: .topTrailing) {
                                     if isSelected {
                                         selectedCoverBadge
@@ -1546,13 +1665,24 @@ private struct JournalCustomizationSheet: View {
                 }
             }
 
+            if isLoadingStoryboardCovers {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+
+                    Text("Loading storyboard covers...")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText)
+                }
+            }
+
             unsplashSection
         }
     }
 
     private var unsplashSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Unsplash")
+            Text("Stock Photos")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(Color.storyInk)
 
@@ -1584,7 +1714,7 @@ private struct JournalCustomizationSheet: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isSearchingUnsplash)
-                .accessibilityLabel("Search Unsplash")
+                .accessibilityLabel("Search stock photos")
             }
             .frame(height: 40)
             .id("unsplash-search-field")
@@ -1600,7 +1730,7 @@ private struct JournalCustomizationSheet: View {
                     .foregroundStyle(Color.storyRose)
                     .fixedSize(horizontal: false, vertical: true)
             } else if unsplashPhotos.isEmpty {
-                Text("Search Unsplash when you're ready to browse cover photos.")
+                Text("Search stock photos when you're ready to browse cover photos.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color.homeMutedText)
             } else {
@@ -1611,7 +1741,7 @@ private struct JournalCustomizationSheet: View {
                         } label: {
                             let isSelected = selectedRemoteCover?.imageURL == photo.imageURL
 
-                            ZStack(alignment: .bottomLeading) {
+                            CoverPhotoTile(isSelected: isSelected) {
                                 Group {
                                     if let thumbnailURL = URL(string: photo.thumbnailURL) {
                                         RemoteCoverImage(url: thumbnailURL, placeholderColor: Color.homeCardGray)
@@ -1619,10 +1749,8 @@ private struct JournalCustomizationSheet: View {
                                         Color.homeCardGray
                                     }
                                 }
-                                .frame(height: 96)
-                                .frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
+                            }
+                            .overlay(alignment: .bottomLeading) {
                                 Text(photo.attributionName)
                                     .font(.system(size: 9, weight: .bold))
                                     .lineLimit(1)
@@ -1632,20 +1760,12 @@ private struct JournalCustomizationSheet: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background(Color.black.opacity(0.38))
                             }
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(
-                                        isSelected ? Color.homeAccent : Color.white.opacity(0.9),
-                                        lineWidth: 2
-                                    )
-                            }
                             .overlay(alignment: .topTrailing) {
                                 if isSelected {
                                     selectedCoverBadge
                                         .padding(6)
                                 }
                             }
-                            .frame(height: 96)
                             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -1718,6 +1838,22 @@ private struct JournalCustomizationSheet: View {
         withTransaction(transaction) {
             selectedCoverImageName = imageName
             selectedRemoteCover = nil
+            selectedStoredCoverImage = nil
+            selectedStoryboardCoverID = nil
+            clearsStoredCover = true
+        }
+    }
+
+    private func selectStoryboardCover(_ candidate: JournalStoryboardCoverCandidate) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            selectedCoverImageName = nil
+            selectedRemoteCover = nil
+            selectedStoredCoverImage = candidate.image
+            selectedStoryboardCoverID = candidate.id
+            clearsStoredCover = false
         }
     }
 
@@ -1727,6 +1863,9 @@ private struct JournalCustomizationSheet: View {
 
         withTransaction(transaction) {
             selectedCoverImageName = nil
+            selectedStoredCoverImage = nil
+            selectedStoryboardCoverID = nil
+            clearsStoredCover = true
             selectedRemoteCover = JournalRemoteCover(
                 source: .unsplash,
                 imageURL: photo.imageURL,
@@ -1735,6 +1874,87 @@ private struct JournalCustomizationSheet: View {
                 attributionURL: photo.attributionURL,
                 downloadLocation: photo.downloadLocation
             )
+        }
+    }
+
+    @MainActor
+    private func loadCloudStoryboardCoverCandidatesIfNeeded() async {
+        let entryIDs = Set(chapter.entries.map(\.id))
+        guard !entryIDs.isEmpty else {
+            return
+        }
+
+        guard !isLoadingStoryboardCovers else {
+            return
+        }
+
+        isLoadingStoryboardCovers = true
+        defer { isLoadingStoryboardCovers = false }
+
+        do {
+            let rows = try await SupabaseStoryboardService().loadPrimaryCompletedStoryboards()
+            let existingIDs = Set(storyboardCoverCandidates.map(\.id))
+            let matchingRows = rows
+                .filter { entryIDs.contains($0.clientEntryID) && !existingIDs.contains($0.id) }
+                .sorted { $0.createdAt > $1.createdAt }
+
+            guard !matchingRows.isEmpty else {
+                return
+            }
+
+            var loadedCandidates = storyboardCoverCandidates
+            var persistedStoryboards = GeneratedStoryboardStore.load()
+
+            for row in matchingRows {
+                do {
+                    let image = try await SupabaseStoryboardService().downloadStoryboardImage(storagePath: row.storagePath)
+                    let storyboard = try GeneratedStoryboardStore.persistedStoryboard(
+                        image: image,
+                        clientEntryID: row.clientEntryID,
+                        promptText: row.prompt ?? "",
+                        artStyle: row.artStyle ?? "Anime",
+                        panelLayout: row.panelLayout,
+                        sourcePhotoCount: 0,
+                        id: row.id,
+                        storagePath: row.storagePath,
+                        cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                        isPrimary: row.isPrimary
+                    )
+                    persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
+                    loadedCandidates.append(JournalStoryboardCoverCandidate(storyboard: storyboard))
+                } catch {
+                    continue
+                }
+            }
+
+            GeneratedStoryboardStore.save(persistedStoryboards)
+            storyboardCoverCandidates = loadedCandidates.sorted { $0.createdAt > $1.createdAt }
+        } catch {
+            return
+        }
+    }
+}
+
+private struct CoverPhotoTile<Content: View>: View {
+    let isSelected: Bool
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        GeometryReader { proxy in
+            content()
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+        }
+        .aspectRatio(JournalOpeningBook.compactAspectRatio, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .background(Color.homeCardGray)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(
+                    isSelected ? Color.homeAccent : Color.white.opacity(0.9),
+                    lineWidth: 2
+                )
         }
     }
 }
@@ -2358,7 +2578,11 @@ struct ClassicJournalView: View {
     }
 
     private func dailyJournalDetail(for chapter: PrototypeChapter, dayOffset: Int) -> some View {
-        DailyJournalData.detailView(for: chapter, dayOffset: dayOffset) { entry in
+        DailyJournalData.detailView(
+            for: chapter,
+            dayOffset: dayOffset,
+            onChapterUpdated: updateChapterFromDetail
+        ) { entry in
             guard let chapterIndex = chapters.firstIndex(where: { $0.id == chapter.id }) else {
                 return
             }
@@ -2369,6 +2593,14 @@ struct ClassicJournalView: View {
                 chapters[chapterIndex].entries.insert(entry, at: 0)
             }
         }
+    }
+
+    private func updateChapterFromDetail(_ updatedChapter: PrototypeChapter) {
+        guard let chapterIndex = chapters.firstIndex(where: { $0.id == updatedChapter.id }) else {
+            return
+        }
+
+        chapters[chapterIndex] = updatedChapter
     }
 
     private var noSearchResults: some View {
@@ -4888,17 +5120,17 @@ private struct DaybookComicBackCoverPage: View {
 private struct DaybookComicBook {
     let chapters: [PrototypeChapter]
 
-    private let storyboardImageNames = (1...16).map { "storyboard\($0)" }
+    private let pageImageNames = journalSampleImages(startIndex: 0, count: 16)
     let issueNumber = 23
     let monthTitle = "June 2026"
 
     var storyPages: [DaybookStoryPage] {
-        Array(monthEntries.prefix(storyboardImageNames.count).enumerated()).map { index, item in
+        Array(monthEntries.prefix(pageImageNames.count).enumerated()).map { index, item in
             DaybookStoryPage(
                 entry: item.entry,
                 date: item.date,
                 chapterTitle: item.chapter.title,
-                imageName: storyboardImageNames[index]
+                imageName: pageImageNames[index]
             )
         }
     }
@@ -4908,7 +5140,7 @@ private struct DaybookComicBook {
     }
 
     var coverImageName: String {
-        storyPages.first?.imageName ?? "storyboard1"
+        storyPages.first?.imageName ?? regularSetImageNames.first ?? "IMG_9080"
     }
 
     var backCoverImageName: String {
@@ -5095,6 +5327,7 @@ enum DailyJournalData {
         for chapter: PrototypeChapter,
         dayOffset: Int,
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
+        onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onAddEntry: @escaping (PrototypeEntry) -> Void
     ) -> some View {
         let datedChapter = dateTitledChapter(from: chapter, dayOffset: dayOffset)
@@ -5104,6 +5337,7 @@ enum DailyJournalData {
             entryDate: journalDate(dayOffset: dayOffset),
             presentation: .dailyJournal,
             onNewEntryPresentationChange: onNewEntryPresentationChange,
+            onChapterUpdated: onChapterUpdated,
             onCreateStory: onAddEntry
         )
     }
@@ -5145,6 +5379,16 @@ private let regularSetImageNames: [String] = [
     "IMG_2214"
 ]
 
+private func journalSampleImages(startIndex: Int, count: Int) -> [String] {
+    guard !regularSetImageNames.isEmpty else {
+        return []
+    }
+
+    return (0..<count).map { offset in
+        regularSetImageNames[(startIndex + offset) % regularSetImageNames.count]
+    }
+}
+
 private struct AllJournalEntriesSection: View {
     @Binding var chapters: [PrototypeChapter]
 
@@ -5185,7 +5429,7 @@ private struct AllJournalEntriesSection: View {
                         entry: regularPhotoDisplayEntry(for: item.entry, dayOffset: day.dayOffset, entryIndex: index),
                         accentColor: Color.homeAccent,
                         showsDate: false,
-                        thumbnailSize: 58,
+                        thumbnailSize: 64,
                         inlineLeadingCoverImageName: item.coverImageName,
                         showsReferencePhotos: false,
                         isCompact: true,
@@ -5461,7 +5705,7 @@ private enum EntryDisplayItem: Identifiable {
         switch self {
         case .local(let entry, let cloudEntry):
             if let cloudEntry {
-                return CreateEntryDraft.fromCloud(cloudEntry)
+                return CreateEntryDraft.fromCloud(cloudEntry, thumbnail: entry.thumbnail)
             }
 
             return entry
@@ -5840,6 +6084,7 @@ private enum EntriesSessionMemoryCache {
         let cloudEntries: [JournalEntry]
         let cloudEntryCounts: JournalEntrySummaryCounts?
         let cloudEntryThumbnails: [UUID: UIImage]
+        let cloudEntryThumbnailVersions: [UUID: String]
         let cloudStoryboardClientIDs: Set<UUID>
         let failedCloudStoryboardClientIDs: Set<UUID>
         let hasMoreCloudEntries: Bool
@@ -5848,8 +6093,12 @@ private enum EntriesSessionMemoryCache {
     }
 }
 
-private enum EntriesCloudTextThumbnailDiskCache {
+private enum EntriesCloudThumbnailDiskCache {
     static func image(for entry: JournalEntry) -> UIImage? {
+        guard entry.thumbnailStoragePath != nil else {
+            return nil
+        }
+
         guard let data = try? Data(contentsOf: fileURL(for: entry)) else {
             return nil
         }
@@ -5857,11 +6106,11 @@ private enum EntriesCloudTextThumbnailDiskCache {
         return UIImage(data: data)
     }
 
-    static func hasPhotoThumbnail(for entry: JournalEntry) -> Bool {
-        FileManager.default.fileExists(atPath: photoMarkerURL(for: entry).path)
-    }
+    static func store(_ image: UIImage, for entry: JournalEntry) {
+        guard entry.thumbnailStoragePath != nil else {
+            return
+        }
 
-    static func store(_ image: UIImage, for entry: JournalEntry, includesPhotos: Bool = false) {
         guard let data = image.storytopiaPreparedJPEGData(compressionQuality: 0.86) else {
             return
         }
@@ -5872,9 +6121,6 @@ private enum EntriesCloudTextThumbnailDiskCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(for: entry), options: [.atomic])
-            if includesPhotos {
-                try Data().write(to: photoMarkerURL(for: entry), options: [.atomic])
-            }
         } catch {
             print("[Storytopia] Entry thumbnail cache write failed: \(error.localizedDescription)")
         }
@@ -5885,24 +6131,26 @@ private enum EntriesCloudTextThumbnailDiskCache {
             ?? FileManager.default.temporaryDirectory
         return baseURL
             .appendingPathComponent("Storytopia", isDirectory: true)
-            .appendingPathComponent("CloudEntryTextThumbnails", isDirectory: true)
+            .appendingPathComponent("CloudEntryThumbnails", isDirectory: true)
     }
 
     private static func fileURL(for entry: JournalEntry) -> URL {
         cacheDirectory.appendingPathComponent(cacheKey(for: entry))
     }
 
-    private static func photoMarkerURL(for entry: JournalEntry) -> URL {
-        fileURL(for: entry).appendingPathExtension("photos")
-    }
-
     private static func cacheKey(for entry: JournalEntry) -> String {
-        let updatedMilliseconds = Int(entry.updatedAt.timeIntervalSince1970 * 1000)
+        let updatedMilliseconds = Int((entry.thumbnailUpdatedAt ?? entry.updatedAt).timeIntervalSince1970 * 1000)
         return [
             entry.userID.uuidString.lowercased(),
             entry.clientEntryID.uuidString.lowercased(),
+            entry.thumbnailStoragePath ?? "missing",
             "\(updatedMilliseconds)"
-        ].joined(separator: "_") + ".jpg"
+        ]
+        .joined(separator: "_")
+        .map { character in
+            character.isLetter || character.isNumber || character == "." ? character : "_"
+        }
+        .reduce(into: "") { $0.append($1) } + ".jpg"
     }
 }
 
@@ -5943,6 +6191,7 @@ struct EntriesView: View {
     @State private var cloudEntries: [JournalEntry] = []
     @State private var cloudEntryCounts: JournalEntrySummaryCounts?
     @State private var cloudEntryThumbnails: [UUID: UIImage] = [:]
+    @State private var cloudEntryThumbnailVersions: [UUID: String] = [:]
     @State private var isLoadingCloudEntries = false
     @State private var isLoadingMoreCloudEntries = false
     @State private var hasMoreCloudEntries = true
@@ -5953,10 +6202,9 @@ struct EntriesView: View {
     @State private var hasLoadedEntriesForSession = false
     @State private var loadedEntryQueryKey: EntriesCloudFetchCache.EntryQueryKey?
     @State private var entryThumbnailBackfillTask: Task<Void, Never>?
-    @State private var cloudEntryTextThumbnailBackfillTask: Task<Void, Never>?
+    @State private var cloudEntryThumbnailBackfillTask: Task<Void, Never>?
     @State private var completedStoryboardLoadTask: Task<Void, Never>?
-    @State private var cloudPhotoThumbnailIDsBeingLoaded: Set<UUID> = []
-    @State private var cloudPhotoThumbnailIDsLoaded: Set<UUID> = []
+    @State private var cloudThumbnailIDsBeingLoaded: Set<UUID> = []
     private let cloudEntriesPageSize = 30
     @AppStorage("StorytopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedEntriesTab") private var selectedEntryTabRawValue = EntriesTab.all.rawValue
@@ -6162,12 +6410,48 @@ struct EntriesView: View {
         }
 
         if newPage == .entries {
-            loadEntriesForCurrentPageIfNeeded()
+            if let activeDraftID {
+                handleReturnToEntriesFromEditedDraft(activeDraftID)
+            } else {
+                loadEntriesForCurrentPageIfNeeded()
+            }
+        }
+    }
+
+    private func handleReturnToEntriesFromEditedDraft(_ draftID: UUID) {
+        if let draft = CreateEntryDraftStore.load(id: draftID) {
+            if let existingIndex = entries.firstIndex(where: { $0.id == draft.id }) {
+                entries[existingIndex] = draft
+            } else {
+                entries.append(draft)
+            }
+
+            if let thumbnail = draft.thumbnail {
+                cloudEntryThumbnails[draft.id] = thumbnail
+                cloudEntryThumbnailVersions[draft.id] = "local|\(Int(draft.updatedAt.timeIntervalSince1970 * 1000))"
+            }
+            isDraftSaved = true
+            storeCurrentEntriesSessionSnapshot()
+        }
+
+        guard let userID = authStore.userID else {
+            return
+        }
+
+        let queryKey = currentEntryQueryKey(userID: userID)
+        hasLoadedEntriesForSession = true
+        loadedEntryQueryKey = queryKey
+
+        Task {
+            await loadCloudEntriesIfNeeded(forceReload: true, queryKey: queryKey)
+            await loadCloudStoryboardsIfNeeded(forceReload: true, userID: userID)
         }
     }
 
     private func handleActiveDraftIDChange(_ newDraftID: UUID?) {
-        if newDraftID == nil && selectedPage != .create {
+        if newDraftID == nil && selectedPage == .entries {
+            loadEntriesForCurrentPageIfNeeded()
+        } else if newDraftID == nil && selectedPage != .create {
             refreshEntries(forceCloudReload: true)
         }
     }
@@ -6199,6 +6483,8 @@ struct EntriesView: View {
             .font(.system(size: 14, weight: .bold))
             .foregroundStyle(Color.homeAccent)
             .disabled(showsSampleEntries)
+
+            entryRefreshButton
 
             entryCreateButton
         }
@@ -6370,6 +6656,22 @@ struct EntriesView: View {
         .accessibilityLabel("Create a new entry")
     }
 
+    private var entryRefreshButton: some View {
+        Button {
+            refreshEntriesFromCloud()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(isLoadingCloudEntries ? Color.homeMutedText.opacity(0.5) : Color.homeAccent)
+                .frame(width: 34, height: 34)
+                .rotationEffect(.degrees(isLoadingCloudEntries ? 180 : 0))
+                .animation(.easeInOut(duration: 0.22), value: isLoadingCloudEntries)
+        }
+        .buttonStyle(.plain)
+        .disabled(authStore.userID == nil || isLoadingCloudEntries || isLoadingMoreCloudEntries)
+        .accessibilityLabel("Refresh entries from Storytopia cloud")
+    }
+
     @ViewBuilder
     private var selectedEntriesToolbar: some View {
         if editMode == .active && !showsSampleEntries && !selectedEntryIDs.isEmpty {
@@ -6506,6 +6808,9 @@ struct EntriesView: View {
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: 104)
         }
+        .refreshable {
+            refreshEntriesFromCloud()
+        }
     }
 
     @ViewBuilder
@@ -6522,7 +6827,7 @@ struct EntriesView: View {
                         sortOption: selectedEntrySort,
                         category: category,
                         completedStoryboardImage: category == .completed
-                            ? .asset(CompletedStoryboardSample.imageName(for: completedSampleFallbackIndex(for: entry)))
+                            ? .failed
                             : nil
                     )
                 }
@@ -6573,7 +6878,7 @@ struct EntriesView: View {
                 .listRowBackground(Color.homePageBackground)
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
-                    loadCloudPhotoThumbnailIfNeeded(for: item)
+                    loadCloudThumbnailIfNeeded(for: item)
                 }
                 .onDrag {
                     draggingEntryID = item.id
@@ -6656,7 +6961,7 @@ struct EntriesView: View {
                                 entryGridCard(for: item, displayEntry: displayEntry)
                                     .onAppear {
                                         loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
-                                        loadCloudPhotoThumbnailIfNeeded(for: item)
+                                        loadCloudThumbnailIfNeeded(for: item)
                                     }
                                     .onDrag {
                                         draggingEntryID = item.id
@@ -6687,6 +6992,9 @@ struct EntriesView: View {
         .background(Color.homePageBackground)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: 104)
+        }
+        .refreshable {
+            refreshEntriesFromCloud()
         }
     }
 
@@ -6728,7 +7036,7 @@ struct EntriesView: View {
                             )
                             .onAppear {
                                 loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
-                                loadCloudPhotoThumbnailIfNeeded(for: item)
+                                loadCloudThumbnailIfNeeded(for: item)
                             }
                             .onDrag {
                                 draggingEntryID = item.id
@@ -6759,6 +7067,9 @@ struct EntriesView: View {
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: 104)
         }
+        .refreshable {
+            refreshEntriesFromCloud()
+        }
     }
 
     @ViewBuilder
@@ -6768,7 +7079,7 @@ struct EntriesView: View {
                 entry: entry,
                 title: entryDisplayTitle(entry),
                 sortOption: selectedEntrySort,
-                storyboardImage: .asset(CompletedStoryboardSample.imageName(for: completedSampleFallbackIndex(for: entry))),
+                storyboardImage: .failed,
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
                 onOpen: {
@@ -6904,7 +7215,7 @@ struct EntriesView: View {
             return .uiImage(completedStoryboards[index].image)
         }
 
-        return .asset(CompletedStoryboardSample.imageName(for: index))
+        return .failed
     }
 
     private func storyboardUIImage(for item: EntryDisplayItem, fallbackIndex index: Int) -> UIImage? {
@@ -6921,7 +7232,7 @@ struct EntriesView: View {
             return completedStoryboards[index].image
         }
 
-        return UIImage(named: CompletedStoryboardSample.imageName(for: index))
+        return nil
     }
 
     private var emptyEntriesState: some View {
@@ -7165,10 +7476,6 @@ struct EntriesView: View {
         completedEntryItems.firstIndex { $0.id == item.id } ?? 0
     }
 
-    private func completedSampleFallbackIndex(for entry: CreateEntryDraft) -> Int {
-        completedEntries.firstIndex { $0.id == entry.id } ?? 0
-    }
-
     private var showsSampleEntries: Bool {
         authStore.userID != nil
             && entries.isEmpty
@@ -7388,7 +7695,7 @@ struct EntriesView: View {
                     status = .draft
                 }
                 _ = try await EntrySaveService().renameEntry(
-                    entry: entry,
+                    entry: entry.replacingThumbnail(entryThumbnail),
                     title: trimmedTitle,
                     status: status,
                     isSignedIn: true
@@ -7557,7 +7864,7 @@ struct EntriesView: View {
         }
 
         scheduleEntryThumbnailBackfill()
-        scheduleCloudEntryTextThumbnailBackfill()
+        scheduleCloudEntryThumbnailBackfill()
         guard !EntriesCloudFetchCache.hasFreshEntrySummaries(for: queryKey) else {
             Task {
                 await loadCloudStoryboardsIfNeeded(userID: userID)
@@ -7584,6 +7891,7 @@ struct EntriesView: View {
         cloudEntries = snapshot.cloudEntries
         cloudEntryCounts = snapshot.cloudEntryCounts
         cloudEntryThumbnails = snapshot.cloudEntryThumbnails
+        cloudEntryThumbnailVersions = snapshot.cloudEntryThumbnailVersions
         cloudStoryboardClientIDs = snapshot.cloudStoryboardClientIDs
         failedCloudStoryboardClientIDs = snapshot.failedCloudStoryboardClientIDs
         hasMoreCloudEntries = snapshot.hasMoreCloudEntries
@@ -7594,8 +7902,8 @@ struct EntriesView: View {
         isDraftSaved = draftEntryItems.isEmpty == false
         hasLoadedEntriesForSession = true
         loadedEntryQueryKey = queryKey
-        restoreCachedCloudEntryTextThumbnails()
-        scheduleCloudEntryTextThumbnailBackfill()
+        restoreCachedCloudEntryThumbnails()
+        scheduleCloudEntryThumbnailBackfill()
     }
 
     private func storeCurrentEntriesSessionSnapshot() {
@@ -7611,6 +7919,7 @@ struct EntriesView: View {
                 cloudEntries: cloudEntries,
                 cloudEntryCounts: cloudEntryCounts,
                 cloudEntryThumbnails: cloudEntryThumbnails,
+                cloudEntryThumbnailVersions: cloudEntryThumbnailVersions,
                 cloudStoryboardClientIDs: cloudStoryboardClientIDs,
                 failedCloudStoryboardClientIDs: failedCloudStoryboardClientIDs,
                 hasMoreCloudEntries: hasMoreCloudEntries,
@@ -7625,15 +7934,28 @@ struct EntriesView: View {
         cancelThumbnailBackfills()
         hasLoadedEntriesForSession = false
         loadedEntryQueryKey = nil
-        cloudPhotoThumbnailIDsBeingLoaded = []
-        cloudPhotoThumbnailIDsLoaded = []
+        cloudThumbnailIDsBeingLoaded = []
+        cloudEntryThumbnailVersions = [:]
+    }
+
+    private func refreshEntriesFromCloud() {
+        guard let userID = authStore.userID else {
+            refreshEntries(forceCloudReload: true)
+            return
+        }
+
+        EntriesSessionMemoryCache.invalidate(userID: userID)
+        EntriesCloudFetchCache.invalidate(for: userID)
+        selectedEntryIDs = []
+        editMode = .inactive
+        refreshEntries(forceCloudReload: true)
     }
 
     private func cancelThumbnailBackfills() {
         entryThumbnailBackfillTask?.cancel()
         entryThumbnailBackfillTask = nil
-        cloudEntryTextThumbnailBackfillTask?.cancel()
-        cloudEntryTextThumbnailBackfillTask = nil
+        cloudEntryThumbnailBackfillTask?.cancel()
+        cloudEntryThumbnailBackfillTask = nil
         completedStoryboardLoadTask?.cancel()
         completedStoryboardLoadTask = nil
     }
@@ -7647,6 +7969,7 @@ struct EntriesView: View {
             cloudEntries = []
             cloudEntryCounts = nil
             cloudEntryThumbnails = [:]
+            cloudEntryThumbnailVersions = [:]
             cloudEntriesErrorMessage = nil
             cloudStoryboardClientIDs = []
             failedCloudStoryboardClientIDs = []
@@ -7663,16 +7986,22 @@ struct EntriesView: View {
         loadedEntryQueryKey = queryKey
 
         entries = []
+        completedStoryboards = GeneratedStoryboardStore.load()
         scheduleCompletedStoryboardLoad()
         if entries.isEmpty && showsPrototypeData && sampleEntries.isEmpty {
             sampleEntries = EntriesSampleData.entries()
         }
         scheduleEntryThumbnailBackfill()
-        scheduleCloudEntryTextThumbnailBackfill()
+        scheduleCloudEntryThumbnailBackfill()
         isDraftSaved = false
         storeCurrentEntriesSessionSnapshot()
 
-        let didHydrateCachedEntries = hydrateCachedCloudEntries(for: queryKey)
+        if forceCloudReload {
+            cloudEntryThumbnails = [:]
+            cloudEntryThumbnailVersions = [:]
+        }
+
+        let didHydrateCachedEntries = forceCloudReload ? false : hydrateCachedCloudEntries(for: queryKey)
         isLoadingCloudEntries = !didHydrateCachedEntries && filteredEntryItems.isEmpty
         storeCurrentEntriesSessionSnapshot()
 
@@ -7690,13 +8019,13 @@ struct EntriesView: View {
         if cloudEntries != cachedEntries.entries {
             cloudEntries = cachedEntries.entries
         }
-        if cloudEntryCounts != cachedEntries.counts {
-            cloudEntryCounts = cachedEntries.counts
+        if let cachedCounts = cachedEntries.counts, cloudEntryCounts != cachedCounts {
+            cloudEntryCounts = cachedCounts
         }
         hasMoreCloudEntries = cachedEntries.hasMore
         nextCloudEntryOffset = cachedEntries.nextOffset
-        restoreCachedCloudEntryTextThumbnails()
-        scheduleCloudEntryTextThumbnailBackfill()
+        restoreCachedCloudEntryThumbnails()
+        scheduleCloudEntryThumbnailBackfill()
         isDraftSaved = draftEntryItems.isEmpty == false
         cloudEntriesErrorMessage = nil
         isLoadingCloudEntries = false
@@ -7736,8 +8065,8 @@ struct EntriesView: View {
             nextCloudEntryOffset = cachedEntries.nextOffset
             hasLoadedEntriesForSession = true
             loadedEntryQueryKey = queryKey
-            restoreCachedCloudEntryTextThumbnails()
-            scheduleCloudEntryTextThumbnailBackfill()
+            restoreCachedCloudEntryThumbnails()
+            scheduleCloudEntryThumbnailBackfill()
             isDraftSaved = draftEntryItems.isEmpty == false
             cloudEntriesErrorMessage = nil
             isLoadingCloudEntries = false
@@ -7753,27 +8082,32 @@ struct EntriesView: View {
 
         do {
             let repository = SupabaseEntryRepository()
-            let page = try await repository.getEntrySummariesPage(
+            async let pageTask = repository.getEntrySummariesPage(
                 limit: cloudEntriesPageSize,
                 offset: 0,
                 sort: selectedEntrySort.summarySort,
                 statusFilter: selectedEntryTab.summaryStatusFilter
             )
+            async let countsTask = repository.getEntrySummaryCounts()
+
+            let page = try await pageTask
+            let counts = try? await countsTask
+
             guard queryKey == currentEntryQueryKey(userID: userID) else {
                 return
             }
             if cloudEntries != page {
                 cloudEntries = page
             }
-            if cloudEntryCounts != nil {
-                cloudEntryCounts = nil
+            if let counts, cloudEntryCounts != counts {
+                cloudEntryCounts = counts
             }
             hasMoreCloudEntries = page.count == cloudEntriesPageSize
             nextCloudEntryOffset = page.count
             hasLoadedEntriesForSession = true
             loadedEntryQueryKey = queryKey
-            restoreCachedCloudEntryTextThumbnails()
-            scheduleCloudEntryTextThumbnailBackfill()
+            restoreCachedCloudEntryThumbnails()
+            scheduleCloudEntryThumbnailBackfill()
             EntriesCloudFetchCache.storeEntrySummaries(
                 cloudEntries,
                 counts: cloudEntryCounts,
@@ -7827,7 +8161,7 @@ struct EntriesView: View {
             let existingIDs = Set(cloudEntries.map(\.clientEntryID))
             let newEntries = page.filter { !existingIDs.contains($0.clientEntryID) }
             cloudEntries.append(contentsOf: newEntries)
-            restoreCachedCloudEntryTextThumbnails()
+            restoreCachedCloudEntryThumbnails()
             hasMoreCloudEntries = page.count == cloudEntriesPageSize
             nextCloudEntryOffset += page.count
             EntriesCloudFetchCache.storeEntrySummaries(
@@ -7880,9 +8214,25 @@ struct EntriesView: View {
             let primaryRows = try await SupabaseStoryboardService().loadPrimaryCompletedStoryboards()
             let completedEntryIDs = Set(completedEntryItems.map(\.id))
             let localStoryboardIDs = Set(completedStoryboards.map(\.id))
-            let rowsToDownload = primaryRows.filter {
+            var rowsToDownload = primaryRows.filter {
                 completedEntryIDs.contains($0.clientEntryID) && !localStoryboardIDs.contains($0.id)
             }
+            var mergedStoryboards = completedStoryboards
+
+            rowsToDownload.removeAll { row in
+                guard let cachedStoryboard = cachedCloudStoryboard(for: row) else {
+                    return false
+                }
+
+                mergedStoryboards = GeneratedStoryboardStore.merging(cachedStoryboard, into: mergedStoryboards)
+                return true
+            }
+
+            if mergedStoryboards.map(\.id) != completedStoryboards.map(\.id) {
+                completedStoryboards = mergedStoryboards
+                GeneratedStoryboardStore.save(mergedStoryboards)
+            }
+
             cloudStoryboardClientIDs = Set(rowsToDownload.map(\.clientEntryID))
             failedCloudStoryboardClientIDs = []
             EntriesCloudFetchCache.markStoryboardsLoaded(for: userID)
@@ -7892,7 +8242,6 @@ struct EntriesView: View {
                 return
             }
 
-            var mergedStoryboards = completedStoryboards
             for row in rowsToDownload {
                 do {
                     let image = try await SupabaseStoryboardService().downloadStoryboardImage(storagePath: row.storagePath)
@@ -7924,6 +8273,31 @@ struct EntriesView: View {
             cloudStoryboardClientIDs = []
             storeCurrentEntriesSessionSnapshot()
         }
+    }
+
+    private func cachedCloudStoryboard(for row: EntryStoryboard) -> GeneratedStoryboard? {
+        guard
+            let cachedData = SupabaseStorageImageCache.data(
+                bucketName: "generated-storyboards",
+                storagePath: row.storagePath
+            ),
+            let image = UIImage(data: cachedData)
+        else {
+            return nil
+        }
+
+        return try? GeneratedStoryboardStore.persistedStoryboard(
+            image: image,
+            clientEntryID: row.clientEntryID,
+            promptText: row.prompt ?? "",
+            artStyle: row.artStyle ?? "Anime",
+            panelLayout: row.panelLayout,
+            sourcePhotoCount: 0,
+            id: row.id,
+            storagePath: row.storagePath,
+            cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+            isPrimary: row.isPrimary
+        )
     }
 
     private func openEntryItem(_ item: EntryDisplayItem, asCompleted: Bool, storyboardImage: UIImage? = nil) {
@@ -8026,89 +8400,124 @@ struct EntriesView: View {
         )
     }
 
-    private func restoreCachedCloudEntryTextThumbnails() {
+    private func restoreCachedCloudEntryThumbnails() {
         var updatedThumbnails = cloudEntryThumbnails
+        var updatedVersions = cloudEntryThumbnailVersions
         var didUpdate = false
         let visibleCloudEntryIDs = Set(cloudEntries.map(\.clientEntryID))
+        let localThumbnailsByID = Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
+            entry.thumbnail.map { (entry.id, $0) }
+        })
 
-        for cloudEntry in cloudEntries where updatedThumbnails[cloudEntry.clientEntryID] == nil {
-            guard let cachedImage = EntriesCloudTextThumbnailDiskCache.image(for: cloudEntry) else {
+        for cloudEntry in cloudEntries {
+            let clientEntryID = cloudEntry.clientEntryID
+
+            if let localThumbnail = localThumbnailsByID[clientEntryID] {
+                let localVersion = cloudThumbnailVersion(for: cloudEntry) ?? "local"
+                if updatedThumbnails[clientEntryID] == nil || updatedVersions[clientEntryID] != localVersion {
+                    didUpdate = true
+                }
+                updatedThumbnails[clientEntryID] = localThumbnail
+                updatedVersions[clientEntryID] = localVersion
                 continue
             }
 
-            updatedThumbnails[cloudEntry.clientEntryID] = cachedImage
-            if EntriesCloudTextThumbnailDiskCache.hasPhotoThumbnail(for: cloudEntry) {
-                cloudPhotoThumbnailIDsLoaded.insert(cloudEntry.clientEntryID)
+            guard let currentVersion = cloudThumbnailVersion(for: cloudEntry) else {
+                if updatedThumbnails.removeValue(forKey: clientEntryID) != nil {
+                    didUpdate = true
+                }
+                updatedVersions.removeValue(forKey: clientEntryID)
+                continue
             }
+
+            if updatedVersions[clientEntryID] != currentVersion {
+                updatedThumbnails.removeValue(forKey: clientEntryID)
+                updatedVersions[clientEntryID] = currentVersion
+                didUpdate = true
+            }
+
+            guard updatedThumbnails[clientEntryID] == nil else {
+                continue
+            }
+
+            guard let cachedImage = EntriesCloudThumbnailDiskCache.image(for: cloudEntry) else {
+                continue
+            }
+
+            updatedThumbnails[clientEntryID] = cachedImage
             didUpdate = true
         }
 
         let trimmedThumbnails = updatedThumbnails.filter { clientEntryID, _ in
             visibleCloudEntryIDs.contains(clientEntryID)
         }
+        let trimmedVersions = updatedVersions.filter { clientEntryID, _ in
+            visibleCloudEntryIDs.contains(clientEntryID)
+        }
 
-        if didUpdate || trimmedThumbnails.count != cloudEntryThumbnails.count {
+        if didUpdate || trimmedThumbnails.count != cloudEntryThumbnails.count || trimmedVersions.count != cloudEntryThumbnailVersions.count {
             cloudEntryThumbnails = trimmedThumbnails
+            cloudEntryThumbnailVersions = trimmedVersions
             storeCurrentEntriesSessionSnapshot()
         }
     }
 
-    private func loadCloudPhotoThumbnailIfNeeded(for item: EntryDisplayItem) {
+    private func loadCloudThumbnailIfNeeded(for item: EntryDisplayItem) {
         guard
             let cloudEntry = item.cloudEntry,
-            !cloudPhotoThumbnailIDsBeingLoaded.contains(item.id),
-            !cloudPhotoThumbnailIDsLoaded.contains(item.id)
+            let thumbnailStoragePath = cloudEntry.thumbnailStoragePath,
+            cloudEntryThumbnails[item.id] == nil,
+            !cloudThumbnailIDsBeingLoaded.contains(item.id)
         else {
             return
         }
 
-        if EntriesCloudTextThumbnailDiskCache.hasPhotoThumbnail(for: cloudEntry) {
-            cloudPhotoThumbnailIDsLoaded.insert(item.id)
-            return
-        }
-
-        cloudPhotoThumbnailIDsBeingLoaded.insert(item.id)
+        cloudThumbnailIDsBeingLoaded.insert(item.id)
         Task {
             defer {
-                cloudPhotoThumbnailIDsBeingLoaded.remove(item.id)
+                cloudThumbnailIDsBeingLoaded.remove(item.id)
             }
 
             do {
-                let referencePhotos = try await SupabaseReferencePhotoService().loadReferencePhotos(entryID: cloudEntry.id)
-                guard !referencePhotos.isEmpty else {
-                    cloudPhotoThumbnailIDsLoaded.insert(item.id)
-                    return
-                }
-
-                let entry = CreateEntryDraft.fromCloud(cloudEntry)
-                guard let thumbnail = renderThumbnail(for: entry, photos: referencePhotos.map(\.image)) else {
-                    return
-                }
-
+                let thumbnail = try await SupabaseEntryThumbnailService().downloadThumbnail(
+                    storagePath: thumbnailStoragePath,
+                    bypassCache: true
+                )
                 cloudEntryThumbnails[item.id] = thumbnail
-                cloudPhotoThumbnailIDsLoaded.insert(item.id)
-                EntriesCloudTextThumbnailDiskCache.store(thumbnail, for: cloudEntry, includesPhotos: true)
+                cloudEntryThumbnailVersions[item.id] = cloudThumbnailVersion(for: cloudEntry)
+                EntriesCloudThumbnailDiskCache.store(thumbnail, for: cloudEntry)
                 storeCurrentEntriesSessionSnapshot()
             } catch {
-                cloudPhotoThumbnailIDsLoaded.insert(item.id)
-                return
+                await backfillCloudThumbnail(for: cloudEntry)
             }
         }
     }
 
+    private func cloudThumbnailVersion(for entry: JournalEntry) -> String? {
+        guard let storagePath = entry.thumbnailStoragePath else {
+            return nil
+        }
+
+        let updatedAt = entry.thumbnailUpdatedAt ?? entry.updatedAt
+        return "\(storagePath)|\(Int(updatedAt.timeIntervalSince1970 * 1000))"
+    }
+
     @MainActor
-    private func backfillCloudEntryTextThumbnailsIfNeeded() async {
-        var updatedThumbnails = cloudEntryThumbnails
-        var didUpdate = false
-        let visibleCloudEntryIDs = Set(cloudEntries.map(\.clientEntryID))
+    private func backfillMissingCloudEntryThumbnailsIfNeeded() async {
+        var backfilledCount = 0
+        var hasMoreMissingThumbnails = false
 
         for (index, cloudEntry) in cloudEntries.enumerated() {
             guard !Task.isCancelled else {
                 return
             }
+            guard backfilledCount < 4 else {
+                hasMoreMissingThumbnails = true
+                break
+            }
 
             let clientEntryID = cloudEntry.clientEntryID
-            guard updatedThumbnails[clientEntryID] == nil else {
+            guard cloudEntry.thumbnailStoragePath == nil, cloudEntryThumbnails[clientEntryID] == nil else {
                 continue
             }
 
@@ -8117,22 +8526,56 @@ struct EntriesView: View {
                 continue
             }
 
-            updatedThumbnails[clientEntryID] = thumbnail
-            EntriesCloudTextThumbnailDiskCache.store(thumbnail, for: cloudEntry)
-            didUpdate = true
+            backfilledCount += 1
+
+            await uploadBackfilledCloudThumbnail(thumbnail, for: cloudEntry)
 
             if index.isMultiple(of: 2) {
                 await Task.yield()
             }
         }
 
-        let trimmedThumbnails = updatedThumbnails.filter { clientEntryID, _ in
-            visibleCloudEntryIDs.contains(clientEntryID)
+        if hasMoreMissingThumbnails {
+            scheduleCloudEntryThumbnailBackfill(delayNanoseconds: 1_500_000_000)
+        }
+    }
+
+    @MainActor
+    private func backfillCloudThumbnail(for cloudEntry: JournalEntry) async {
+        guard cloudEntryThumbnails[cloudEntry.clientEntryID] == nil else {
+            return
         }
 
-        if didUpdate || trimmedThumbnails.count != cloudEntryThumbnails.count {
-            cloudEntryThumbnails = trimmedThumbnails
-            storeCurrentEntriesSessionSnapshot()
+        let entry = CreateEntryDraft.fromCloud(cloudEntry)
+        guard let thumbnail = renderThumbnail(for: entry, photos: []) else {
+            return
+        }
+
+        await uploadBackfilledCloudThumbnail(thumbnail, for: cloudEntry)
+        storeCurrentEntriesSessionSnapshot()
+    }
+
+    @MainActor
+    private func uploadBackfilledCloudThumbnail(_ thumbnail: UIImage, for cloudEntry: JournalEntry) async {
+        do {
+            let updatedEntry = try await SupabaseEntryThumbnailService().uploadThumbnail(thumbnail, for: cloudEntry)
+            if let entryIndex = cloudEntries.firstIndex(where: { $0.clientEntryID == updatedEntry.clientEntryID }) {
+                cloudEntries[entryIndex] = updatedEntry
+            }
+            cloudEntryThumbnails[updatedEntry.clientEntryID] = thumbnail
+            cloudEntryThumbnailVersions[updatedEntry.clientEntryID] = cloudThumbnailVersion(for: updatedEntry)
+            EntriesCloudThumbnailDiskCache.store(thumbnail, for: updatedEntry)
+            if let loadedEntryQueryKey {
+                EntriesCloudFetchCache.storeEntrySummaries(
+                    cloudEntries,
+                    counts: cloudEntryCounts,
+                    hasMore: hasMoreCloudEntries,
+                    nextOffset: nextCloudEntryOffset,
+                    for: loadedEntryQueryKey
+                )
+            }
+        } catch {
+            print("[Storytopia] Legacy entry thumbnail backfill failed: \(error.localizedDescription)")
         }
     }
 
@@ -8198,15 +8641,15 @@ struct EntriesView: View {
         }
     }
 
-    private func scheduleCloudEntryTextThumbnailBackfill() {
-        cloudEntryTextThumbnailBackfillTask?.cancel()
-        cloudEntryTextThumbnailBackfillTask = Task {
+    private func scheduleCloudEntryThumbnailBackfill(delayNanoseconds: UInt64 = 650_000_000) {
+        cloudEntryThumbnailBackfillTask?.cancel()
+        cloudEntryThumbnailBackfillTask = Task {
             await Task.yield()
-            try? await Task.sleep(nanoseconds: 650_000_000)
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
             guard !Task.isCancelled else {
                 return
             }
-            await backfillCloudEntryTextThumbnailsIfNeeded()
+            await backfillMissingCloudEntryThumbnailsIfNeeded()
         }
     }
 
@@ -8226,7 +8669,9 @@ struct EntriesView: View {
                 return
             }
 
-            completedStoryboards = storyboards
+            completedStoryboards = storyboards.reduce(into: completedStoryboards) { merged, storyboard in
+                merged = GeneratedStoryboardStore.merging(storyboard, into: merged)
+            }
             storeCurrentEntriesSessionSnapshot()
         }
     }
@@ -9273,42 +9718,6 @@ private struct EntryOpeningOverlay: View {
     }
 }
 
-private enum CompletedStoryboardSample: Int, CaseIterable, Identifiable {
-    case first = 1
-    case second
-    case third
-    case fourth
-    case fifth
-    case sixth
-    case seventh
-    case eighth
-    case ninth
-    case tenth
-    case eleventh
-    case twelfth
-    case thirteenth
-    case fourteenth
-    case fifteenth
-    case sixteenth
-
-    var id: Int {
-        rawValue
-    }
-
-    var imageName: String {
-        "storyboard\(rawValue)"
-    }
-
-    var accessibilityLabel: String {
-        "Completed storyboard example \(rawValue)"
-    }
-
-    static func imageName(for index: Int) -> String {
-        let wrappedIndex = index % allCases.count
-        return "storyboard\(wrappedIndex + 1)"
-    }
-}
-
 private enum EntriesTab: String, CaseIterable, Identifiable {
     case all
     case drafts
@@ -9681,6 +10090,7 @@ private struct PrototypeChapterDetailView: View {
     @State private var chapter: PrototypeChapter
     let onCreateStory: (PrototypeEntry) -> Void
     let onNewEntryPresentationChange: (Bool) -> Void
+    let onChapterUpdated: (PrototypeChapter) -> Void
     let entryDate: Date
     let presentation: Presentation
 
@@ -9695,6 +10105,7 @@ private struct PrototypeChapterDetailView: View {
     @State private var generatedStoryboards: [GeneratedStoryboard] = []
     @State private var editMode: EditMode = .inactive
     @State private var draggingEntryID: UUID?
+    @State private var isShowingCoverCustomization = false
 
     private let sections = ["Entries", "Media"]
 
@@ -9706,11 +10117,68 @@ private struct PrototypeChapterDetailView: View {
         mediaImageNames.first ?? chapter.coverImageName
     }
 
+    private func storyboardCoverCandidates(for chapter: PrototypeChapter) -> [JournalStoryboardCoverCandidate] {
+        let entryIDs = Set(chapter.entries.map(\.id))
+        guard !entryIDs.isEmpty else {
+            return []
+        }
+
+        var seen = Set<UUID>()
+        return GeneratedStoryboardStore.load()
+            .filter { storyboard in
+                guard
+                    let clientEntryID = storyboard.clientEntryID,
+                    entryIDs.contains(clientEntryID)
+                else {
+                    return false
+                }
+
+                return storyboard.isPrimary && seen.insert(storyboard.id).inserted
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+            .map(JournalStoryboardCoverCandidate.init(storyboard:))
+    }
+
+    private func applyJournalCustomization(_ customization: JournalCustomization) {
+        if let storedCoverImage = customization.storedCoverImage {
+            JournalCoverStore.save(storedCoverImage, for: chapter.title)
+        } else if customization.clearsStoredCover {
+            JournalCoverStore.delete(title: chapter.title)
+        }
+
+        let updatedChapter = PrototypeChapter(
+            id: chapter.id,
+            title: chapter.title,
+            subtitle: chapter.subtitle,
+            color: customization.color,
+            symbol: chapter.symbol,
+            coverImageName: customization.coverImageName,
+            remoteCover: customization.remoteCover,
+            kind: chapter.kind,
+            isFavorite: chapter.isFavorite,
+            createdAt: chapter.createdAt,
+            updatedAt: Date(),
+            entries: chapter.entries
+        )
+
+        chapter = updatedChapter
+        onChapterUpdated(updatedChapter)
+        UserChapterStore.updateAppearance(
+            id: updatedChapter.id,
+            color: updatedChapter.color,
+            coverImageName: updatedChapter.coverImageName,
+            remoteCover: updatedChapter.remoteCover
+        )
+        UserChapterStore.syncToCloud(updatedChapter)
+        isShowingCoverCustomization = false
+    }
+
     init(
         chapter: PrototypeChapter,
         entryDate: Date = Date(),
         presentation: Presentation = .story,
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
+        onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         _chapter = State(initialValue: chapter)
@@ -9718,6 +10186,7 @@ private struct PrototypeChapterDetailView: View {
         self.entryDate = entryDate
         self.presentation = presentation
         self.onNewEntryPresentationChange = onNewEntryPresentationChange
+        self.onChapterUpdated = onChapterUpdated
         self.onCreateStory = onCreateStory
     }
 
@@ -9803,6 +10272,13 @@ private struct PrototypeChapterDetailView: View {
                 }
             )
         }
+        .sheet(isPresented: $isShowingCoverCustomization) {
+            JournalCustomizationSheet(
+                chapter: chapter,
+                initialStoryboardCovers: storyboardCoverCandidates(for: chapter),
+                onSave: applyJournalCustomization
+            )
+        }
         .onChange(of: isShowingNewStory) { isShowing in
             onNewEntryPresentationChange(isShowing)
         }
@@ -9841,20 +10317,33 @@ private struct PrototypeChapterDetailView: View {
 
     private var heroDetails: some View {
         HStack(alignment: .bottom, spacing: 18) {
-            NotebookCover(
-                color: chapter.color,
-                symbol: nil,
-                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
-                remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
-                imageName: chapter.coverImageName,
-                width: 122,
-                height: 158
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(.white.opacity(0.28), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.28), radius: 12, y: 7)
+            Button {
+                isShowingCoverCustomization = true
+            } label: {
+                VStack(spacing: 7) {
+                    NotebookCover(
+                        color: chapter.color,
+                        symbol: nil,
+                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                        remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
+                        imageName: chapter.coverImageName,
+                        width: 122,
+                        height: 158
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(.white.opacity(0.28), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.28), radius: 12, y: 7)
+
+                    Label("Change cover", systemImage: "photo")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(Color.homeMutedText)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Change journal cover")
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
@@ -11321,7 +11810,7 @@ private struct PrototypeEntryRow: View {
 
             VStack(alignment: .leading, spacing: isCompact ? 3 : 5) {
                 Text(entry.title)
-                    .font(.system(size: isCompact ? 15 : 16, weight: .bold))
+                    .font(.system(size: isCompact ? 12 : 16, weight: .bold))
                     .foregroundStyle(Color.storyInk)
                     .lineLimit(isCompact ? 2 : 1)
                     .fixedSize(horizontal: false, vertical: true)
@@ -11556,7 +12045,7 @@ struct PrototypeChapter: Identifiable {
                     body: "Coffee, a window seat, and nowhere I needed to be for an hour.",
                     time: "9:12 AM",
                     location: "Brooklyn, NY",
-                    imageNames: ["storyboard1", "storyboard2"]
+                    imageNames: journalSampleImages(startIndex: 0, count: 2)
                 ),
                 PrototypeEntry(
                     weekday: "SUN",
@@ -11565,7 +12054,7 @@ struct PrototypeChapter: Identifiable {
                     body: "We stayed at the table long after dessert and retold the same family stories.",
                     time: "8:04 PM",
                     location: "Home",
-                    imageNames: ["storyboard3", "storyboard4"]
+                    imageNames: journalSampleImages(startIndex: 2, count: 2)
                 ),
                 PrototypeEntry(
                     weekday: "FRI",
@@ -11574,7 +12063,7 @@ struct PrototypeChapter: Identifiable {
                     body: "Everyone seemed to have the same idea: walk slowly and stay outside.",
                     time: "10:18 PM",
                     location: nil,
-                    imageNames: ["storyboard5"]
+                    imageNames: journalSampleImages(startIndex: 4, count: 1)
                 )
             ]
         ),
@@ -11594,7 +12083,7 @@ struct PrototypeChapter: Identifiable {
                     body: "A playlist, an overpacked car, and four stops we never planned to make.",
                     time: "6:42 PM",
                     location: "Montauk, NY",
-                    imageNames: ["storyboard6", "storyboard7"]
+                    imageNames: journalSampleImages(startIndex: 5, count: 2)
                 ),
                 PrototypeEntry(
                     weekday: "MON",
@@ -11603,7 +12092,7 @@ struct PrototypeChapter: Identifiable {
                     body: "The sky turned peach just as the lights came on.",
                     time: "7:31 PM",
                     location: "Asbury Park, NJ",
-                    imageNames: ["storyboard8", "storyboard9"]
+                    imageNames: journalSampleImages(startIndex: 7, count: 2)
                 )
             ]
         ),
@@ -11623,7 +12112,7 @@ struct PrototypeChapter: Identifiable {
                     body: "Every book was sealed in glass, but I could still hear the pages turning.",
                     time: "6:18 AM",
                     location: nil,
-                    imageNames: ["storyboard10", "storyboard11"]
+                    imageNames: journalSampleImages(startIndex: 9, count: 2)
                 )
             ]
         ),
@@ -11643,7 +12132,7 @@ struct PrototypeChapter: Identifiable {
                     body: "A collection of overheard sentences and passing neighborhoods.",
                     time: "5:26 PM",
                     location: "New York, NY",
-                    imageNames: ["storyboard12", "storyboard13"]
+                    imageNames: journalSampleImages(startIndex: 11, count: 2)
                 ),
                 PrototypeEntry(
                     weekday: "TUE",
@@ -11652,7 +12141,7 @@ struct PrototypeChapter: Identifiable {
                     body: "He remembered everyone's favorite color.",
                     time: "11:03 AM",
                     location: "Chelsea",
-                    imageNames: ["storyboard14", "storyboard15", "storyboard16"]
+                    imageNames: journalSampleImages(startIndex: 0, count: 3)
                 )
             ]
         )

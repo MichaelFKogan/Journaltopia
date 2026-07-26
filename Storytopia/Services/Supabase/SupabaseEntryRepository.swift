@@ -28,6 +28,8 @@ struct JournalEntry: Identifiable, Codable, Equatable, Sendable {
     let isHighlighted: Bool?
     let textAlignmentRawValue: String?
     let displayOrder: Int?
+    let thumbnailStoragePath: String?
+    let thumbnailUpdatedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 
@@ -57,6 +59,8 @@ struct JournalEntry: Identifiable, Codable, Equatable, Sendable {
         case isHighlighted = "is_highlighted"
         case textAlignmentRawValue = "text_alignment_raw_value"
         case displayOrder = "display_order"
+        case thumbnailStoragePath = "thumbnail_storage_path"
+        case thumbnailUpdatedAt = "thumbnail_updated_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -133,6 +137,16 @@ private struct JournalEntryDisplayOrderUpdate: Encodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case displayOrder = "display_order"
+    }
+}
+
+private struct JournalEntryThumbnailUpdate: Encodable, Sendable {
+    let thumbnailStoragePath: String
+    let thumbnailUpdatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case thumbnailStoragePath = "thumbnail_storage_path"
+        case thumbnailUpdatedAt = "thumbnail_updated_at"
     }
 }
 
@@ -661,7 +675,7 @@ struct SupabaseJournalRepository {
 
 struct SupabaseEntryRepository {
     private let client: SupabaseClient
-    private static let entrySummaryColumns = "id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,display_order,created_at,updated_at"
+    private static let entrySummaryColumns = "id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,display_order,thumbnail_storage_path,thumbnail_updated_at,created_at,updated_at"
     private static let legacyEntrySummaryColumns = "id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at"
 
     init(client: SupabaseClient = SupabaseService.shared) {
@@ -1008,6 +1022,29 @@ struct SupabaseEntryRepository {
                     .eq("user_id", value: userID)
                     .execute()
             }
+        } catch {
+            throw JournalEntryRepositoryError.operationFailed
+        }
+    }
+
+    func updateEntryThumbnail(clientEntryID: UUID, storagePath: String, updatedAt: Date) async throws -> JournalEntry {
+        let userID = try await authenticatedUserID()
+
+        do {
+            return try await client
+                .from("entries")
+                .update(
+                    JournalEntryThumbnailUpdate(
+                        thumbnailStoragePath: storagePath,
+                        thumbnailUpdatedAt: updatedAt
+                    )
+                )
+                .eq("client_entry_id", value: clientEntryID)
+                .eq("user_id", value: userID)
+                .select()
+                .single()
+                .execute()
+                .value
         } catch {
             throw JournalEntryRepositoryError.operationFailed
         }
