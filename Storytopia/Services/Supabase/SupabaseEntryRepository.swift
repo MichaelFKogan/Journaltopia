@@ -675,8 +675,8 @@ struct SupabaseJournalRepository {
 
 struct SupabaseEntryRepository {
     private let client: SupabaseClient
-    private static let entrySummaryColumns = "id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,display_order,thumbnail_storage_path,thumbnail_updated_at,created_at,updated_at"
-    private static let legacyEntrySummaryColumns = "id,user_id,client_entry_id,title,content,status,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at"
+    private static let entrySummaryColumns = "id,user_id,client_entry_id,title,content,status,rich_text,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,display_order,thumbnail_storage_path,thumbnail_updated_at,created_at,updated_at"
+    private static let legacyEntrySummaryColumns = "id,user_id,client_entry_id,title,content,status,rich_text,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at"
 
     init(client: SupabaseClient = SupabaseService.shared) {
         self.client = client
@@ -792,15 +792,34 @@ struct SupabaseEntryRepository {
                 .range(from: offset, to: rangeEnd)
                 .execute()
                 .value
+        case .entryDateAscending:
+            return try await query
+                .order("entry_date", ascending: true)
+                .order("created_at", ascending: true)
+                .range(from: offset, to: rangeEnd)
+                .execute()
+                .value
         case .createdAt:
             return try await query
                 .order("created_at", ascending: false)
                 .range(from: offset, to: rangeEnd)
                 .execute()
                 .value
+        case .createdAtAscending:
+            return try await query
+                .order("created_at", ascending: true)
+                .range(from: offset, to: rangeEnd)
+                .execute()
+                .value
         case .updatedAt:
             return try await query
                 .order("updated_at", ascending: false)
+                .range(from: offset, to: rangeEnd)
+                .execute()
+                .value
+        case .updatedAtAscending:
+            return try await query
+                .order("updated_at", ascending: true)
                 .range(from: offset, to: rangeEnd)
                 .execute()
                 .value
@@ -1114,8 +1133,11 @@ struct SupabaseEntryRepository {
 
 enum EntrySummarySort: Sendable, Hashable {
     case entryDate
+    case entryDateAscending
     case createdAt
+    case createdAtAscending
     case updatedAt
+    case updatedAtAscending
     case manual
 }
 

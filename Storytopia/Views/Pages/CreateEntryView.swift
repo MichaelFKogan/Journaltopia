@@ -157,6 +157,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
         let name: String
         let role: CharacterRole
         let sourcePhotoID: UUID?
+        let updatedAt: Date
     }
 
     let id: UUID
@@ -210,7 +211,8 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
                 id: $0.id,
                 name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines),
                 role: $0.role,
-                sourcePhotoID: $0.sourcePhotoID
+                sourcePhotoID: $0.sourcePhotoID,
+                updatedAt: $0.updatedAt
             )
         }
         self.artStyle = artStyle
@@ -1072,7 +1074,7 @@ enum DraftThumbnailRenderer {
             title: title,
             text: text,
             richText: richText?.normalized(for: text),
-            photos: Array(photos.prefix(5)),
+            photos: [],
             fontChoice: fontChoice,
             textColor: textColor,
             textUIColor: CreateFormattingPalette.textColors[normalizedTextColorIndex].uiColor,
@@ -1953,7 +1955,7 @@ struct CreateEntryView: View {
         let photoImages = photos.map(\.image)
         let layout = effectiveStoryboardLayout
         let requiresEntrySave = activeDraftID == nil || hasUnsavedDraftChanges
-        let requiresReferencePhotoSync = requiresEntrySave && hasUnsavedReferencePhotoChanges
+        let requiresReferencePhotoSync = requiresEntrySave && hasUnsavedEntryMediaChanges
         isGeneratingStoryboard = true
         isShowingStoryboardGenerationProgress = true
         storyboardGenerationPhase = requiresReferencePhotoSync ? .uploadingReferencePhotos : .preparingEntry
@@ -2572,8 +2574,32 @@ struct CreateEntryView: View {
         return currentReferencePhotoIDs != loadedDraftSnapshot.photoIDs
     }
 
+    private var hasUnsavedCharacterChanges: Bool {
+        guard let loadedDraftSnapshot else {
+            return !entryCharacters.isEmpty
+        }
+
+        return currentCharacterSnapshots != loadedDraftSnapshot.characters
+    }
+
+    private var hasUnsavedEntryMediaChanges: Bool {
+        hasUnsavedReferencePhotoChanges || hasUnsavedCharacterChanges
+    }
+
     private var currentReferencePhotoIDs: [UUID] {
         storyboardPhotos.compactMap { $0?.id }
+    }
+
+    private var currentCharacterSnapshots: [LoadedCreateEntryDraftSnapshot.CharacterSnapshot] {
+        entryCharacters.map {
+            LoadedCreateEntryDraftSnapshot.CharacterSnapshot(
+                id: $0.id,
+                name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                role: $0.role,
+                sourcePhotoID: $0.sourcePhotoID,
+                updatedAt: $0.updatedAt
+            )
+        }
     }
 
     private func requestExit() {
@@ -2772,7 +2798,7 @@ struct CreateEntryView: View {
             title: pendingSave.title,
             text: pendingSave.text,
             richText: pendingSave.richText,
-            photos: pendingSave.photos.map(\.image),
+            photos: [],
             fontChoiceRawValue: pendingSave.fontChoiceRawValue,
             textColorIndex: pendingSave.textColorIndex,
             textSize: pendingSave.textSize,
@@ -3207,10 +3233,6 @@ struct CreateEntryView: View {
                     .padding(.bottom, 8)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-
-            photosAttachedTab
-                .padding(.horizontal, 16)
-                .padding(.bottom, 10)
 
             unifiedEditorToolbar
         }
@@ -4212,6 +4234,8 @@ struct CreateEntryView: View {
                 storyboardLayoutPickerSection
             }
 
+            entryDetailsReferencePhotosCard
+            entryDetailsCharactersCard
             artStylePickerSection
             journalDestinationCard
             storyDetailsCard
@@ -4918,6 +4942,44 @@ struct CreateEntryView: View {
                 .font(.system(size: 14, weight: .semibold, design: .serif))
                 .foregroundStyle(Color.storyInk)
         }
+    }
+
+    private var entryDetailsReferencePhotosCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            photoStripHeader
+                .padding(.horizontal, 16)
+
+            referencePhotoExplainerText
+                .padding(.horizontal, 16)
+
+            referencePhotoStripRow
+        }
+        .padding(.top, 10)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
+
+    private var entryDetailsCharactersCard: some View {
+        EntryDetailsCharactersCard(
+            characters: entryCharacters,
+            onAddCharacter: {
+                dismissKeyboard()
+                characterEditorSession = CharacterEditorSession(character: nil)
+            },
+            onEditCharacter: { character in
+                dismissKeyboard()
+                characterEditorSession = CharacterEditorSession(character: character)
+            },
+            onDeleteCharacter: { character in
+                deleteCharacter(character)
+            }
+        )
     }
 
     private var referencePhotoExplainerText: some View {
@@ -8556,6 +8618,124 @@ struct CharacterStripThumbnail: View {
     }
 }
 
+private struct EntryDetailsCharactersCard: View {
+    let characters: [EntryCharacter]
+    let onAddCharacter: () -> Void
+    let onEditCharacter: (EntryCharacter) -> Void
+    let onDeleteCharacter: (EntryCharacter) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            header
+
+            Text("Use this to add character references, and single out people from group photos. If your story has more than one character, reference them here.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.62))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16)
+
+            characterRow
+        }
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+                .frame(width: 18, height: 18)
+
+            Text("Characters")
+                .font(.system(size: 13, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private var characterRow: some View {
+        if characters.isEmpty {
+            Button(action: onAddCharacter) {
+                addCharacterTileLabel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
+                    .frame(height: 92, alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add character")
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(characters) { character in
+                        CharacterStripThumbnail(
+                            character: character,
+                            tapAction: {
+                                onEditCharacter(character)
+                            },
+                            removeAction: {
+                                onDeleteCharacter(character)
+                            }
+                        )
+                    }
+
+                    addCharacterTile
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
+            }
+            .frame(height: 92)
+        }
+    }
+
+    private var addCharacterTile: some View {
+        Button(action: onAddCharacter) {
+            addCharacterTileLabel
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add character")
+        .frame(height: 76)
+    }
+
+    private var addCharacterTileLabel: some View {
+        HStack(spacing: 8) {
+            StoryboardPhotoStripAddButton(
+                systemName: characters.isEmpty ? "person.crop.circle.badge.plus" : "plus",
+                iconColor: characters.isEmpty ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                size: 58,
+                iconWeight: characters.isEmpty ? .semibold : .light,
+                shape: .circle
+            )
+
+            if characters.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Add Character")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+
+                    Text("Choose a portrait")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.66))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+                }
+            }
+        }
+    }
+}
+
 private struct CharacterEditorSheet: View {
     private enum Step {
         case choosePhoto
@@ -8712,89 +8892,102 @@ private struct CharacterEditorSheet: View {
     }
 
     private var detailsContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sheetHeader(title: "Character Details", systemName: "person.text.rectangle")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                sheetHeader(title: "Character Details", systemName: "person.text.rectangle")
 
-            if let croppedImage {
-                HStack(alignment: .center, spacing: 12) {
-                    Image(uiImage: croppedImage)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 94, height: 94)
-                        .clipped()
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(Color.storyPurple.opacity(0.28), lineWidth: 1)
-                        )
-
-                    Button {
-                        step = .choosePhoto
-                    } label: {
-                        Label("Change Photo", systemImage: "camera")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Color.storyPurple)
-                            .padding(.horizontal, 11)
-                            .frame(height: 36)
-                            .background(Color.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                if let croppedImage {
+                    HStack(alignment: .center, spacing: 12) {
+                        Image(uiImage: croppedImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 94, height: 94)
+                            .clipped()
+                            .clipShape(Circle())
                             .overlay(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
+                                Circle()
+                                    .stroke(Color.storyPurple.opacity(0.28), lineWidth: 1)
                             )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Name")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Color.storyInk.opacity(0.58))
-
-                TextField("Character name", text: $name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.storyInk)
-                    .tint(Color.storyPurple)
-                    .textInputAutocapitalization(.words)
-                    .padding(.horizontal, 12)
-                    .frame(height: 46)
-                    .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.storyBorder.opacity(0.66), lineWidth: 1)
-                    )
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Role")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Color.storyInk.opacity(0.58))
-
-                VStack(spacing: 7) {
-                    ForEach(CharacterRole.allCases) { option in
-                        characterRoleButton(option)
+                        Button {
+                            step = .choosePhoto
+                        } label: {
+                            Label("Change Photo", systemImage: "camera")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(Color.storyPurple)
+                                .padding(.horizontal, 11)
+                                .frame(height: 36)
+                                .background(Color.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-            }
 
-            if let validationMessage {
-                Text(validationMessage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.red.opacity(0.88))
-            }
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Name")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
 
-            Button {
-                save()
-            } label: {
-                Text("Save Character")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    TextField("Character name", text: $name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.storyInk)
+                        .tint(Color.storyPurple)
+                        .textInputAutocapitalization(.words)
+                        .padding(.horizontal, 12)
+                        .frame(height: 46)
+                        .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(Color.storyBorder.opacity(0.66), lineWidth: 1)
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Role")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+
+                    VStack(spacing: 7) {
+                        ForEach(CharacterRole.allCases) { option in
+                            characterRoleButton(option)
+                        }
+                    }
+                }
+
+                if let validationMessage {
+                    Text(validationMessage)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.red.opacity(0.88))
+                }
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 8)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            saveCharacterButton
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+                .background(Color.homePageBackground)
+        }
+    }
+
+    private var saveCharacterButton: some View {
+        Button {
+            save()
+        } label: {
+            Text("Save Character")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private func characterRoleButton(_ option: CharacterRole) -> some View {

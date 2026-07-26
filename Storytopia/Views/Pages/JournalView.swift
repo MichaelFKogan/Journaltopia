@@ -63,11 +63,21 @@ struct JournalView: View {
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
                 return lhs.createdAt > rhs.createdAt
+            case .createdOldest:
+                if lhs.createdAt == rhs.createdAt {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.createdAt < rhs.createdAt
             case .updated:
                 if lhs.updatedAt == rhs.updatedAt {
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
                 return lhs.updatedAt > rhs.updatedAt
+            case .updatedOldest:
+                if lhs.updatedAt == rhs.updatedAt {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.updatedAt < rhs.updatedAt
             case .manual:
                 return false
             }
@@ -198,16 +208,16 @@ struct JournalView: View {
 
     private var journalSortMenu: some View {
         Menu {
-            ForEach(JournalSortOption.allCases) { option in
+            ForEach(JournalSortOption.menuOptions) { option in
                 Button {
-                    selectedJournalSort = option
+                    selectedJournalSort = selectedJournalSort.selection(afterChoosing: option)
                 } label: {
-                    Label(option.title, systemImage: selectedJournalSort == option ? "checkmark" : option.systemImage)
+                    Label(option.menuTitle, systemImage: selectedJournalSort.menuSystemImage(for: option))
                 }
             }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: selectedJournalSort.systemImage)
+                Image(systemName: selectedJournalSort.displaySystemImage)
                     .font(.system(size: 13, weight: .bold))
 
                 Text(selectedJournalSort.shortTitle)
@@ -953,10 +963,25 @@ private struct JournalRoute: Hashable, Identifiable {
 private enum JournalSortOption: String, CaseIterable, Identifiable {
     case manual
     case updated
+    case updatedOldest
     case created
+    case createdOldest
+
+    static let menuOptions: [JournalSortOption] = [.manual, .updated, .created]
 
     var id: String {
         rawValue
+    }
+
+    var menuTitle: String {
+        switch self {
+        case .manual:
+            return "Custom Order"
+        case .updated, .updatedOldest:
+            return "Edited"
+        case .created, .createdOldest:
+            return "Created"
+        }
     }
 
     var title: String {
@@ -964,14 +989,40 @@ private enum JournalSortOption: String, CaseIterable, Identifiable {
         case .manual:
             return "Custom Order"
         case .updated:
-            return "Recently Edited"
+            return "Edited: Newest"
+        case .updatedOldest:
+            return "Edited: Oldest"
         case .created:
-            return "Date Created"
+            return "Created: Newest"
+        case .createdOldest:
+            return "Created: Oldest"
         }
     }
 
     var shortTitle: String {
-        title
+        switch self {
+        case .manual:
+            return "Custom Order"
+        case .updated:
+            return "Edited: Newest"
+        case .updatedOldest:
+            return "Edited: Oldest"
+        case .created:
+            return "Created: Newest"
+        case .createdOldest:
+            return "Created: Oldest"
+        }
+    }
+
+    var displaySystemImage: String {
+        switch self {
+        case .manual:
+            return systemImage
+        case .updated, .created:
+            return "arrow.down"
+        case .updatedOldest, .createdOldest:
+            return "arrow.up"
+        }
     }
 
     var systemImage: String {
@@ -980,9 +1031,55 @@ private enum JournalSortOption: String, CaseIterable, Identifiable {
             return "line.3.horizontal"
         case .updated:
             return "clock.arrow.circlepath"
+        case .updatedOldest:
+            return "clock"
         case .created:
             return "plus.circle"
+        case .createdOldest:
+            return "plus.circle"
         }
+    }
+
+    private var menuSelection: JournalSortOption {
+        switch self {
+        case .manual:
+            return .manual
+        case .updated, .updatedOldest:
+            return .updated
+        case .created, .createdOldest:
+            return .created
+        }
+    }
+
+    private var toggledDirection: JournalSortOption {
+        switch self {
+        case .manual:
+            return .manual
+        case .updated:
+            return .updatedOldest
+        case .updatedOldest:
+            return .updated
+        case .created:
+            return .createdOldest
+        case .createdOldest:
+            return .created
+        }
+    }
+
+    func selection(afterChoosing option: JournalSortOption) -> JournalSortOption {
+        guard option != .manual else {
+            return .manual
+        }
+
+        return menuSelection == option ? toggledDirection : option
+    }
+
+    func menuSystemImage(for option: JournalSortOption) -> String {
+        guard menuSelection == option else {
+            return option.systemImage
+        }
+
+        return option == .manual ? "checkmark" : displaySystemImage
     }
 }
 
@@ -6034,10 +6131,16 @@ private extension EntrySummarySort {
         switch self {
         case .entryDate:
             return "entryDate"
+        case .entryDateAscending:
+            return "entryDateAscending"
         case .createdAt:
             return "createdAt"
+        case .createdAtAscending:
+            return "createdAtAscending"
         case .updatedAt:
             return "updatedAt"
+        case .updatedAtAscending:
+            return "updatedAtAscending"
         case .manual:
             return "manual"
         }
@@ -6163,7 +6266,7 @@ struct EntriesView: View {
     @Binding var isOpeningEntryFromEntries: Bool
     @Binding var isOpeningCompletedEntryFromEntries: Bool
 
-    private let thumbnailRendererVersion = 10
+    private let thumbnailRendererVersion = 12
     private let thumbnailRendererVersionKey = "StorytopiaEntryThumbnailRendererVersion"
 
     @State private var showsPrototypeData = true
@@ -6540,16 +6643,16 @@ struct EntriesView: View {
 
     private var entrySortMenu: some View {
         Menu {
-            ForEach(EntrySortOption.allCases) { option in
+            ForEach(EntrySortOption.menuOptions) { option in
                 Button {
-                    selectedEntrySort = option
+                    selectedEntrySort = selectedEntrySort.selection(afterChoosing: option)
                 } label: {
-                    Label(option.title, systemImage: selectedEntrySort == option ? "checkmark" : option.systemImage)
+                    Label(option.menuTitle, systemImage: selectedEntrySort.menuSystemImage(for: option))
                 }
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: selectedEntrySort.systemImage)
+                Image(systemName: selectedEntrySort.displaySystemImage)
                     .font(.system(size: 12, weight: .bold))
 
                 Text(selectedEntrySort.shortTitle)
@@ -7349,22 +7452,22 @@ struct EntriesView: View {
         let rhsDate = sortDate(for: rhs)
 
         if lhsDate != rhsDate {
-            return lhsDate > rhsDate
+            return selectedEntrySort.sortsAscending ? lhsDate < rhsDate : lhsDate > rhsDate
         }
 
-        return lhs.createdAt > rhs.createdAt
+        return selectedEntrySort.sortsAscending ? lhs.createdAt < rhs.createdAt : lhs.createdAt > rhs.createdAt
     }
 
     private func sortDate(for item: EntryDisplayItem) -> Date {
         switch selectedEntrySort {
         case .manual:
             return item.createdAt
-        case .entryDate:
+        case .entryDate, .entryDateOldest:
             let entry = item.entry
             return entry.datePrecision == .noDate ? item.createdAt : entry.date
-        case .cloudCreated:
+        case .cloudCreated, .cloudCreatedOldest:
             return item.createdAt
-        case .updated:
+        case .updated, .updatedOldest:
             return item.updatedAt
         }
     }
@@ -7633,7 +7736,7 @@ struct EntriesView: View {
             title: trimmedTitle,
             text: entry.text,
             richText: entry.richText,
-            photos: entry.photos.map(\.image),
+            photos: [],
             fontChoiceRawValue: entry.fontChoiceRawValue,
             textColorIndex: entry.textColorIndex,
             textSize: entry.textSize,
@@ -7653,6 +7756,7 @@ struct EntriesView: View {
             text: entry.text,
             richText: entry.richText,
             referencePhotos: entry.photos,
+            characters: entry.characters,
             artStyle: entry.artStyle,
             location: entry.location,
             date: entry.date,
@@ -8355,6 +8459,7 @@ struct EntriesView: View {
 
         var entry = entryForDisplay(item)
         let photos: [CreateEntryReferencePhoto]
+        let characters: [EntryCharacter]
         if let cloudEntry = item.cloudEntry {
             do {
                 let fullCloudEntry = try await SupabaseEntryRepository().getEntry(id: cloudEntry.id)
@@ -8364,12 +8469,20 @@ struct EntriesView: View {
                 cloudEntriesErrorMessage = "Could not download this entry's reference photos."
                 return nil
             }
+
+            do {
+                characters = try await SupabaseEntryCharacterService().loadCharacters(entryID: cloudEntry.id)
+            } catch {
+                print("[Storytopia] Entry character download skipped: \(error.localizedDescription)")
+                characters = []
+            }
         } else {
             photos = []
+            characters = entry.characters
         }
 
         if entry.thumbnail == nil {
-            entry = entry.replacingThumbnail(renderThumbnail(for: entry, photos: photos.map(\.image)))
+            entry = entry.replacingThumbnail(renderThumbnail(for: entry, photos: []))
         }
 
         return CreateEntryDraftStore.save(
@@ -8378,6 +8491,7 @@ struct EntriesView: View {
             text: entry.text,
             richText: entry.richText,
             referencePhotos: photos,
+            characters: characters,
             artStyle: entry.artStyle,
             location: entry.location,
             date: entry.date,
@@ -8413,7 +8527,7 @@ struct EntriesView: View {
             let clientEntryID = cloudEntry.clientEntryID
 
             if let localThumbnail = localThumbnailsByID[clientEntryID] {
-                let localVersion = cloudThumbnailVersion(for: cloudEntry) ?? "local"
+                let localVersion = cloudThumbnailVersion(for: cloudEntry) ?? "local|\(Int(cloudEntry.updatedAt.timeIntervalSince1970 * 1000))"
                 if updatedThumbnails[clientEntryID] == nil || updatedVersions[clientEntryID] != localVersion {
                     didUpdate = true
                 }
@@ -8423,9 +8537,12 @@ struct EntriesView: View {
             }
 
             guard let currentVersion = cloudThumbnailVersion(for: cloudEntry) else {
-                if updatedThumbnails.removeValue(forKey: clientEntryID) != nil {
-                    didUpdate = true
+                let localVersion = localCloudThumbnailVersion(for: cloudEntry)
+                if updatedVersions[clientEntryID] == localVersion, updatedThumbnails[clientEntryID] != nil {
+                    continue
                 }
+
+                didUpdate = updatedThumbnails.removeValue(forKey: clientEntryID) != nil || didUpdate
                 updatedVersions.removeValue(forKey: clientEntryID)
                 continue
             }
@@ -8465,7 +8582,6 @@ struct EntriesView: View {
     private func loadCloudThumbnailIfNeeded(for item: EntryDisplayItem) {
         guard
             let cloudEntry = item.cloudEntry,
-            let thumbnailStoragePath = cloudEntry.thumbnailStoragePath,
             cloudEntryThumbnails[item.id] == nil,
             !cloudThumbnailIDsBeingLoaded.contains(item.id)
         else {
@@ -8478,6 +8594,11 @@ struct EntriesView: View {
                 cloudThumbnailIDsBeingLoaded.remove(item.id)
             }
 
+            guard let thumbnailStoragePath = cloudEntry.thumbnailStoragePath else {
+                await renderLocalCloudThumbnail(for: cloudEntry)
+                return
+            }
+
             do {
                 let thumbnail = try await SupabaseEntryThumbnailService().downloadThumbnail(
                     storagePath: thumbnailStoragePath,
@@ -8488,7 +8609,7 @@ struct EntriesView: View {
                 EntriesCloudThumbnailDiskCache.store(thumbnail, for: cloudEntry)
                 storeCurrentEntriesSessionSnapshot()
             } catch {
-                await backfillCloudThumbnail(for: cloudEntry)
+                await renderLocalCloudThumbnail(for: cloudEntry)
             }
         }
     }
@@ -8521,14 +8642,8 @@ struct EntriesView: View {
                 continue
             }
 
-            let entry = CreateEntryDraft.fromCloud(cloudEntry)
-            guard let thumbnail = renderThumbnail(for: entry, photos: []) else {
-                continue
-            }
-
             backfilledCount += 1
-
-            await uploadBackfilledCloudThumbnail(thumbnail, for: cloudEntry)
+            await renderLocalCloudThumbnail(for: cloudEntry)
 
             if index.isMultiple(of: 2) {
                 await Task.yield()
@@ -8541,7 +8656,7 @@ struct EntriesView: View {
     }
 
     @MainActor
-    private func backfillCloudThumbnail(for cloudEntry: JournalEntry) async {
+    private func renderLocalCloudThumbnail(for cloudEntry: JournalEntry) async {
         guard cloudEntryThumbnails[cloudEntry.clientEntryID] == nil else {
             return
         }
@@ -8551,32 +8666,13 @@ struct EntriesView: View {
             return
         }
 
-        await uploadBackfilledCloudThumbnail(thumbnail, for: cloudEntry)
+        cloudEntryThumbnails[cloudEntry.clientEntryID] = thumbnail
+        cloudEntryThumbnailVersions[cloudEntry.clientEntryID] = localCloudThumbnailVersion(for: cloudEntry)
         storeCurrentEntriesSessionSnapshot()
     }
 
-    @MainActor
-    private func uploadBackfilledCloudThumbnail(_ thumbnail: UIImage, for cloudEntry: JournalEntry) async {
-        do {
-            let updatedEntry = try await SupabaseEntryThumbnailService().uploadThumbnail(thumbnail, for: cloudEntry)
-            if let entryIndex = cloudEntries.firstIndex(where: { $0.clientEntryID == updatedEntry.clientEntryID }) {
-                cloudEntries[entryIndex] = updatedEntry
-            }
-            cloudEntryThumbnails[updatedEntry.clientEntryID] = thumbnail
-            cloudEntryThumbnailVersions[updatedEntry.clientEntryID] = cloudThumbnailVersion(for: updatedEntry)
-            EntriesCloudThumbnailDiskCache.store(thumbnail, for: updatedEntry)
-            if let loadedEntryQueryKey {
-                EntriesCloudFetchCache.storeEntrySummaries(
-                    cloudEntries,
-                    counts: cloudEntryCounts,
-                    hasMore: hasMoreCloudEntries,
-                    nextOffset: nextCloudEntryOffset,
-                    for: loadedEntryQueryKey
-                )
-            }
-        } catch {
-            print("[Storytopia] Legacy entry thumbnail backfill failed: \(error.localizedDescription)")
-        }
+    private func localCloudThumbnailVersion(for entry: JournalEntry) -> String {
+        "local-render|\(entry.clientEntryID.uuidString.lowercased())|\(Int(entry.updatedAt.timeIntervalSince1970 * 1000))"
     }
 
     @MainActor
@@ -8595,7 +8691,7 @@ struct EntriesView: View {
                     title: entry.title,
                     text: entry.text,
                     richText: entry.richText,
-                    photos: entry.photos.map(\.image),
+                    photos: [],
                     fontChoiceRawValue: entry.fontChoiceRawValue,
                     textColorIndex: entry.textColorIndex,
                     textSize: entry.textSize,
@@ -9101,11 +9197,11 @@ private func entryPreviewDateDisplay(_ entry: CreateEntryDraft, sortOption: Entr
     switch sortOption {
     case .manual:
         date = entry.createdAt
-    case .entryDate:
+    case .entryDate, .entryDateOldest:
         date = entry.datePrecision == .noDate ? entry.createdAt : entry.date
-    case .cloudCreated:
+    case .cloudCreated, .cloudCreatedOldest:
         date = entry.createdAt
-    case .updated:
+    case .updated, .updatedOldest:
         date = entry.updatedAt
     }
 
@@ -9797,11 +9893,29 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
 private enum EntrySortOption: String, CaseIterable, Identifiable {
     case manual
     case entryDate
+    case entryDateOldest
     case cloudCreated
+    case cloudCreatedOldest
     case updated
+    case updatedOldest
+
+    static let menuOptions: [EntrySortOption] = [.manual, .entryDate, .cloudCreated, .updated]
 
     var id: String {
         rawValue
+    }
+
+    var menuTitle: String {
+        switch self {
+        case .manual:
+            return "Custom Order"
+        case .entryDate, .entryDateOldest:
+            return "Story Date"
+        case .cloudCreated, .cloudCreatedOldest:
+            return "Created"
+        case .updated, .updatedOldest:
+            return "Edited"
+        }
     }
 
     var title: String {
@@ -9809,11 +9923,17 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
         case .manual:
             return "Custom Order"
         case .entryDate:
-            return "Story Date"
+            return "Story Date: Newest"
+        case .entryDateOldest:
+            return "Story Date: Oldest"
         case .cloudCreated:
-            return "Date Created"
+            return "Created: Newest"
+        case .cloudCreatedOldest:
+            return "Created: Oldest"
         case .updated:
-            return "Recently Edited"
+            return "Edited: Newest"
+        case .updatedOldest:
+            return "Edited: Oldest"
         }
     }
 
@@ -9822,11 +9942,28 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
         case .manual:
             return "Custom Order"
         case .entryDate:
-            return "Story Date"
+            return "Story: Newest"
+        case .entryDateOldest:
+            return "Story: Oldest"
         case .cloudCreated:
-            return "Date Created"
+            return "Created: Newest"
+        case .cloudCreatedOldest:
+            return "Created: Oldest"
         case .updated:
-            return "Recently Edited"
+            return "Edited: Newest"
+        case .updatedOldest:
+            return "Edited: Oldest"
+        }
+    }
+
+    var displaySystemImage: String {
+        switch self {
+        case .manual:
+            return systemImage
+        case .entryDate, .cloudCreated, .updated:
+            return "arrow.down"
+        case .entryDateOldest, .cloudCreatedOldest, .updatedOldest:
+            return "arrow.up"
         }
     }
 
@@ -9836,22 +9973,85 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
             return "line.3.horizontal"
         case .entryDate:
             return "calendar"
+        case .entryDateOldest:
+            return "calendar"
         case .cloudCreated:
+            return "plus.circle"
+        case .cloudCreatedOldest:
             return "plus.circle"
         case .updated:
             return "clock.arrow.circlepath"
+        case .updatedOldest:
+            return "clock"
         }
     }
 
     var previewDateLabel: String {
         switch self {
-        case .manual, .cloudCreated:
+        case .manual, .cloudCreated, .cloudCreatedOldest:
             return "Created"
-        case .entryDate:
+        case .entryDate, .entryDateOldest:
             return "Story Date"
-        case .updated:
+        case .updated, .updatedOldest:
             return "Edited"
         }
+    }
+
+    var sortsAscending: Bool {
+        switch self {
+        case .entryDateOldest, .cloudCreatedOldest, .updatedOldest:
+            return true
+        case .manual, .entryDate, .cloudCreated, .updated:
+            return false
+        }
+    }
+
+    private var menuSelection: EntrySortOption {
+        switch self {
+        case .manual:
+            return .manual
+        case .entryDate, .entryDateOldest:
+            return .entryDate
+        case .cloudCreated, .cloudCreatedOldest:
+            return .cloudCreated
+        case .updated, .updatedOldest:
+            return .updated
+        }
+    }
+
+    private var toggledDirection: EntrySortOption {
+        switch self {
+        case .manual:
+            return .manual
+        case .entryDate:
+            return .entryDateOldest
+        case .entryDateOldest:
+            return .entryDate
+        case .cloudCreated:
+            return .cloudCreatedOldest
+        case .cloudCreatedOldest:
+            return .cloudCreated
+        case .updated:
+            return .updatedOldest
+        case .updatedOldest:
+            return .updated
+        }
+    }
+
+    func selection(afterChoosing option: EntrySortOption) -> EntrySortOption {
+        guard option != .manual else {
+            return .manual
+        }
+
+        return menuSelection == option ? toggledDirection : option
+    }
+
+    func menuSystemImage(for option: EntrySortOption) -> String {
+        guard menuSelection == option else {
+            return option.systemImage
+        }
+
+        return option == .manual ? "checkmark" : displaySystemImage
     }
 
     var summarySort: EntrySummarySort {
@@ -9860,10 +10060,16 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
             return .manual
         case .entryDate:
             return .entryDate
+        case .entryDateOldest:
+            return .entryDateAscending
         case .cloudCreated:
             return .createdAt
+        case .cloudCreatedOldest:
+            return .createdAtAscending
         case .updated:
             return .updatedAt
+        case .updatedOldest:
+            return .updatedAtAscending
         }
     }
 }

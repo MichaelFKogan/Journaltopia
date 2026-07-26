@@ -181,7 +181,7 @@ struct CreateEntryReferencePhoto: Identifiable {
     }
 }
 
-enum CharacterRole: String, CaseIterable, Identifiable, Codable {
+enum CharacterRole: String, CaseIterable, Identifiable, Codable, Sendable {
     case mainCharacter
     case supportingCharacter
     case pet

@@ -510,17 +510,20 @@ struct EntrySaveService {
     private let repository: SupabaseEntryRepository
     private let journalRepository: SupabaseJournalRepository
     private let referencePhotoService: SupabaseReferencePhotoService
+    private let characterService: SupabaseEntryCharacterService
     private let thumbnailService: SupabaseEntryThumbnailService
 
     init(
         repository: SupabaseEntryRepository = SupabaseEntryRepository(),
         journalRepository: SupabaseJournalRepository = SupabaseJournalRepository(),
         referencePhotoService: SupabaseReferencePhotoService = SupabaseReferencePhotoService(),
+        characterService: SupabaseEntryCharacterService = SupabaseEntryCharacterService(),
         thumbnailService: SupabaseEntryThumbnailService = SupabaseEntryThumbnailService()
     ) {
         self.repository = repository
         self.journalRepository = journalRepository
         self.referencePhotoService = referencePhotoService
+        self.characterService = characterService
         self.thumbnailService = thumbnailService
     }
 
@@ -617,21 +620,19 @@ struct EntrySaveService {
         }
 
         do {
-            try await referencePhotoService.syncReferencePhotos(
-                entry: cloudEntry,
-                photos: payload.photos
-            )
+            try await referencePhotoService.syncReferencePhotos(entry: cloudEntry, photos: payload.photos)
+            try await characterService.syncCharacters(entry: cloudEntry, characters: payload.characters)
 
             return EntrySaveResult(
                 localDraftID: localDraftID,
                 cloudEntry: cloudEntry,
-                state: payload.photos.isEmpty ? .saved : .photosUploaded
+                state: payload.photos.isEmpty && payload.characters.isEmpty ? .saved : .photosUploaded
             )
         } catch {
             return EntrySaveResult(
                 localDraftID: localDraftID,
                 cloudEntry: cloudEntry,
-                state: .photoUploadFailed("Saved locally. Photo sync failed.")
+                state: .photoUploadFailed("Saved locally. Media sync failed.")
             )
         }
     }
@@ -738,6 +739,7 @@ struct EntrySaveService {
             if isSignedIn {
                 try await journalRepository.deleteJournalEntryMemberships(clientEntryID: localDraftID)
                 try await referencePhotoService.deleteReferencePhotos(clientEntryID: localDraftID)
+                try await characterService.deleteCharacters(clientEntryID: localDraftID)
                 try await repository.deleteEntry(clientEntryID: localDraftID)
             }
 
@@ -751,6 +753,7 @@ struct EntrySaveService {
 
         await thumbnailService.deleteThumbnail(storagePath: cloudEntry.thumbnailStoragePath)
         try await referencePhotoService.deleteReferencePhotos(clientEntryID: cloudEntry.clientEntryID)
+        try await characterService.deleteCharacters(clientEntryID: cloudEntry.clientEntryID)
         try await journalRepository.deleteJournalEntryMemberships(clientEntryID: cloudEntry.clientEntryID)
         try await repository.deleteEntry(clientEntryID: cloudEntry.clientEntryID)
         CreateEntryDraftStore.delete(id: localDraftID)
@@ -761,7 +764,7 @@ struct EntrySaveService {
             title: payload.title,
             text: payload.text,
             richText: payload.richText,
-            photos: payload.photos.map(\.image),
+            photos: [],
             fontChoiceRawValue: payload.fontChoiceRawValue,
             textColorIndex: payload.textColorIndex,
             textSize: payload.textSize,
