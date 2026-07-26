@@ -11810,7 +11810,7 @@ private struct PrototypeEntryRow: View {
 
             VStack(alignment: .leading, spacing: isCompact ? 3 : 5) {
                 Text(entry.title)
-                    .font(.system(size: isCompact ? 14 : 16, weight: .bold))
+                    .font(.system(size: isCompact ? 12 : 16, weight: .bold))
                     .foregroundStyle(Color.storyInk)
                     .lineLimit(isCompact ? 2 : 1)
                     .fixedSize(horizontal: false, vertical: true)

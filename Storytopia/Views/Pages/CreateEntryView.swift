@@ -3356,12 +3356,10 @@ struct CreateEntryView: View {
                     }
                     .padding(.horizontal, 16)
 
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        photoStripContent
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 4)
-                    }
-                    .frame(height: 76)
+                    referencePhotoExplainerText
+                        .padding(.horizontal, 16)
+
+                    referencePhotoStripRow
 
                     Divider()
                         .overlay(Color.storyBorder.opacity(0.48))
@@ -4922,6 +4920,13 @@ struct CreateEntryView: View {
         }
     }
 
+    private var referencePhotoExplainerText: some View {
+        Text("Use this to add reference photos: scenery, objects, or people. These help build your storyboard image.")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.storyInk.opacity(0.62))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var storyDetailsHeader: some View {
         HStack(alignment: .center, spacing: 6) {
             Image(systemName: "calendar.badge.clock")
@@ -5065,23 +5070,35 @@ struct CreateEntryView: View {
                 }
             }
 
-            if nextAvailablePhotoSlot != nil {
+            if hasStoryboardPhotos, nextAvailablePhotoSlot != nil {
                 addPhotoStripButton
             }
+        }
+    }
 
-            if !hasStoryboardPhotos {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Add Reference Photos")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.storyPurple)
-
-                    Text("Up to 5 photos")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.storyInk.opacity(0.66))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.76)
-                }
+    @ViewBuilder
+    private var referencePhotoStripRow: some View {
+        if hasStoryboardPhotos {
+            ScrollView(.horizontal, showsIndicators: false) {
+                photoStripContent
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
             }
+            .frame(height: 76)
+        } else {
+            Button {
+                dismissKeyboard()
+                openPhotoSourceSheet()
+            } label: {
+                addReferencePhotoTileLabel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                    .frame(height: 76, alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add reference photos")
         }
     }
 
@@ -5101,10 +5118,32 @@ struct CreateEntryView: View {
             }
             .padding(.horizontal, 16)
 
+            characterPhotoExplainerText
+                .padding(.horizontal, 16)
+
+            characterPhotoStripRow
+        }
+    }
+
+    @ViewBuilder
+    private var characterPhotoStripRow: some View {
+        if entryCharacters.isEmpty {
+            Button {
+                dismissKeyboard()
+                characterEditorSession = CharacterEditorSession(character: nil)
+            } label: {
+                addCharacterTileLabel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
+                    .frame(height: 92, alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add character")
+        } else {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 10) {
-                    addCharacterTile
-
                     ForEach(entryCharacters) { character in
                         CharacterStripThumbnail(
                             character: character,
@@ -5117,6 +5156,8 @@ struct CreateEntryView: View {
                             }
                         )
                     }
+
+                    addCharacterTile
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 2)
@@ -5125,36 +5166,71 @@ struct CreateEntryView: View {
         }
     }
 
+    private var characterPhotoExplainerText: some View {
+        Text("Use this to add character references, and single out people from group photos. If your story has more than one character, reference them here.")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.storyInk.opacity(0.62))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var addCharacterTile: some View {
+        Button {
+            dismissKeyboard()
+            characterEditorSession = CharacterEditorSession(character: nil)
+        } label: {
+            addCharacterTileLabel
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add character")
+        .frame(height: 76)
+    }
+
+    private var addCharacterTileLabel: some View {
         HStack(spacing: 8) {
-            Button {
-                dismissKeyboard()
-                characterEditorSession = CharacterEditorSession(character: nil)
-            } label: {
-                StoryboardPhotoStripAddButton(
-                    systemName: "person.crop.circle.badge.plus",
-                    iconColor: Color.storyPurple,
-                    size: 52,
-                    iconWeight: .semibold,
-                    shape: .circle
-                )
+            StoryboardPhotoStripAddButton(
+                systemName: entryCharacters.isEmpty ? "person.crop.circle.badge.plus" : "plus",
+                iconColor: entryCharacters.isEmpty ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                size: 58,
+                iconWeight: entryCharacters.isEmpty ? .semibold : .light,
+                shape: .circle
+            )
+
+            if entryCharacters.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Add Character")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+
+                    Text("Choose a portrait")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.66))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Add character")
+        }
+    }
+
+    private var addReferencePhotoTileLabel: some View {
+        HStack(spacing: 9) {
+            StoryboardPhotoStripAddButton(
+                systemName: "camera",
+                iconColor: Color.storyPurple,
+                iconWeight: .semibold
+            )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("Add Character")
+                Text("Add Reference Photos")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.storyPurple)
 
-                Text("Choose a portrait")
+                Text("Up to 5 photos")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.storyInk.opacity(0.66))
                     .lineLimit(1)
                     .minimumScaleFactor(0.76)
             }
         }
-        .frame(height: 76)
     }
 
     private var addPhotoStripButton: some View {
@@ -8423,6 +8499,9 @@ struct CharacterStripThumbnail: View {
     let tapAction: () -> Void
     let removeAction: () -> Void
 
+    private let imageSize: CGFloat = 58
+    private let badgeOverflow: CGFloat = 5
+
     var body: some View {
         VStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
@@ -8430,7 +8509,7 @@ struct CharacterStripThumbnail: View {
                     Image(uiImage: character.image)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 58, height: 58)
+                        .frame(width: imageSize, height: imageSize)
                         .clipped()
                         .clipShape(Circle())
                         .overlay(
@@ -8451,7 +8530,7 @@ struct CharacterStripThumbnail: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Remove \(character.name)")
-                .offset(x: 5, y: -5)
+                .offset(x: badgeOverflow, y: -badgeOverflow)
 
                 if character.role == .mainCharacter {
                     Image(systemName: "star.fill")
@@ -8459,11 +8538,12 @@ struct CharacterStripThumbnail: View {
                         .foregroundStyle(.white)
                         .frame(width: 17, height: 17)
                         .background(Color.storyPurple.opacity(0.95), in: Circle())
-                        .offset(x: -39, y: -5)
+                        .offset(x: -39, y: -badgeOverflow)
                         .accessibilityHidden(true)
                 }
             }
-            .frame(width: 66, height: 62)
+            .frame(width: imageSize + (badgeOverflow * 2), height: imageSize + badgeOverflow)
+            .padding(.top, badgeOverflow)
 
             Text(character.name)
                 .font(.system(size: 10, weight: .bold))
@@ -8472,7 +8552,7 @@ struct CharacterStripThumbnail: View {
                 .minimumScaleFactor(0.72)
                 .frame(width: 66)
         }
-        .frame(width: 66, height: 82, alignment: .top)
+        .frame(width: 68, height: 88, alignment: .top)
     }
 }
 
