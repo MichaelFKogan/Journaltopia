@@ -177,8 +177,6 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
     let textSize: Double
     let paperStyleRawValue: String
     let paperColorIndex: Int
-    let storyboardLayoutRawValue: String
-    let isSmartGenerationEnabled: Bool
 
     init(
         id: UUID,
@@ -197,9 +195,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
         textColorIndex: Int,
         textSize: Double,
         paperStyleRawValue: String,
-        paperColorIndex: Int,
-        storyboardLayout: StoryboardLayoutOption,
-        isSmartGenerationEnabled: Bool
+        paperColorIndex: Int
     ) {
         self.id = id
         self.title = title
@@ -226,8 +222,6 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
         self.textSize = textSize
         self.paperStyleRawValue = paperStyleRawValue
         self.paperColorIndex = paperColorIndex
-        self.storyboardLayoutRawValue = storyboardLayout.rawValue
-        self.isSmartGenerationEnabled = isSmartGenerationEnabled
     }
 }
 
@@ -1349,8 +1343,6 @@ struct CreateEntryView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     @State private var selectedArtStyle = "Anime"
-    @State private var selectedStoryboardLayout = StoryboardLayoutOption.fiveClassic
-    @State private var isSmartGenerationEnabled = true
 
     @State private var selectedPhotoSlot: Int?
     @State private var isShowingPhotoSourceSheet = false
@@ -1953,7 +1945,6 @@ struct CreateEntryView: View {
 
         let photos = storyboardPhotos.compactMap { $0 }
         let photoImages = photos.map(\.image)
-        let layout = effectiveStoryboardLayout
         let requiresEntrySave = activeDraftID == nil || hasUnsavedDraftChanges
         let requiresReferencePhotoSync = requiresEntrySave && hasUnsavedEntryMediaChanges
         isGeneratingStoryboard = true
@@ -1992,8 +1983,6 @@ struct CreateEntryView: View {
                     text: entryText,
                     richText: currentEntryRichText(),
                     artStyle: selectedArtStyle,
-                    layout: layout,
-                    isSmartGenerationEnabled: isSmartGenerationEnabled,
                     images: photoImages,
                     characters: entryCharacters
                 )
@@ -2009,7 +1998,7 @@ struct CreateEntryView: View {
                     clientEntryID: prepareResult.localDraftID,
                     promptText: entryText,
                     artStyle: selectedArtStyle,
-                    panelLayout: layout.rawValue,
+                    panelLayout: nil,
                     sourcePhotoCount: min(photoImages.count + entryCharacters.count, EntryCharacterRules.maxGenerationImageCount)
                 )
                 print("[Storytopia] Storyboard saved.")
@@ -3070,9 +3059,7 @@ struct CreateEntryView: View {
             textColorIndex: selectedTextColorIndex,
             textSize: previewTextSize,
             paperStyleRawValue: selectedPaperStyleChoice.rawValue,
-            paperColorIndex: selectedPaperColorIndex,
-            storyboardLayout: selectedStoryboardLayout,
-            isSmartGenerationEnabled: isSmartGenerationEnabled
+            paperColorIndex: selectedPaperColorIndex
         )
     }
 
@@ -4230,10 +4217,6 @@ struct CreateEntryView: View {
         VStack(alignment: .leading, spacing: 14) {
             entryDetailsInfoBanner
 
-            if !isSmartGenerationEnabled {
-                storyboardLayoutPickerSection
-            }
-
             entryDetailsReferencePhotosCard
             entryDetailsCharactersCard
             artStylePickerSection
@@ -4255,25 +4238,6 @@ struct CreateEntryView: View {
 
     private var hasStoryboardPhotos: Bool {
         storyboardPhotos.contains { $0 != nil }
-    }
-
-    private var automaticStoryboardLayout: StoryboardLayoutOption {
-        switch storyboardPhotos.compactMap({ $0 }).count {
-        case 1...3:
-            .threePanels
-        case 4:
-            .fourSquares
-        case 5:
-            .fiveClassic
-        case 6...:
-            .sixSquares
-        default:
-            .fiveClassic
-        }
-    }
-
-    private var effectiveStoryboardLayout: StoryboardLayoutOption {
-        isSmartGenerationEnabled ? automaticStoryboardLayout : selectedStoryboardLayout
     }
 
     @discardableResult
@@ -5384,451 +5348,6 @@ struct CreateEntryView: View {
             TapGesture().onEnded {
                 dismissKeyboard()
             }
-        )
-    }
-
-    private func compactStoryboardPreview(layout: StoryboardLayoutOption) -> some View {
-        compactStoryboardImagePreview(layout, width: 76, height: 108)
-            .padding(6)
-            .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.storyBorder.opacity(0.72), lineWidth: 1)
-            )
-            .contentShape(Rectangle())
-            .accessibilityLabel("Storyboard preview")
-    }
-
-    @ViewBuilder
-    private func compactStoryboardImagePreview(_ layout: StoryboardLayoutOption, width: CGFloat, height: CGFloat) -> some View {
-        let gap: CGFloat = 4
-
-        switch layout {
-        case .twoRectangles:
-            VStack(spacing: 4) {
-                compactStoryboardPhotoPanel(index: 0, width: width, height: (height - gap) / 2)
-                compactStoryboardPhotoPanel(index: 1, width: width, height: (height - gap) / 2)
-            }
-            .frame(width: width, height: height)
-        case .threeHorizontalPanels:
-            VStack(spacing: 4) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    compactStoryboardPhotoPanel(index: index, width: width, height: (height - gap * 2) / 3)
-                }
-            }
-            .frame(width: width, height: height)
-        case .threePanels:
-            let topHeight = (height - gap) * 0.56
-            let bottomHeight = height - gap - topHeight
-            let bottomWidth = (width - gap) / 2
-
-            VStack(spacing: 4) {
-                compactStoryboardPhotoPanel(index: 0, width: width, height: topHeight)
-
-                HStack(spacing: 4) {
-                    compactStoryboardPhotoPanel(index: 1, width: bottomWidth, height: bottomHeight)
-                    compactStoryboardPhotoPanel(index: 2, width: bottomWidth, height: bottomHeight)
-                }
-            }
-            .frame(width: width, height: height)
-        case .threeVerticalPanels:
-            HStack(spacing: 4) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    compactStoryboardPhotoPanel(index: index, width: (width - gap * 2) / 3, height: height)
-                }
-            }
-            .frame(width: width, height: height)
-        case .fourSquares:
-            let panelWidth = (width - gap) / 2
-            let panelHeight = (height - gap) / 2
-
-            VStack(spacing: 4) {
-                HStack(spacing: 4) {
-                    compactStoryboardPhotoPanel(index: 0, width: panelWidth, height: panelHeight)
-                    compactStoryboardPhotoPanel(index: 1, width: panelWidth, height: panelHeight)
-                }
-
-                HStack(spacing: 4) {
-                    compactStoryboardPhotoPanel(index: 2, width: panelWidth, height: panelHeight)
-                    compactStoryboardPhotoPanel(index: 3, width: panelWidth, height: panelHeight)
-                }
-            }
-            .frame(width: width, height: height)
-        case .fourVerticalPanels:
-            HStack(spacing: 4) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    compactStoryboardPhotoPanel(index: index, width: (width - gap * 3) / 4, height: height)
-                }
-            }
-            .frame(width: width, height: height)
-        case .fourHorizontalRectangles:
-            VStack(spacing: 3) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    compactStoryboardPhotoPanel(index: index, width: width, height: (height - 9) / 4)
-                }
-            }
-            .frame(width: width, height: height)
-        case .fiveHorizontalPanels:
-            VStack(spacing: 3) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    compactStoryboardPhotoPanel(index: index, width: width, height: (height - 12) / 5)
-                }
-            }
-            .frame(width: width, height: height)
-        case .fiveClassic:
-            let rowHeight = (height - gap * 2) / 3
-            let halfWidth = (width - gap) / 2
-
-            VStack(spacing: 4) {
-                HStack(spacing: 4) {
-                    compactStoryboardPhotoPanel(index: 0, width: halfWidth, height: rowHeight)
-                    compactStoryboardPhotoPanel(index: 1, width: halfWidth, height: rowHeight)
-                }
-
-                compactStoryboardPhotoPanel(index: 2, width: width, height: rowHeight)
-
-                HStack(spacing: 4) {
-                    compactStoryboardPhotoPanel(index: 3, width: halfWidth, height: rowHeight)
-                    compactStoryboardPhotoPanel(index: 4, width: halfWidth, height: rowHeight)
-                }
-            }
-            .frame(width: width, height: height)
-        case .sixSquares:
-            let panelWidth = (width - gap) / 2
-            let panelHeight = (height - gap * 2) / 3
-
-            VStack(spacing: 4) {
-                ForEach(0..<3, id: \.self) { row in
-                    HStack(spacing: 4) {
-                        compactStoryboardPhotoPanel(index: row * 2, width: panelWidth, height: panelHeight)
-                        compactStoryboardPhotoPanel(index: row * 2 + 1, width: panelWidth, height: panelHeight)
-                    }
-                }
-            }
-            .frame(width: width, height: height)
-        }
-    }
-
-    private func compactStoryboardPhotoPanel(index: Int, width: CGFloat, height: CGFloat) -> some View {
-        ZStack {
-            Image("storyboard_placeholder_\(min(index + 1, 5))")
-                .resizable()
-                .scaledToFill()
-                .opacity(0.72)
-
-            Color.white.opacity(0.2)
-
-            Text("\(index + 1)")
-                .font(.system(size: 7, weight: .bold))
-                .foregroundStyle(Color.storyPurple)
-                .frame(width: 14, height: 14)
-                .background(Color.white.opacity(0.86), in: Circle())
-        }
-        .frame(width: width, height: height)
-        .clipped()
-        .overlay(
-            Rectangle()
-                .stroke(Color.storyPurple.opacity(0.38), lineWidth: 0.8)
-        )
-    }
-
-    private var storyboardLayoutPickerSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 7) {
-                Image(systemName: "rectangle.3.group")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.storyPurple)
-
-                Text("Layout")
-                    .font(.system(size: 15, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
-
-                Spacer()
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(StoryboardLayoutOption.allCases) { layout in
-                        storyboardLayoutPickerButton(layout)
-                    }
-                }
-                .padding(.horizontal, 1)
-                .padding(.vertical, 2)
-            }
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.68), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.05), radius: 9, y: 3)
-    }
-
-    private func storyboardLayoutPickerButton(_ layout: StoryboardLayoutOption) -> some View {
-        let isSelected = selectedStoryboardLayout == layout
-
-        return Button {
-            dismissKeyboard()
-            withAnimation(.snappy(duration: 0.18)) {
-                selectedStoryboardLayout = layout
-            }
-        } label: {
-            VStack(spacing: 7) {
-                storyboardLayoutThumbnail(layout)
-                    .frame(width: 54, height: 74)
-                    .frame(width: 72, height: 92)
-                    .background(Color.white.opacity(isSelected ? 0.98 : 0.58), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .stroke(isSelected ? Color.storyPurple.opacity(0.72) : Color.storyBorder.opacity(0.62), lineWidth: isSelected ? 1.5 : 1)
-                    )
-                    .shadow(color: isSelected ? Color.storyPurple.opacity(0.14) : .clear, radius: 8, y: 3)
-
-                VStack(spacing: 2) {
-                    Text(layout.title)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(isSelected ? Color.storyPurple : Color.storyInk.opacity(0.72))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-
-                    Text("\(layout.panelCount) panels")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-                        .lineLimit(1)
-                }
-                .frame(width: 82)
-            }
-            .frame(width: 82, height: 130, alignment: .top)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(layout.title), \(layout.panelCount) panels")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    @ViewBuilder
-    private func storyboardLayoutThumbnail(_ layout: StoryboardLayoutOption) -> some View {
-        let fill = Color.storyPurple.opacity(0.16)
-        let stroke = Color.storyPurple.opacity(0.44)
-
-        switch layout {
-        case .twoRectangles:
-            VStack(spacing: 4) {
-                storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-            }
-        case .threeHorizontalPanels:
-            VStack(spacing: 4) {
-                ForEach(0..<layout.panelCount, id: \.self) { _ in
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .threePanels:
-            VStack(spacing: 4) {
-                storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                    .frame(height: 28)
-
-                HStack(spacing: 4) {
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .threeVerticalPanels:
-            HStack(spacing: 4) {
-                ForEach(0..<layout.panelCount, id: \.self) { _ in
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .fourSquares:
-            VStack(spacing: 4) {
-                HStack(spacing: 4) {
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-
-                HStack(spacing: 4) {
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .fourVerticalPanels:
-            HStack(spacing: 4) {
-                ForEach(0..<layout.panelCount, id: \.self) { _ in
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .fourHorizontalRectangles:
-            VStack(spacing: 3) {
-                ForEach(0..<layout.panelCount, id: \.self) { _ in
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .fiveHorizontalPanels:
-            VStack(spacing: 2.5) {
-                ForEach(0..<layout.panelCount, id: \.self) { _ in
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .fiveClassic:
-            VStack(spacing: 4) {
-                HStack(spacing: 4) {
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-
-                storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-
-                HStack(spacing: 4) {
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                    storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                }
-            }
-        case .sixSquares:
-            VStack(spacing: 3) {
-                ForEach(0..<3, id: \.self) { _ in
-                    HStack(spacing: 4) {
-                        storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                        storyboardLayoutThumbnailPanel(fill: fill, stroke: stroke)
-                    }
-                }
-            }
-        }
-    }
-
-    private func storyboardLayoutThumbnailPanel(fill: Color, stroke: Color) -> some View {
-        Rectangle()
-            .fill(fill)
-            .overlay(
-                Rectangle()
-                    .stroke(stroke, lineWidth: 1)
-            )
-    }
-
-    @ViewBuilder
-    private func storyboardPreviewLayout(_ layout: StoryboardLayoutOption) -> some View {
-        switch layout {
-        case .twoRectangles:
-            VStack(spacing: 8) {
-                storyboardPhotoPanel(index: 0)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 170)
-
-                storyboardPhotoPanel(index: 1)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 170)
-            }
-        case .threeHorizontalPanels:
-            VStack(spacing: 8) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    storyboardPhotoPanel(index: index)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 112)
-                }
-            }
-        case .threePanels:
-            VStack(spacing: 8) {
-                storyboardPhotoPanel(index: 0)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 192)
-
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 1)
-                    storyboardPhotoPanel(index: 2)
-                }
-                .frame(height: 148)
-            }
-        case .threeVerticalPanels:
-            HStack(spacing: 8) {
-                storyboardPhotoPanel(index: 0)
-                storyboardPhotoPanel(index: 1)
-                storyboardPhotoPanel(index: 2)
-            }
-            .frame(height: 340)
-        case .fourSquares:
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 0)
-                    storyboardPhotoPanel(index: 1)
-                }
-                .frame(height: 170)
-
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 2)
-                    storyboardPhotoPanel(index: 3)
-                }
-                .frame(height: 170)
-            }
-        case .fourVerticalPanels:
-            HStack(spacing: 8) {
-                storyboardPhotoPanel(index: 0)
-                storyboardPhotoPanel(index: 1)
-                storyboardPhotoPanel(index: 2)
-                storyboardPhotoPanel(index: 3)
-            }
-            .frame(height: 340)
-        case .fourHorizontalRectangles:
-            VStack(spacing: 8) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    storyboardPhotoPanel(index: index)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 80)
-                }
-            }
-        case .fiveHorizontalPanels:
-            VStack(spacing: 8) {
-                ForEach(0..<layout.panelCount, id: \.self) { index in
-                    storyboardPhotoPanel(index: index)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 64)
-                }
-            }
-        case .fiveClassic:
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 0)
-                    storyboardPhotoPanel(index: 1)
-                }
-                .frame(height: 132)
-
-                storyboardPhotoPanel(index: 2)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 106)
-
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 3)
-                    storyboardPhotoPanel(index: 4)
-                }
-                .frame(height: 108)
-            }
-        case .sixSquares:
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 0)
-                    storyboardPhotoPanel(index: 1)
-                }
-                .aspectRatio(2, contentMode: .fit)
-
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 2)
-                    storyboardPhotoPanel(index: 3)
-                }
-                .aspectRatio(2, contentMode: .fit)
-
-                HStack(spacing: 8) {
-                    storyboardPhotoPanel(index: 4)
-                    storyboardPhotoPanel(index: 5)
-                }
-                .aspectRatio(2, contentMode: .fit)
-            }
-        }
-    }
-
-    private func storyboardPhotoPanel(index: Int) -> some View {
-        StoryboardPhotoPanel(
-            image: storyboardPhotos.indices.contains(index) ? storyboardPhotos[index]?.image : nil,
-            placeholderImageName: "storyboard_placeholder_\(min(index + 1, 5))",
-            number: index + 1
         )
     }
 

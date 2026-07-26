@@ -21,8 +21,6 @@ struct OpenAIImageGenerationService {
         text: String,
         richText: NotebookRichTextDocument?,
         artStyle: String,
-        layout: StoryboardLayoutOption,
-        isSmartGenerationEnabled: Bool,
         images: [UIImage],
         characters: [EntryCharacter] = []
     ) async throws -> UIImage {
@@ -36,8 +34,6 @@ struct OpenAIImageGenerationService {
             text: text,
             richText: richText,
             artStyle: artStyle,
-            layout: layout,
-            isSmartGenerationEnabled: isSmartGenerationEnabled,
             originalImageCount: images.count,
             references: references,
             omittedCharacterCount: max(0, characters.count - references.filter { $0.characterName != nil }.count),
@@ -149,8 +145,6 @@ struct OpenAIImageGenerationService {
         text: String,
         richText: NotebookRichTextDocument?,
         artStyle: String,
-        layout: StoryboardLayoutOption,
-        isSmartGenerationEnabled: Bool,
         originalImageCount: Int,
         references: [StoryboardReferenceImage],
         omittedCharacterCount: Int,
@@ -186,10 +180,6 @@ struct OpenAIImageGenerationService {
         let titleBlock = trimmedTitle.isEmpty
             ? "Untitled Entry"
             : trimmedTitle
-
-        let generationMode = isSmartGenerationEnabled
-            ? "Smart Generation was enabled. The app selected this layout based on the entry and reference-photo count."
-            : "The user manually selected this layout."
 
         let creationSource = hasReferencePhotos
             ? "the user's written memory and \(referencePhotoCount) uploaded reference image(s)"
@@ -312,7 +302,13 @@ struct OpenAIImageGenerationService {
 
         PANEL NARRATIVE:
 
-        Use exactly \(layout.panelCount) panels.
+        Analyze the story and choose the best panel count between 3 and 6.
+
+        Use fewer panels for simple, quiet, single-moment memories. Use more panels for
+        stories with clear progression, multiple beats, changes over time, a future vision,
+        or a cinematic feeling.
+
+        Then create one graphic novel page using exactly the number of panels you chose.
 
         Across the page, the panels should collectively establish:
 
@@ -321,7 +317,7 @@ struct OpenAIImageGenerationService {
         3. The protagonist's observable emotional perspective.
         4. A meaningful progression, contrast, realization, or lingering final impression.
 
-        Adapt this progression naturally to the selected panel count. Do not force every
+        Adapt this progression naturally to your chosen panel count. Do not force every
         memory into an artificial dramatic arc.
 
         The final panel should leave the reader with the emotional meaning or atmosphere
@@ -350,16 +346,19 @@ struct OpenAIImageGenerationService {
 
         GENERATION SETTINGS:
 
-        - \(generationMode)
-        - Required panel count: \(layout.panelCount)
+        - The AI image model must choose the panel count and page layout from the story.
+        - Choose exactly 3, 4, 5, or 6 panels.
+        - Do not use fewer than 3 panels.
+        - Do not use more than 6 panels.
 
         PAGE FORMAT:
 
         - Output one single tall image.
-        - Divide the image into exactly \(layout.panelCount) distinct comic panels.
+        - Divide the image into exactly the chosen number of distinct comic panels.
         - Use visible, intentional gutters or panel borders.
-        - Follow this panel arrangement from top to bottom:
-        \(layout.promptDescription)
+        - Choose a clear graphic novel page layout that fits the story's natural pacing.
+        - Prefer balanced, readable arrangements such as stacked rows, a clean grid, or
+        a classic comic-page composition with one larger establishing or emotional panel.
         - Create a cohesive graphic novel page, not a collection of unrelated illustrations.
         - Show a clear progression of moments.
         - Fully redraw every scene as original illustrated artwork.
