@@ -30,6 +30,7 @@ struct JournalView: View {
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14),
         GridItem(.flexible(), spacing: 14)
     ]
 
@@ -308,7 +309,7 @@ struct JournalView: View {
         LazyVGrid(columns: columns, spacing: 14) {
             if sortedChapters.isEmpty {
                 emptyState
-                    .gridCellColumns(2)
+                    .gridCellColumns(3)
             } else {
                 ForEach(Array(sortedChapters.enumerated()), id: \.element.id) { index, chapter in
                     JournalCoverCard(
@@ -922,7 +923,7 @@ private enum JournalDisplayLayout: String {
     var systemImage: String {
         switch self {
         case .grid:
-            return "square.grid.2x2"
+            return "square.grid.3x3"
         case .list:
             return "list.bullet"
         }
