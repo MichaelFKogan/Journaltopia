@@ -10622,8 +10622,93 @@ private struct JournalDetailBannerBackground: View {
                         }
                 }
             }
+
+            Color.black.opacity(0.46)
+                .allowsHitTesting(false)
         }
         .clipped()
+    }
+}
+
+private struct JournalDetailCoverImage: View {
+    let chapter: PrototypeChapter
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackImageName: String?
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(JournalOpeningBook.compactAspectRatio, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                cover
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .leading) {
+                journalSpine
+            }
+            .overlay(alignment: .topLeading) {
+                if chapter.isSystemJournal {
+                    SystemJournalBadge(style: .cover)
+                        .padding(8)
+                }
+            }
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.13), radius: 10, y: 5)
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let coverImage {
+            Image(uiImage: coverImage)
+                .resizable()
+                .scaledToFill()
+        } else if let remoteCoverURL {
+            RemoteCoverImage(url: remoteCoverURL, placeholderColor: chapter.color)
+        } else if let fallbackImageName {
+            Image(fallbackImageName)
+                .resizable()
+                .scaledToFill()
+        } else {
+            chapter.color
+        }
+    }
+
+    private var journalSpine: some View {
+        ZStack(alignment: .leading) {
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.42),
+                    Color.black.opacity(0.28),
+                    Color.black.opacity(0.16),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.white.opacity(0.16),
+                    Color.white.opacity(0.08),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 12.5)
+            .padding(.leading, 14.25)
+            .blendMode(.screen)
+        }
+        .frame(width: 22)
+        .frame(maxHeight: .infinity)
+        .allowsHitTesting(false)
     }
 }
 
@@ -10920,51 +11005,48 @@ private struct PrototypeChapterDetailView: View {
             .frame(maxWidth: .infinity)
             .frame(height: 276)
             .clipped()
-            .overlay(alignment: .bottomLeading) {
-                bannerTitleScrim
-            }
             .contentShape(Rectangle())
             .onTapGesture {
                 isShowingCoverCustomization = true
             }
             .accessibilityLabel("Change journal cover")
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .center, spacing: 14) {
                 Button {
+                    isShowingCoverCustomization = true
                 } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "book")
-                            .font(.system(size: 17, weight: .bold))
-                        Text("Open Comic")
-                            .font(.system(size: 16, weight: .bold))
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 15, weight: .bold))
-                    }
-                    .foregroundStyle(Color.white)
-                    .frame(height: 54)
-                    .padding(.horizontal, 18)
-                    .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .stroke(Color.storyPurple.opacity(0.78), lineWidth: 1)
+                    JournalDetailCoverImage(
+                        chapter: chapter,
+                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                        remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
+                        fallbackImageName: chapter.coverImageName
                     )
-                    .shadow(color: Color.storyPurple.opacity(0.28), radius: 10, y: 5)
+                    .frame(width: UIScreen.main.bounds.width * 0.60)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Open comic")
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("Change journal cover")
 
-                HStack(spacing: 18) {
-                    bannerStat(systemName: "book.pages", text: pageCountText)
-                    bannerStat(systemName: "photo", text: "\(chapter.imageCount) photos")
+                VStack(spacing: 8) {
+                    Text(chapter.title.uppercased())
+                        .font(.system(size: 24, weight: .heavy, design: .serif))
+                        .foregroundStyle(Color.storyInk)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.76)
+                        .multilineTextAlignment(.center)
+
+                    HStack(spacing: 16) {
+                        bannerStat(systemName: "book.pages", text: pageCountText)
+                        bannerStat(systemName: "photo", text: "\(chapter.imageCount) photos")
+                    }
                 }
-                .padding(.horizontal, 4)
+                .padding(.horizontal, 12)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 30)
+            .padding(.top, 0)
             .padding(.bottom, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
+            .frame(maxWidth: .infinity)
+            .background(alignment: .top) {
                 UnevenRoundedRectangle(
                     topLeadingRadius: 28,
                     bottomLeadingRadius: 0,
@@ -10973,46 +11055,11 @@ private struct PrototypeChapterDetailView: View {
                     style: .continuous
                 )
                 .fill(Color.homePageBackground)
-            )
-            .offset(y: -24)
-            .padding(.bottom, -24)
-        }
-    }
-
-    private var bannerTitleScrim: some View {
-        ZStack(alignment: .bottomLeading) {
-            LinearGradient(
-                colors: [
-                    Color.clear,
-                    Color.black.opacity(0.58),
-                    Color.black.opacity(0.82)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(chapter.title)
-                    .font(.system(size: 26, weight: .heavy, design: .serif))
-                    .foregroundStyle(Color.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
-                    .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
-
-                if presentation != .dailyJournal {
-                    Text(chapter.subtitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.88))
-                        .lineLimit(2)
-                }
+                .padding(.top, 132)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 36)
+            .offset(y: -132)
+            .padding(.bottom, -132)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 152)
-        .background(Color.clear)
-        .allowsHitTesting(false)
     }
 
     private func bannerStat(systemName: String, text: String) -> some View {
