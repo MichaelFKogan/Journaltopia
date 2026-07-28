@@ -316,6 +316,7 @@ struct StoryJournal: Identifiable, Codable, Equatable, Sendable {
     let colorHex: String?
     let symbol: String?
     let coverStoragePath: String?
+    let coverImageName: String?
     let coverSource: String?
     let coverImageURL: String?
     let coverThumbURL: String?
@@ -336,6 +337,7 @@ struct StoryJournal: Identifiable, Codable, Equatable, Sendable {
         case colorHex = "color_hex"
         case symbol
         case coverStoragePath = "cover_storage_path"
+        case coverImageName = "cover_image_name"
         case coverSource = "cover_source"
         case coverImageURL = "cover_image_url"
         case coverThumbURL = "cover_thumb_url"
@@ -357,6 +359,7 @@ private struct StoryJournalPayload: Encodable, Sendable {
     let subtitle: String?
     let colorHex: String?
     let symbol: String?
+    let coverImageName: String?
     let coverSource: String?
     let coverImageURL: String?
     let coverThumbURL: String?
@@ -374,6 +377,7 @@ private struct StoryJournalPayload: Encodable, Sendable {
         case subtitle
         case colorHex = "color_hex"
         case symbol
+        case coverImageName = "cover_image_name"
         case coverSource = "cover_source"
         case coverImageURL = "cover_image_url"
         case coverThumbURL = "cover_thumb_url"
@@ -384,6 +388,38 @@ private struct StoryJournalPayload: Encodable, Sendable {
         case isFavorite = "is_favorite"
         case displayOrder = "display_order"
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(userID, forKey: .userID)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(subtitle, forKey: .subtitle)
+        try container.encodeIfPresent(colorHex, forKey: .colorHex)
+        try container.encodeIfPresent(symbol, forKey: .symbol)
+        try encodeNullableCoverField(coverImageName, forKey: .coverImageName, in: &container)
+        try encodeNullableCoverField(coverSource, forKey: .coverSource, in: &container)
+        try encodeNullableCoverField(coverImageURL, forKey: .coverImageURL, in: &container)
+        try encodeNullableCoverField(coverThumbURL, forKey: .coverThumbURL, in: &container)
+        try encodeNullableCoverField(coverAttributionName, forKey: .coverAttributionName, in: &container)
+        try encodeNullableCoverField(coverAttributionURL, forKey: .coverAttributionURL, in: &container)
+        try encodeNullableCoverField(coverDownloadLocation, forKey: .coverDownloadLocation, in: &container)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(isFavorite, forKey: .isFavorite)
+        try container.encode(displayOrder, forKey: .displayOrder)
+    }
+
+    private func encodeNullableCoverField(
+        _ value: String?,
+        forKey key: CodingKeys,
+        in container: inout KeyedEncodingContainer<CodingKeys>
+    ) throws {
+        if let value {
+            try container.encode(value, forKey: key)
+        } else {
+            try container.encodeNil(forKey: key)
+        }
+    }
 }
 
 private struct JournalCoverUpdate: Encodable, Sendable {
@@ -391,6 +427,17 @@ private struct JournalCoverUpdate: Encodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case coverStoragePath = "cover_storage_path"
+    }
+}
+
+private struct JournalCoverClearUpdate: Encodable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case coverStoragePath = "cover_storage_path"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeNil(forKey: .coverStoragePath)
     }
 }
 
@@ -517,6 +564,7 @@ struct SupabaseJournalRepository {
         subtitle: String?,
         colorHex: String?,
         symbol: String?,
+        coverImageName: String? = nil,
         remoteCover: JournalRemoteCover? = nil,
         kind: String,
         isFavorite: Bool,
@@ -536,6 +584,7 @@ struct SupabaseJournalRepository {
                         subtitle: subtitle?.trimmedOrNil,
                         colorHex: colorHex?.trimmedOrNil,
                         symbol: symbol?.trimmedOrNil,
+                        coverImageName: coverImageName?.trimmedOrNil,
                         coverSource: remoteCover?.source.rawValue,
                         coverImageURL: remoteCover?.imageURL.trimmedOrNil,
                         coverThumbURL: remoteCover?.thumbnailURL?.trimmedOrNil,
@@ -653,6 +702,41 @@ struct SupabaseJournalRepository {
             return try await client
                 .from("journals")
                 .update(JournalCoverUpdate(coverStoragePath: storagePath))
+                .eq("id", value: journalID)
+                .eq("user_id", value: userID)
+                .select()
+                .single()
+                .execute()
+                .value
+        } catch {
+            throw StoryJournalRepositoryError.operationFailed
+        }
+    }
+
+    func downloadCover(storagePath: String) async throws -> UIImage {
+        do {
+            let data = try await client.storage
+                .from(coverBucketName)
+                .download(path: storagePath)
+
+            guard let image = UIImage(data: data) else {
+                throw StoryJournalRepositoryError.operationFailed
+            }
+
+            return image
+        } catch {
+            throw StoryJournalRepositoryError.operationFailed
+        }
+    }
+
+    @discardableResult
+    func clearCover(journalID: UUID) async throws -> StoryJournal {
+        let userID = try await authenticatedUserID()
+
+        do {
+            return try await client
+                .from("journals")
+                .update(JournalCoverClearUpdate())
                 .eq("id", value: journalID)
                 .eq("user_id", value: userID)
                 .select()

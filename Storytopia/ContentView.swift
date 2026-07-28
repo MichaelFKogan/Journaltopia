@@ -115,7 +115,10 @@ struct ContentView: View {
             JournalView(
                 selectedPage: pageSelection,
                 isDraftSaved: $isDraftSaved,
-                activeDraftID: $activeDraftID
+                activeDraftID: $activeDraftID,
+                completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
+                isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
+                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -139,6 +142,10 @@ struct ContentView: View {
 
     private var createEntryPresentation: CreateEntryPresentation {
         if pageBehindCreate == .entries, activeDraftID != nil {
+            return .editDraft
+        }
+
+        if pageBehindCreate == .journal, activeDraftID != nil {
             return .editDraft
         }
 

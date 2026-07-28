@@ -7,6 +7,9 @@ struct JournalView: View {
     @Binding var selectedPage: StoryPage
     @Binding var isDraftSaved: Bool
     @Binding var activeDraftID: UUID?
+    @Binding var completedEntryOpenedStoryboardImage: UIImage?
+    @Binding var isOpeningEntryFromEntries: Bool
+    @Binding var isOpeningCompletedEntryFromEntries: Bool
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     @State private var showsPrototypeData = false
@@ -25,22 +28,23 @@ struct JournalView: View {
     @State private var isJournalDetailVisible = false
     @State private var draggingJournalID: UUID?
     @Namespace private var journalOpenNamespace
-    @AppStorage("StorytopiaSelectedJournalLayout") private var selectedJournalLayoutRawValue = JournalDisplayLayout.grid.rawValue
+    @AppStorage("StorytopiaSelectedJournalLayout") private var selectedJournalLayoutRawValue = JournalDisplayLayout.grid3x3.rawValue
     @AppStorage("StorytopiaSelectedJournalSort") private var selectedJournalSortRawValue = JournalSortOption.manual.rawValue
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 14),
-        GridItem(.flexible(), spacing: 14),
-        GridItem(.flexible(), spacing: 14)
-    ]
 
     private var selectedJournalLayout: JournalDisplayLayout {
         get {
-            JournalDisplayLayout(rawValue: selectedJournalLayoutRawValue) ?? .grid
+            JournalDisplayLayout(rawValue: selectedJournalLayoutRawValue) ?? .grid3x3
         }
         nonmutating set {
             selectedJournalLayoutRawValue = newValue.rawValue
         }
+    }
+
+    private var columns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(), spacing: 14),
+            count: selectedJournalLayout.gridColumnCount
+        )
     }
 
     private var selectedJournalSort: JournalSortOption {
@@ -53,11 +57,16 @@ struct JournalView: View {
     }
 
     private var sortedChapters: [PrototypeChapter] {
+        let systemChapters = PrototypeChapter.SystemJournal.orderedCases.compactMap { systemJournal in
+            chapters.first { $0.systemJournal == systemJournal }
+        }
+        let userChapters = chapters.filter { !$0.isSystemJournal }
+
         if selectedJournalSort == .manual {
-            return chapters
+            return systemChapters + userChapters
         }
 
-        return chapters.sorted { lhs, rhs in
+        return systemChapters + userChapters.sorted { lhs, rhs in
             switch selectedJournalSort {
             case .created:
                 if lhs.createdAt == rhs.createdAt {
@@ -88,11 +97,17 @@ struct JournalView: View {
     init(
         selectedPage: Binding<StoryPage>,
         isDraftSaved: Binding<Bool>,
-        activeDraftID: Binding<UUID?>
+        activeDraftID: Binding<UUID?>,
+        completedEntryOpenedStoryboardImage: Binding<UIImage?> = .constant(nil),
+        isOpeningEntryFromEntries: Binding<Bool> = .constant(false),
+        isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false)
     ) {
         _selectedPage = selectedPage
         _isDraftSaved = isDraftSaved
         _activeDraftID = activeDraftID
+        _completedEntryOpenedStoryboardImage = completedEntryOpenedStoryboardImage
+        _isOpeningEntryFromEntries = isOpeningEntryFromEntries
+        _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
         _chapters = State(initialValue: DailyJournalData.allChapters())
     }
 
@@ -244,7 +259,8 @@ struct JournalView: View {
 
     private var journalLayoutSwitcher: some View {
         HStack(spacing: 4) {
-            journalLayoutButton(.grid)
+            journalLayoutButton(.grid2x2)
+            journalLayoutButton(.grid3x3)
             journalLayoutButton(.list)
         }
         .padding(4)
@@ -309,15 +325,16 @@ struct JournalView: View {
         LazyVGrid(columns: columns, spacing: 14) {
             if sortedChapters.isEmpty {
                 emptyState
-                    .gridCellColumns(3)
+                    .gridCellColumns(selectedJournalLayout.gridColumnCount)
             } else {
                 ForEach(Array(sortedChapters.enumerated()), id: \.element.id) { index, chapter in
                     JournalCoverCard(
                         chapter: chapter,
-                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
                         remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                         fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
                         isEditing: editMode == .active,
+                        allowsEditingActions: !chapter.isSystemJournal,
                         onCustomize: { beginCustomizing(chapter) },
                         onRename: { beginRenaming(chapter) },
                         onDelete: { requestDeleteJournals([chapter]) }
@@ -336,17 +353,18 @@ struct JournalView: View {
                     .accessibilityAction {
                         openJournal(chapter, dayOffset: index)
                     }
-                    .onDrag {
-                        draggingJournalID = chapter.id
-                        return NSItemProvider(object: chapter.id.uuidString as NSString)
-                    }
+                    .moveDisabled(chapter.isSystemJournal)
+                    .modifier(JournalDragModifier(
+                        chapter: chapter,
+                        draggingJournalID: $draggingJournalID
+                    ))
                     .onDrop(
                         of: [UTType.text],
                         delegate: JournalGridDropDelegate(
                             chapter: chapter,
                             chapters: $chapters,
                             draggingJournalID: $draggingJournalID,
-                            isEnabled: selectedJournalSort == .manual,
+                            isEnabled: selectedJournalSort == .manual && !chapter.isSystemJournal,
                             onReorder: persistManualJournalOrder
                         )
                     )
@@ -430,7 +448,7 @@ struct JournalView: View {
             } label: {
                 JournalChapterListRow(
                     chapter: chapter,
-                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
                     remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                     fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index)
                 )
@@ -442,13 +460,16 @@ struct JournalView: View {
                 trailing: JournalChapterListMetrics.trailingInset
             ))
             .listRowBackground(Color.homePageBackground)
+            .moveDisabled(chapter.isSystemJournal)
             .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                Button {
-                    beginRenaming(chapter)
-                } label: {
-                    Label("Rename", systemImage: "pencil")
+                if !chapter.isSystemJournal {
+                    Button {
+                        beginRenaming(chapter)
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(Color.homeAccent)
                 }
-                .tint(Color.homeAccent)
             }
         }
         .onDelete(perform: deleteChapters)
@@ -507,6 +528,9 @@ struct JournalView: View {
     }
 
     private func beginRenaming(_ chapter: PrototypeChapter) {
+        guard !chapter.isSystemJournal else {
+            return
+        }
         journalBeingRenamed = chapter
         renamedJournalTitle = chapter.title
     }
@@ -548,9 +572,9 @@ struct JournalView: View {
         }
 
         if let storedCoverImage = customization.storedCoverImage {
-            JournalCoverStore.save(storedCoverImage, for: chapters[index].title)
+            JournalCoverStore.save(storedCoverImage, for: chapters[index].coverStorageKey)
         } else if customization.clearsStoredCover {
-            JournalCoverStore.delete(title: chapters[index].title)
+            JournalCoverStore.delete(key: chapters[index].coverStorageKey)
         }
 
         let updatedChapter = PrototypeChapter(
@@ -565,17 +589,36 @@ struct JournalView: View {
             isFavorite: chapters[index].isFavorite,
             createdAt: chapters[index].createdAt,
             updatedAt: Date(),
+            systemJournal: chapters[index].systemJournal,
             entries: chapters[index].entries
         )
 
         chapters[index] = updatedChapter
-        UserChapterStore.updateAppearance(
-            id: updatedChapter.id,
-            color: updatedChapter.color,
-            coverImageName: updatedChapter.coverImageName,
-            remoteCover: updatedChapter.remoteCover
-        )
-        UserChapterStore.syncToCloud(updatedChapter)
+        if let systemJournal = updatedChapter.systemJournal {
+            SystemJournalAppearanceStore.update(
+                systemJournal,
+                color: updatedChapter.color,
+                coverImageName: updatedChapter.coverImageName,
+                remoteCover: updatedChapter.remoteCover
+            )
+            SystemJournalAppearanceStore.syncToCloud(
+                updatedChapter,
+                storedCoverImage: customization.storedCoverImage
+            )
+        } else {
+            UserChapterStore.updateAppearance(
+                id: updatedChapter.id,
+                color: updatedChapter.color,
+                coverImageName: updatedChapter.coverImageName,
+                remoteCover: updatedChapter.remoteCover
+            )
+            UserChapterStore.syncToCloud(updatedChapter)
+            if let storedCoverImage = customization.storedCoverImage {
+                UserChapterStore.uploadCoverToCloud(storedCoverImage, journalID: updatedChapter.id)
+            } else if customization.clearsStoredCover {
+                UserChapterStore.clearCoverInCloud(journalID: updatedChapter.id)
+            }
+        }
         journalBeingCustomized = nil
     }
 
@@ -658,7 +701,7 @@ struct JournalView: View {
     }
 
     private func requestDeleteJournals(_ journals: [PrototypeChapter]) {
-        journalsPendingDeletion = journals
+        journalsPendingDeletion = journals.filter { !$0.isSystemJournal }
     }
 
     private func deletePendingJournals() {
@@ -668,10 +711,13 @@ struct JournalView: View {
     }
 
     private func deleteJournal(_ journal: PrototypeChapter) {
+        guard !journal.isSystemJournal else {
+            return
+        }
         let isUserJournal = UserChapterStore.contains(title: journal.title)
         UserChapterStore.delete(title: journal.title)
         UserChapterStore.deleteFromCloud(journal)
-        JournalCoverStore.delete(title: journal.title)
+        JournalCoverStore.delete(key: journal.coverStorageKey)
         if !isUserJournal {
             DeletedSampleChapterStore.add(title: journal.title)
         }
@@ -685,13 +731,19 @@ struct JournalView: View {
             return
         }
 
+        let systemCount = chapters.filter(\.isSystemJournal).count
+        guard source.allSatisfy({ $0 >= systemCount }), destination >= systemCount else {
+            return
+        }
+
         chapters.move(fromOffsets: source, toOffset: destination)
         persistManualJournalOrder()
     }
 
     private func persistManualJournalOrder() {
-        UserChapterStore.replace(with: chapters.filter { UserChapterStore.contains(title: $0.title) })
-        UserChapterStore.syncOrderToCloud(chapters)
+        let userChapters = chapters.filter { !$0.isSystemJournal && UserChapterStore.contains(title: $0.title) }
+        UserChapterStore.replace(with: userChapters)
+        UserChapterStore.syncOrderToCloud(userChapters)
     }
 
     private func openJournal(_ chapter: PrototypeChapter, dayOffset: Int) {
@@ -702,7 +754,7 @@ struct JournalView: View {
         let context = JournalOpeningContext(
             chapter: chapter,
             dayOffset: dayOffset,
-            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
             remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
             fallbackImageName: fallbackCoverImageName(for: chapter, at: dayOffset)
         )
@@ -775,7 +827,8 @@ struct JournalView: View {
         DailyJournalData.detailView(
             for: chapter,
             dayOffset: dayOffset,
-            onChapterUpdated: updateChapterFromDetail
+            onChapterUpdated: updateChapterFromDetail,
+            onOpenExistingEntry: openExistingEntryFromJournalDetail
         ) { entry in
             guard let chapterIndex = chapters.firstIndex(where: { $0.id == chapter.id }) else {
                 return
@@ -787,6 +840,18 @@ struct JournalView: View {
                 chapters[chapterIndex].entries.insert(entry, at: 0)
             }
         }
+    }
+
+    private func openExistingEntryFromJournalDetail(
+        _ entry: CreateEntryDraft,
+        isCompleted: Bool,
+        storyboardImage: UIImage?
+    ) {
+        isOpeningEntryFromEntries = true
+        isOpeningCompletedEntryFromEntries = isCompleted
+        completedEntryOpenedStoryboardImage = storyboardImage
+        activeDraftID = entry.id
+        selectedPage = .create
     }
 
     private func updateChapterFromDetail(_ updatedChapter: PrototypeChapter) {
@@ -812,7 +877,11 @@ struct JournalView: View {
                 let cloudJournals = try await journalRepository.getJournals()
                 let cloudEntries = try await SupabaseEntryRepository().getEntries()
                 let memberships = try await journalRepository.getJournalEntryMemberships()
-                let cloudChapters = cloudJournals.map(PrototypeChapter.init(cloudJournal:))
+                await Self.cacheCloudSystemJournalAppearances(cloudJournals)
+                SystemJournalAppearanceStore.syncLocalAppearancesToCloudIfNeeded(existingCloudJournals: cloudJournals)
+                let cloudChapters = cloudJournals
+                    .filter { PrototypeChapter.SystemJournal.journal(for: $0.id) == nil }
+                    .map(PrototypeChapter.init(cloudJournal:))
 
                 await MainActor.run {
                     let mergedCloudChapters = Self.cloudChapters(
@@ -825,7 +894,7 @@ struct JournalView: View {
                         journals: mergedCloudChapters,
                         entries: cloudEntries
                     )
-                    chapters = DailyJournalData.allChapters()
+                    chapters = DailyJournalData.allChapters(cloudEntries: cloudEntries)
                 }
             } catch {
                 print("[Storytopia] Cloud journals load failed: \(error.localizedDescription)")
@@ -835,24 +904,36 @@ struct JournalView: View {
 
     private static func cloudChapters(
         _ cloudChapters: [PrototypeChapter],
-        preservingOrderOf currentChapters: [PrototypeChapter]
+        preservingOrderOf _: [PrototypeChapter]
     ) -> [PrototypeChapter] {
-        guard !currentChapters.isEmpty else {
-            return cloudChapters
-        }
+        cloudChapters
+    }
 
-        var remainingCloudChapters = cloudChapters
-        let orderedExistingChapters = currentChapters.compactMap { currentChapter -> PrototypeChapter? in
-            guard let cloudIndex = remainingCloudChapters.firstIndex(where: { cloudChapter in
-                cloudChapter.id == currentChapter.id || cloudChapter.title == currentChapter.title
-            }) else {
-                return nil
+    private static func cacheCloudSystemJournalAppearances(_ cloudJournals: [StoryJournal]) async {
+        let journalRepository = SupabaseJournalRepository()
+
+        for cloudJournal in cloudJournals {
+            guard let systemJournal = PrototypeChapter.SystemJournal.journal(for: cloudJournal.id) else {
+                continue
             }
 
-            return remainingCloudChapters.remove(at: cloudIndex)
-        }
+            let remoteCover = cloudJournal.remoteCover
+            SystemJournalAppearanceStore.update(
+                systemJournal,
+                color: cloudJournal.colorHex.flatMap(Color.init(hex:)) ?? systemJournal.color,
+                coverImageName: cloudJournal.coverImageName,
+                remoteCover: remoteCover
+            )
 
-        return orderedExistingChapters + remainingCloudChapters
+            if remoteCover != nil {
+                JournalCoverStore.delete(key: systemJournal.coverStorageKey)
+            } else if let storagePath = cloudJournal.coverStoragePath,
+                      let image = try? await journalRepository.downloadCover(storagePath: storagePath) {
+                JournalCoverStore.save(image, for: systemJournal.coverStorageKey)
+            } else {
+                JournalCoverStore.delete(key: systemJournal.coverStorageKey)
+            }
+        }
     }
 
     private var noSearchResults: some View {
@@ -917,12 +998,24 @@ struct JournalView: View {
 }
 
 private enum JournalDisplayLayout: String {
-    case grid
+    case grid2x2
+    case grid3x3 = "grid"
     case list
+
+    var gridColumnCount: Int {
+        switch self {
+        case .grid2x2:
+            return 2
+        case .grid3x3, .list:
+            return 3
+        }
+    }
 
     var systemImage: String {
         switch self {
-        case .grid:
+        case .grid2x2:
+            return "square.grid.2x2"
+        case .grid3x3:
             return "square.grid.3x3"
         case .list:
             return "list.bullet"
@@ -931,8 +1024,10 @@ private enum JournalDisplayLayout: String {
 
     var accessibilityLabel: String {
         switch self {
-        case .grid:
-            return "Show journals as grid"
+        case .grid2x2:
+            return "Show journals as 2 by 2 grid"
+        case .grid3x3:
+            return "Show journals as 3 by 3 grid"
         case .list:
             return "Show journals as list"
         }
@@ -1119,6 +1214,23 @@ private struct JournalGridDropDelegate: DropDelegate {
     }
 }
 
+private struct JournalDragModifier: ViewModifier {
+    let chapter: PrototypeChapter
+    @Binding var draggingJournalID: UUID?
+
+    func body(content: Content) -> some View {
+        if chapter.isSystemJournal {
+            content
+        } else {
+            content
+                .onDrag {
+                    draggingJournalID = chapter.id
+                    return NSItemProvider(object: chapter.id.uuidString as NSString)
+                }
+        }
+    }
+}
+
 private struct JournalOpeningContext: Identifiable {
     let chapter: PrototypeChapter
     let dayOffset: Int
@@ -1293,6 +1405,7 @@ private struct JournalCoverCard: View {
     let remoteCoverURL: URL?
     let fallbackImageName: String?
     let isEditing: Bool
+    var allowsEditingActions = true
     let onCustomize: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
@@ -1309,11 +1422,17 @@ private struct JournalCoverCard: View {
                 .overlay(alignment: .leading) {
                     journalSpine
                 }
+                .overlay(alignment: .topLeading) {
+                    if chapter.isSystemJournal {
+                        SystemJournalBadge(style: .cover)
+                            .padding(8)
+                    }
+                }
                 .overlay(alignment: .bottomLeading) {
                     journalTitleScrim
                 }
 
-            if isEditing {
+            if isEditing && allowsEditingActions {
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 24, weight: .bold))
@@ -1330,12 +1449,19 @@ private struct JournalCoverCard: View {
                         Label("Change Cover", systemImage: "photo.on.rectangle")
                     }
 
-                    Button(action: onRename) {
-                        Label("Rename", systemImage: "pencil")
-                    }
+                    if allowsEditingActions {
+                        Button(action: onRename) {
+                            Label("Rename", systemImage: "pencil")
+                        }
 
-                    Button(role: .destructive, action: onDelete) {
-                        Label("Delete", systemImage: "trash")
+                        Button(role: .destructive, action: onDelete) {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    } else {
+                        Button {} label: {
+                            Label("Built-in: can't move or delete", systemImage: "shield.fill")
+                        }
+                        .disabled(true)
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -1357,6 +1483,7 @@ private struct JournalCoverCard: View {
                 .stroke(Color.homeBorder, lineWidth: 1)
         )
         .shadow(color: Color.storyInk.opacity(0.13), radius: 10, y: 5)
+        .accessibilityHint(chapter.isSystemJournal ? "Built-in journals can't be moved or deleted." : "")
     }
 
     private var journalTitleScrim: some View {
@@ -1510,7 +1637,7 @@ private struct JournalCustomizationSheet: View {
         _selectedColorHex = State(initialValue: JournalColorOption.hexString(for: chapter.color))
         _selectedCoverImageName = State(initialValue: chapter.coverImageName)
         _selectedRemoteCover = State(initialValue: chapter.remoteCover)
-        _selectedStoredCoverImage = State(initialValue: JournalCoverStore.image(for: chapter.title))
+        _selectedStoredCoverImage = State(initialValue: JournalCoverStore.image(for: chapter.coverStorageKey))
         _storyboardCoverCandidates = State(initialValue: initialStoryboardCovers)
         _unsplashQuery = State(initialValue: "")
     }
@@ -2297,7 +2424,11 @@ private enum JournalCoverStore {
     }
 
     static func delete(title: String) {
-        try? FileManager.default.removeItem(at: fileURL(for: title))
+        delete(key: title)
+    }
+
+    static func delete(key: String) {
+        try? FileManager.default.removeItem(at: fileURL(for: key))
     }
 
     private static var directoryURL: URL {
@@ -5393,8 +5524,11 @@ private struct DaybookStoryPage: Identifiable {
 }
 
 enum DailyJournalData {
-    static func allChapters() -> [PrototypeChapter] {
-        UserChapterStore.load().map(chapterWithStoredEntries)
+    static func allChapters(cloudEntries: [JournalEntry]? = nil) -> [PrototypeChapter] {
+        systemChapters(cloudEntries: cloudEntries)
+            + UserChapterStore.load()
+                .filter { !SystemJournalTitles.all.contains($0.title) }
+                .map(chapterWithStoredEntries)
     }
 
     static func journalDate(dayOffset: Int) -> Date {
@@ -5417,6 +5551,7 @@ enum DailyJournalData {
             isFavorite: chapter.isFavorite,
             createdAt: chapter.createdAt,
             updatedAt: chapter.updatedAt,
+            systemJournal: chapter.systemJournal,
             entries: chapter.entries
         )
     }
@@ -5426,6 +5561,7 @@ enum DailyJournalData {
         dayOffset: Int,
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
+        onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)? = nil,
         onAddEntry: @escaping (PrototypeEntry) -> Void
     ) -> some View {
         let datedChapter = dateTitledChapter(from: chapter, dayOffset: dayOffset)
@@ -5436,6 +5572,7 @@ enum DailyJournalData {
             presentation: .dailyJournal,
             onNewEntryPresentationChange: onNewEntryPresentationChange,
             onChapterUpdated: onChapterUpdated,
+            onOpenExistingEntry: onOpenExistingEntry,
             onCreateStory: onAddEntry
         )
     }
@@ -5448,6 +5585,61 @@ enum DailyJournalData {
         chapter.entries = StoryEntryStore.load(for: chapter.title) + visibleSampleEntries
         return chapter
     }
+
+    private static func systemChapters(cloudEntries: [JournalEntry]?) -> [PrototypeChapter] {
+        PrototypeChapter.SystemJournal.orderedCases.map { systemJournal in
+            let appearance = SystemJournalAppearanceStore.appearance(for: systemJournal)
+            return PrototypeChapter(
+                id: systemJournal.id,
+                title: systemJournal.title,
+                subtitle: systemJournal.subtitle,
+                color: appearance.color ?? systemJournal.color,
+                symbol: systemJournal.symbol,
+                coverImageName: appearance.coverImageName,
+                remoteCover: appearance.remoteCover,
+                kind: .journal,
+                isFavorite: false,
+                createdAt: .distantPast,
+                updatedAt: Date(),
+                systemJournal: systemJournal,
+                entries: systemEntries(for: systemJournal, cloudEntries: cloudEntries)
+            )
+        }
+    }
+
+    private static func systemEntries(
+        for systemJournal: PrototypeChapter.SystemJournal,
+        cloudEntries: [JournalEntry]?
+    ) -> [PrototypeEntry] {
+        if let cloudEntries {
+            return cloudEntries
+                .filter { $0.status != JournalEntryStatus.archived.rawValue }
+                .filter { entry in
+                    switch systemJournal {
+                    case .drafts:
+                        return entry.status != JournalEntryStatus.completed.rawValue
+                    case .completed:
+                        return entry.status == JournalEntryStatus.completed.rawValue
+                    }
+                }
+                .map { PrototypeEntry(cloudEntry: $0) }
+        }
+
+        return CreateEntryDraftStore.loadAll()
+            .filter { entry in
+                switch systemJournal {
+                case .drafts:
+                    return entry.status != JournalEntryStatus.completed.rawValue
+                case .completed:
+                    return entry.status == JournalEntryStatus.completed.rawValue
+                }
+            }
+            .map { $0.prototypeEntry() }
+    }
+}
+
+private enum SystemJournalTitles {
+    static let all = Set(PrototypeChapter.SystemJournal.orderedCases.map(\.title))
 }
 
 private struct DailyJournalEntrySummary: Identifiable {
@@ -10077,12 +10269,24 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
 
 private enum JournalEntryLayout: String {
     case grid
+    case grid3x3
     case list
+
+    var gridColumnCount: Int {
+        switch self {
+        case .grid:
+            return 2
+        case .grid3x3, .list:
+            return 3
+        }
+    }
 
     var systemImage: String {
         switch self {
         case .grid:
             return "square.grid.2x2"
+        case .grid3x3:
+            return "square.grid.3x3"
         case .list:
             return "list.bullet"
         }
@@ -10091,7 +10295,9 @@ private enum JournalEntryLayout: String {
     var accessibilityLabel: String {
         switch self {
         case .grid:
-            return "Show entries as grid"
+            return "Show entries as 2 by 2 grid"
+        case .grid3x3:
+            return "Show entries as 3 by 3 grid"
         case .list:
             return "Show entries as list"
         }
@@ -10125,11 +10331,17 @@ private struct JournalChapterListRow: View {
             .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(chapter.title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.storyInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                HStack(spacing: 7) {
+                    Text(chapter.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.storyInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+
+                    if chapter.isSystemJournal {
+                        SystemJournalBadge(style: .list)
+                    }
+                }
             }
             .layoutPriority(1)
 
@@ -10143,6 +10355,99 @@ private struct JournalChapterListRow: View {
         }
         .frame(height: JournalChapterListMetrics.rowHeight)
         .accessibilityLabel(chapter.title)
+        .accessibilityHint(chapter.isSystemJournal ? "Built-in journals can't be moved or deleted." : "")
+    }
+}
+
+private struct SystemJournalBadge: View {
+    enum Style {
+        case cover
+        case list
+    }
+
+    let style: Style
+
+    var body: some View {
+        HStack(spacing: iconTextSpacing) {
+            Image(systemName: "shield.fill")
+
+            Text("System")
+        }
+            .font(.system(size: fontSize, weight: .bold))
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, horizontalPadding)
+            .frame(height: height)
+            .background(backgroundColor, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(borderColor, lineWidth: 1)
+            )
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel("System journal")
+    }
+
+    private var iconTextSpacing: CGFloat {
+        switch style {
+        case .cover:
+            return 2
+        case .list:
+            return 3
+        }
+    }
+
+    private var fontSize: CGFloat {
+        switch style {
+        case .cover:
+            return 8
+        case .list:
+            return 10
+        }
+    }
+
+    private var horizontalPadding: CGFloat {
+        switch style {
+        case .cover:
+            return 5
+        case .list:
+            return 7
+        }
+    }
+
+    private var height: CGFloat {
+        switch style {
+        case .cover:
+            return 16
+        case .list:
+            return 20
+        }
+    }
+
+    private var foregroundColor: Color {
+        switch style {
+        case .cover:
+            return Color.white
+        case .list:
+            return Color.storyInk
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch style {
+        case .cover:
+            return Color.black.opacity(0.36)
+        case .list:
+            return Color.homeAccent.opacity(0.10)
+        }
+    }
+
+    private var borderColor: Color {
+        switch style {
+        case .cover:
+            return Color.white.opacity(0.26)
+        case .list:
+            return Color.homeAccent.opacity(0.22)
+        }
     }
 }
 
@@ -10288,6 +10593,125 @@ private struct NotebookCover: View {
     }
 }
 
+private struct JournalDetailBannerBackground: View {
+    let color: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackImageName: String?
+    let symbol: String
+
+    var body: some View {
+        ZStack {
+            Group {
+                if let coverImage {
+                    Image(uiImage: coverImage)
+                        .resizable()
+                        .scaledToFill()
+                } else if let remoteCoverURL {
+                    RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
+                } else if let fallbackImageName {
+                    Image(fallbackImageName)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    color
+                        .overlay {
+                            Image(systemName: symbol)
+                                .font(.system(size: 74, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.24))
+                        }
+                }
+            }
+
+            Color.black.opacity(0.46)
+                .allowsHitTesting(false)
+        }
+        .clipped()
+    }
+}
+
+private struct JournalDetailCoverImage: View {
+    let chapter: PrototypeChapter
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackImageName: String?
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(JournalOpeningBook.compactAspectRatio, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                cover
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .leading) {
+                journalSpine
+            }
+            .overlay(alignment: .topLeading) {
+                if chapter.isSystemJournal {
+                    SystemJournalBadge(style: .cover)
+                        .padding(8)
+                }
+            }
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.13), radius: 10, y: 5)
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let coverImage {
+            Image(uiImage: coverImage)
+                .resizable()
+                .scaledToFill()
+        } else if let remoteCoverURL {
+            RemoteCoverImage(url: remoteCoverURL, placeholderColor: chapter.color)
+        } else if let fallbackImageName {
+            Image(fallbackImageName)
+                .resizable()
+                .scaledToFill()
+        } else {
+            chapter.color
+        }
+    }
+
+    private var journalSpine: some View {
+        ZStack(alignment: .leading) {
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.42),
+                    Color.black.opacity(0.28),
+                    Color.black.opacity(0.16),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.white.opacity(0.16),
+                    Color.white.opacity(0.08),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 12.5)
+            .padding(.leading, 14.25)
+            .blendMode(.screen)
+        }
+        .frame(width: 22)
+        .frame(maxHeight: .infinity)
+        .allowsHitTesting(false)
+    }
+}
+
 private struct PrototypeChapterDetailView: View {
     enum Presentation {
         case story
@@ -10298,6 +10722,7 @@ private struct PrototypeChapterDetailView: View {
     let onCreateStory: (PrototypeEntry) -> Void
     let onNewEntryPresentationChange: (Bool) -> Void
     let onChapterUpdated: (PrototypeChapter) -> Void
+    let onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)?
     let entryDate: Date
     let presentation: Presentation
 
@@ -10310,11 +10735,19 @@ private struct PrototypeChapterDetailView: View {
     @State private var isDraftSaved = false
     @State private var activeDraftID: UUID?
     @State private var generatedStoryboards: [GeneratedStoryboard] = []
+    @State private var completedEntryOpenedStoryboardImage: UIImage?
+    @State private var isOpeningCompletedEntryFromEntries = false
     @State private var editMode: EditMode = .inactive
     @State private var draggingEntryID: UUID?
     @State private var isShowingCoverCustomization = false
 
-    private let sections = ["Entries", "Media"]
+    private var sections: [String] {
+        chapter.systemJournal == .drafts ? ["Pages"] : ["Pages", "Media"]
+    }
+
+    private static func initialSection(for chapter: PrototypeChapter, presentation: Presentation) -> String {
+        chapter.systemJournal == .drafts || presentation == .dailyJournal ? "Pages" : "Media"
+    }
 
     private var mediaImageNames: [String] {
         chapter.entries.flatMap(\.imageNames)
@@ -10348,9 +10781,9 @@ private struct PrototypeChapterDetailView: View {
 
     private func applyJournalCustomization(_ customization: JournalCustomization) {
         if let storedCoverImage = customization.storedCoverImage {
-            JournalCoverStore.save(storedCoverImage, for: chapter.title)
+            JournalCoverStore.save(storedCoverImage, for: chapter.coverStorageKey)
         } else if customization.clearsStoredCover {
-            JournalCoverStore.delete(title: chapter.title)
+            JournalCoverStore.delete(key: chapter.coverStorageKey)
         }
 
         let updatedChapter = PrototypeChapter(
@@ -10365,18 +10798,37 @@ private struct PrototypeChapterDetailView: View {
             isFavorite: chapter.isFavorite,
             createdAt: chapter.createdAt,
             updatedAt: Date(),
+            systemJournal: chapter.systemJournal,
             entries: chapter.entries
         )
 
         chapter = updatedChapter
         onChapterUpdated(updatedChapter)
-        UserChapterStore.updateAppearance(
-            id: updatedChapter.id,
-            color: updatedChapter.color,
-            coverImageName: updatedChapter.coverImageName,
-            remoteCover: updatedChapter.remoteCover
-        )
-        UserChapterStore.syncToCloud(updatedChapter)
+        if let systemJournal = updatedChapter.systemJournal {
+            SystemJournalAppearanceStore.update(
+                systemJournal,
+                color: updatedChapter.color,
+                coverImageName: updatedChapter.coverImageName,
+                remoteCover: updatedChapter.remoteCover
+            )
+            SystemJournalAppearanceStore.syncToCloud(
+                updatedChapter,
+                storedCoverImage: customization.storedCoverImage
+            )
+        } else {
+            UserChapterStore.updateAppearance(
+                id: updatedChapter.id,
+                color: updatedChapter.color,
+                coverImageName: updatedChapter.coverImageName,
+                remoteCover: updatedChapter.remoteCover
+            )
+            UserChapterStore.syncToCloud(updatedChapter)
+            if let storedCoverImage = customization.storedCoverImage {
+                UserChapterStore.uploadCoverToCloud(storedCoverImage, journalID: updatedChapter.id)
+            } else if customization.clearsStoredCover {
+                UserChapterStore.clearCoverInCloud(journalID: updatedChapter.id)
+            }
+        }
         isShowingCoverCustomization = false
     }
 
@@ -10386,14 +10838,16 @@ private struct PrototypeChapterDetailView: View {
         presentation: Presentation = .story,
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
+        onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)? = nil,
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         _chapter = State(initialValue: chapter)
-        _selectedSection = State(initialValue: presentation == .dailyJournal ? "Entries" : "Media")
+        _selectedSection = State(initialValue: Self.initialSection(for: chapter, presentation: presentation))
         self.entryDate = entryDate
         self.presentation = presentation
         self.onNewEntryPresentationChange = onNewEntryPresentationChange
         self.onChapterUpdated = onChapterUpdated
+        self.onOpenExistingEntry = onOpenExistingEntry
         self.onCreateStory = onCreateStory
     }
 
@@ -10408,10 +10862,9 @@ private struct PrototypeChapterDetailView: View {
                         journalHeroHeader
 
                         VStack(alignment: .leading, spacing: 16) {
-                            mediaComicStrip
                             sectionPicker
 
-                            if selectedSection == "Entries" {
+                            if selectedSection == "Pages" {
                                 entriesList
                             } else {
                                 mediaGrid
@@ -10422,37 +10875,41 @@ private struct PrototypeChapterDetailView: View {
                         .padding(.bottom, 32)
                     }
                 }
+                .ignoresSafeArea(edges: .top)
             }
         }
         .preferredColorScheme(.light)
         .navigationTitle(chapter.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
-        .toolbarBackground(Color.homePageBackground, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .tint(Color.homeAccent)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 EditButton()
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.homeAccent)
+                    .opacity(chapter.systemJournal == .completed ? 0 : 1)
+                    .disabled(chapter.systemJournal == .completed)
 
-                Button {
-                    isShowingNewStory = true
-                } label: {
-                    Image(systemName: "plus")
-                        .fontWeight(.bold)
+                if chapter.systemJournal != .completed {
+                    Button {
+                        activeDraftID = nil
+                        isOpeningCompletedEntryFromEntries = false
+                        completedEntryOpenedStoryboardImage = nil
+                        isShowingNewStory = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .fontWeight(.bold)
+                    }
+                    .accessibilityLabel(presentation == .dailyJournal ? "Create a new journal entry" : "Create a new story")
                 }
-                .accessibilityLabel(presentation == .dailyJournal ? "Create a new journal entry" : "Create a new story")
             }
         }
         .environment(\.editMode, $editMode)
         .navigationDestination(isPresented: $isShowingNewStory) {
             CreateEntryView(
-                presentation: .composeInJournal(
-                    title: chapter.title,
-                    initialDate: entryDate,
-                    locksEntryDate: presentation == .dailyJournal
-                ),
+                presentation: newEntryPresentation,
                 entryText: $draftEntryText,
                 storyTitle: $draftStoryTitle,
                 storyboardPhotos: $draftStoryboardPhotos,
@@ -10463,8 +10920,8 @@ private struct PrototypeChapterDetailView: View {
                     set: { _ in }
                 ),
                 generatedStoryboards: $generatedStoryboards,
-                completedEntryOpenedStoryboardImage: .constant(nil),
-                isOpeningCompletedEntryFromEntries: .constant(false),
+                completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
+                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
                 dismissCreate: {
                     isShowingNewStory = false
                 },
@@ -10474,7 +10931,7 @@ private struct PrototypeChapterDetailView: View {
                     } else {
                         chapter.entries.insert(entry, at: 0)
                     }
-                    selectedSection = "Entries"
+                    selectedSection = "Pages"
                     onCreateStory(entry)
                 }
             )
@@ -10490,7 +10947,7 @@ private struct PrototypeChapterDetailView: View {
             onNewEntryPresentationChange(isShowing)
         }
         .onChange(of: selectedSection) { newSection in
-            if newSection != "Entries" {
+            if newSection != "Pages" {
                 editMode = .inactive
                 draggingEntryID = nil
             }
@@ -10515,70 +10972,101 @@ private struct PrototypeChapterDetailView: View {
         }
     }
 
+    private var newEntryPresentation: CreateEntryPresentation {
+        if activeDraftID != nil {
+            return .editDraft
+        }
+
+        if chapter.systemJournal == .drafts {
+            return .compose
+        }
+
+        return .composeInJournal(
+            title: chapter.title,
+            initialDate: entryDate,
+            locksEntryDate: presentation == .dailyJournal
+        )
+    }
+
     private var journalHeroHeader: some View {
-        heroDetails
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
+        heroBanner
             .padding(.bottom, 14)
     }
 
-    private var heroDetails: some View {
-        HStack(alignment: .bottom, spacing: 18) {
-            Button {
+    private var heroBanner: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            JournalDetailBannerBackground(
+                color: chapter.color,
+                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
+                fallbackImageName: chapter.coverImageName,
+                symbol: chapter.symbol
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: 276)
+            .clipped()
+            .contentShape(Rectangle())
+            .onTapGesture {
                 isShowingCoverCustomization = true
-            } label: {
-                VStack(spacing: 7) {
-                    NotebookCover(
-                        color: chapter.color,
-                        symbol: nil,
-                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
-                        remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
-                        imageName: chapter.coverImageName,
-                        width: 122,
-                        height: 158
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(.white.opacity(0.28), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.28), radius: 12, y: 7)
-
-                    Label("Change cover", systemImage: "photo")
-                        .font(.system(size: 11, weight: .heavy))
-                        .foregroundStyle(Color.homeMutedText)
-                        .lineLimit(1)
-                }
             }
-            .buttonStyle(.plain)
             .accessibilityLabel("Change journal cover")
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Label(entryCountText, systemImage: "book.pages.fill")
-                    Label("\(chapter.imageCount) photos", systemImage: "photo.fill")
+            VStack(alignment: .center, spacing: 14) {
+                Button {
+                    isShowingCoverCustomization = true
+                } label: {
+                    JournalDetailCoverImage(
+                        chapter: chapter,
+                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                        remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
+                        fallbackImageName: chapter.coverImageName
+                    )
+                    .frame(width: UIScreen.main.bounds.width * 0.60)
                 }
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color.homeMutedText)
-                .lineLimit(1)
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("Change journal cover")
 
-                Text(chapter.title)
-                    .font(.system(size: 30, weight: .heavy, design: .serif))
-                    .foregroundStyle(Color.storyInk)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if presentation != .dailyJournal {
-                    Text(chapter.subtitle)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
+                VStack(spacing: 8) {
+                    Text(chapter.title.uppercased())
+                        .font(.system(size: 24, weight: .heavy, design: .serif))
+                        .foregroundStyle(Color.storyInk)
                         .lineLimit(2)
+                        .minimumScaleFactor(0.76)
+                        .multilineTextAlignment(.center)
 
-                    Text(entryDate.formatted(.dateTime.weekday(.wide).month(.wide).day().year()))
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.homeMutedText.opacity(0.78))
+                    HStack(spacing: 16) {
+                        bannerStat(systemName: "book.pages", text: pageCountText)
+                        bannerStat(systemName: "photo", text: "\(chapter.imageCount) photos")
+                    }
                 }
+                .padding(.horizontal, 12)
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 0)
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity)
+            .background(alignment: .top) {
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 28,
+                    bottomLeadingRadius: 0,
+                    bottomTrailingRadius: 0,
+                    topTrailingRadius: 28,
+                    style: .continuous
+                )
+                .fill(Color.homePageBackground)
+                .padding(.top, 132)
+            }
+            .offset(y: -132)
+            .padding(.bottom, -132)
         }
+    }
+
+    private func bannerStat(systemName: String, text: String) -> some View {
+        Label(text, systemImage: systemName)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(Color.homeMutedText)
+            .lineLimit(1)
     }
 
     private var mediaComicStrip: some View {
@@ -10693,64 +11181,30 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private var entriesList: some View {
-        Group {
-            if chapter.entries.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "book.pages")
-                        .font(.system(size: 32))
-                        .foregroundStyle(Color.homeAccent.opacity(0.72))
-
-                    Text(presentation == .dailyJournal ? "No journal entries yet" : "No stories yet")
-                        .font(.system(size: 17, weight: .bold, design: .serif))
-                        .foregroundStyle(Color.storyInk)
-
-                    Text(
-                        presentation == .dailyJournal
-                            ? "Capture the first moment from this day."
-                            : "Begin this chapter with its first story."
-                    )
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.homeMutedText)
-                        .multilineTextAlignment(.center)
-
-                    Button {
-                        isShowingNewStory = true
-                    } label: {
-                        Label(
-                            presentation == .dailyJournal ? "Write the First Entry" : "Write the First Story",
-                            systemImage: "plus"
-                        )
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 16)
-                            .frame(height: 40)
-                            .background(Color.homeAccent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+        JournalDetailEntryBrowser(
+            chapter: chapter,
+            allowsCreation: chapter.systemJournal != .completed,
+            onCreateEntry: {
+                activeDraftID = nil
+                isOpeningCompletedEntryFromEntries = false
+                completedEntryOpenedStoryboardImage = nil
+                isShowingNewStory = true
+            },
+            onOpenEntry: { entry, isCompleted, storyboardImage in
+                if let onOpenExistingEntry {
+                    onOpenExistingEntry(entry, isCompleted, storyboardImage)
+                } else {
+                    activeDraftID = entry.id
+                    isOpeningCompletedEntryFromEntries = isCompleted
+                    completedEntryOpenedStoryboardImage = storyboardImage
+                    isShowingNewStory = true
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 34)
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(Array(chapter.entries.enumerated()), id: \.element.id) { index, entry in
-                        editableEntryRow(entry, at: index)
-                    }
-                }
+            },
+            onEntriesChanged: { entries in
+                chapter.entries = entries
+                onChapterUpdated(chapter)
             }
-        }
-        .background {
-            if chapter.entries.isEmpty {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white)
-            }
-        }
-        .overlay {
-            if chapter.entries.isEmpty {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.homeBorder, lineWidth: 1)
-            }
-        }
-        .shadow(color: .black.opacity(chapter.entries.isEmpty ? 0.06 : 0), radius: 12, y: 4)
+        )
     }
 
     private func editableEntryRow(_ entry: PrototypeEntry, at index: Int) -> some View {
@@ -10852,14 +11306,9 @@ private struct PrototypeChapterDetailView: View {
         StoryEntryStore.saveStoredOrder(from: chapter.entries, for: chapter.title)
     }
 
-    private var entryCountText: String {
-        let noun: String
-        if presentation == .dailyJournal {
-            noun = chapter.entries.count == 1 ? "entry" : "entries"
-        } else {
-            noun = chapter.entries.count == 1 ? "story" : "stories"
-        }
-        return "\(chapter.entries.count) \(noun)"
+    private var pageCountText: String {
+        let pageCount = max(mediaImageNames.count, chapter.entries.count)
+        return "\(pageCount) \(pageCount == 1 ? "page" : "pages")"
     }
 
     private var mediaGrid: some View {
@@ -10899,6 +11348,444 @@ private struct PrototypeChapterDetailView: View {
                 }
             }
         }
+    }
+}
+
+private struct JournalDetailEntryBrowser: View {
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+
+    let chapter: PrototypeChapter
+    let allowsCreation: Bool
+    let onCreateEntry: () -> Void
+    let onOpenEntry: (CreateEntryDraft, Bool, UIImage?) -> Void
+    let onEntriesChanged: ([PrototypeEntry]) -> Void
+
+    @State private var localEntries: [CreateEntryDraft] = []
+    @State private var cloudEntries: [JournalEntry] = []
+    @State private var completedStoryboards: [GeneratedStoryboard] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @AppStorage("StorytopiaSelectedJournalDetailEntryLayout") private var selectedLayoutRawValue = JournalEntryLayout.grid.rawValue
+    @AppStorage("StorytopiaSelectedJournalDetailEntrySort") private var selectedSortRawValue = EntrySortOption.entryDate.rawValue
+
+    private var selectedLayout: JournalEntryLayout {
+        get { JournalEntryLayout(rawValue: selectedLayoutRawValue) ?? .grid }
+        nonmutating set { selectedLayoutRawValue = newValue.rawValue }
+    }
+
+    private var selectedSort: EntrySortOption {
+        get { EntrySortOption(rawValue: selectedSortRawValue) ?? .entryDate }
+        nonmutating set { selectedSortRawValue = newValue.rawValue }
+    }
+
+    private var entryGridColumns: [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(), spacing: 14),
+            count: selectedLayout.gridColumnCount
+        )
+    }
+
+    private var filteredItems: [EntryDisplayItem] {
+        let cloudByClientID = Dictionary(grouping: cloudEntries, by: \.clientEntryID).compactMapValues(\.first)
+        let localItems = localEntries
+            .filter(matchesChapterFilter)
+            .map { EntryDisplayItem.local($0, cloudEntry: cloudByClientID[$0.id]) }
+        let localIDs = Set(localEntries.map(\.id))
+        let cloudOnlyItems = cloudEntries
+            .filter { !localIDs.contains($0.clientEntryID) }
+            .filter(matchesChapterFilter)
+            .map(EntryDisplayItem.cloud)
+
+        return (localItems + cloudOnlyItems)
+            .filter { $0.status != JournalEntryStatus.archived.rawValue }
+            .sorted(by: sortEntryItems)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            controlsRow
+
+            if let errorMessage {
+                cloudErrorNotice(errorMessage)
+            }
+
+            if isLoading && filteredItems.isEmpty {
+                loadingGrid
+            } else if filteredItems.isEmpty {
+                emptyState
+            } else if selectedLayout == .list {
+                entryList
+            } else {
+                entryGrid
+            }
+        }
+        .onAppear(perform: refreshEntries)
+        .onChange(of: authStore.userID) { _ in
+            refreshEntries()
+        }
+    }
+
+    private var controlsRow: some View {
+        HStack(spacing: 10) {
+            sortMenu
+            Spacer()
+            layoutSwitcher
+        }
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(EntrySortOption.menuOptions) { option in
+                Button {
+                    selectedSort = selectedSort.selection(afterChoosing: option)
+                } label: {
+                    Label(option.menuTitle, systemImage: selectedSort.menuSystemImage(for: option))
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: selectedSort.displaySystemImage)
+                    .font(.system(size: 12, weight: .bold))
+                Text(selectedSort.shortTitle)
+                    .font(.system(size: 12, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundStyle(Color.homeMutedText)
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var layoutSwitcher: some View {
+        HStack(spacing: 4) {
+            layoutButton(.grid)
+            layoutButton(.grid3x3)
+            layoutButton(.list)
+        }
+        .padding(4)
+        .frame(height: 34)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.homeBorder, lineWidth: 1)
+        )
+    }
+
+    private func layoutButton(_ layout: JournalEntryLayout) -> some View {
+        let isSelected = selectedLayout == layout
+        return Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                selectedLayout = layout
+            }
+        } label: {
+            Image(systemName: layout.systemImage)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(isSelected ? Color.white : Color.homeMutedText)
+                .frame(width: 34, height: 26)
+                .background {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color.storyInk)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(layout.accessibilityLabel)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var entryGrid: some View {
+        LazyVGrid(columns: entryGridColumns, spacing: 14) {
+            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                let displayEntry = entryForDisplay(item)
+                if isCompleted(item) {
+                    CompletedEntryGridCard(
+                        entry: displayEntry,
+                        title: entryDisplayTitle(displayEntry),
+                        sortOption: selectedSort,
+                        storyboardImage: storyboardImage(for: item, fallbackIndex: index),
+                        onOpen: {
+                            openItem(item, displayEntry: displayEntry, fallbackIndex: index)
+                        }
+                    )
+                } else {
+                    EntryGridPreviewCard(
+                        entry: displayEntry,
+                        sortOption: selectedSort,
+                        isEditing: false,
+                        showsActions: false,
+                        title: entryDisplayTitle(displayEntry),
+                        isOpening: false,
+                        onOpen: {
+                            openItem(item, displayEntry: displayEntry, fallbackIndex: index)
+                        },
+                        onDelete: {},
+                        onRename: nil
+                    )
+                }
+            }
+        }
+    }
+
+    private var entryList: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                let displayEntry = entryForDisplay(item)
+                Button {
+                    openItem(item, displayEntry: displayEntry, fallbackIndex: index)
+                } label: {
+                    EntryListRow(
+                        entry: displayEntry,
+                        sortOption: selectedSort,
+                        category: chapter.isSystemJournal ? nil : (isCompleted(item) ? .completed : .drafts),
+                        completedStoryboardImage: isCompleted(item) ? storyboardImage(for: item, fallbackIndex: index) : nil
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private var loadingGrid: some View {
+        LazyVGrid(columns: entryGridColumns, spacing: 14) {
+            ForEach(0..<(selectedLayout.gridColumnCount * selectedLayout.gridColumnCount), id: \.self) { index in
+                EntryGridLoadingCard(seed: index)
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "book.pages")
+                .font(.system(size: 32))
+                .foregroundStyle(Color.homeAccent.opacity(0.72))
+
+            Text("No entries")
+                .font(.system(size: 17, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            if allowsCreation {
+                Button {
+                    onCreateEntry()
+                } label: {
+                    Label("Write the First Entry", systemImage: "plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .frame(height: 40)
+                        .background(Color.homeAccent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 34)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.homeBorder, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.06), radius: 12, y: 4)
+    }
+
+    private func cloudErrorNotice(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "icloud.slash")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.homeAccent)
+            Text(message)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.homeMutedText)
+            Spacer()
+            Button("Retry", action: refreshEntries)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.homeAccent)
+        }
+    }
+
+    private func refreshEntries() {
+        localEntries = CreateEntryDraftStore.loadAll()
+        completedStoryboards = GeneratedStoryboardStore.load()
+        onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
+
+        guard authStore.userID != nil else {
+            cloudEntries = []
+            errorMessage = nil
+            isLoading = false
+            return
+        }
+
+        isLoading = true
+        Task {
+            do {
+                let entries = try await SupabaseEntryRepository().getEntrySummaries()
+                await MainActor.run {
+                    cloudEntries = entries
+                    errorMessage = nil
+                    isLoading = false
+                    onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Could not load cloud entries."
+                    isLoading = false
+                }
+            }
+        }
+    }
+
+    private func matchesChapterFilter(_ entry: CreateEntryDraft) -> Bool {
+        switch chapter.systemJournal {
+        case .drafts:
+            return entry.status != JournalEntryStatus.completed.rawValue
+        case .completed:
+            return entry.status == JournalEntryStatus.completed.rawValue
+        case nil:
+            let memberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
+            return memberIDs.contains(entry.id) || EntryJournalLinkStore.loadJournalTitles(for: entry.id).contains(chapter.title)
+        }
+    }
+
+    private func matchesChapterFilter(_ entry: JournalEntry) -> Bool {
+        switch chapter.systemJournal {
+        case .drafts:
+            return entry.status != JournalEntryStatus.completed.rawValue
+        case .completed:
+            return entry.status == JournalEntryStatus.completed.rawValue
+        case nil:
+            return Set(StoryEntryStore.clientEntryIDs(for: chapter.title)).contains(entry.clientEntryID)
+        }
+    }
+
+    private func sortEntryItems(_ lhs: EntryDisplayItem, _ rhs: EntryDisplayItem) -> Bool {
+        let lhsDate = sortDate(for: lhs)
+        let rhsDate = sortDate(for: rhs)
+
+        if lhsDate != rhsDate {
+            return selectedSort.sortsAscending ? lhsDate < rhsDate : lhsDate > rhsDate
+        }
+
+        return selectedSort.sortsAscending ? lhs.createdAt < rhs.createdAt : lhs.createdAt > rhs.createdAt
+    }
+
+    private func sortDate(for item: EntryDisplayItem) -> Date {
+        switch selectedSort {
+        case .manual, .cloudCreated, .cloudCreatedOldest:
+            return item.createdAt
+        case .entryDate, .entryDateOldest:
+            let entry = item.entry
+            return entry.datePrecision == .noDate ? item.createdAt : entry.date
+        case .updated, .updatedOldest:
+            return item.updatedAt
+        }
+    }
+
+    private func entryForDisplay(_ item: EntryDisplayItem) -> CreateEntryDraft {
+        let entry = item.entry
+        guard entry.thumbnail == nil else {
+            return entry
+        }
+
+        return entry.replacingThumbnail(renderThumbnail(for: entry))
+    }
+
+    private func renderThumbnail(for entry: CreateEntryDraft) -> UIImage? {
+        DraftThumbnailRenderer.render(
+            title: entry.title,
+            text: entry.text,
+            richText: entry.richText,
+            photos: [],
+            fontChoiceRawValue: entry.fontChoiceRawValue,
+            textColorIndex: entry.textColorIndex,
+            textSize: entry.textSize,
+            paperStyleRawValue: entry.paperStyleRawValue,
+            paperColorIndex: entry.paperColorIndex,
+            isBold: entry.isBold,
+            isItalic: entry.isItalic,
+            isUnderlined: entry.isUnderlined,
+            isStrikethrough: entry.isStrikethrough,
+            isHighlighted: entry.isHighlighted,
+            textAlignmentRawValue: entry.textAlignmentRawValue
+        )
+    }
+
+    private func isCompleted(_ item: EntryDisplayItem) -> Bool {
+        item.status == JournalEntryStatus.completed.rawValue
+    }
+
+    private func storyboardImage(for item: EntryDisplayItem, fallbackIndex: Int) -> CompletedStoryboardImage {
+        if let image = storyboardUIImage(for: item, fallbackIndex: fallbackIndex) {
+            return .uiImage(image)
+        }
+
+        return .failed
+    }
+
+    private func storyboardUIImage(for item: EntryDisplayItem, fallbackIndex: Int) -> UIImage? {
+        if let storyboard = completedStoryboards.first(where: { $0.clientEntryID == item.id && $0.isPrimary })
+            ?? completedStoryboards.first(where: { $0.clientEntryID == item.id }) {
+            return storyboard.image
+        }
+
+        if completedStoryboards.indices.contains(fallbackIndex),
+           completedStoryboards[fallbackIndex].clientEntryID == nil {
+            return completedStoryboards[fallbackIndex].image
+        }
+
+        return nil
+    }
+
+    private func openItem(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
+        let isCompleted = isCompleted(item)
+        let storyboardImage = isCompleted ? storyboardUIImage(for: item, fallbackIndex: fallbackIndex) : nil
+        let entryToOpen = materializedEntry(for: item, displayEntry: displayEntry)
+        onOpenEntry(entryToOpen, isCompleted, storyboardImage)
+    }
+
+    private func materializedEntry(for item: EntryDisplayItem, displayEntry: CreateEntryDraft) -> CreateEntryDraft {
+        guard !item.isLocal else {
+            return displayEntry
+        }
+
+        _ = CreateEntryDraftStore.save(
+            id: displayEntry.id,
+            title: displayEntry.title,
+            text: displayEntry.text,
+            richText: displayEntry.richText,
+            referencePhotos: [],
+            characters: [],
+            artStyle: displayEntry.artStyle,
+            location: displayEntry.location,
+            date: displayEntry.date,
+            datePrecision: displayEntry.datePrecision,
+            savesDraft: displayEntry.savesDraft,
+            isPrivate: displayEntry.isPrivate,
+            status: JournalEntryStatus(rawValue: item.status) ?? .draft,
+            fontChoiceRawValue: displayEntry.fontChoiceRawValue,
+            textColorIndex: displayEntry.textColorIndex,
+            textSize: displayEntry.textSize,
+            paperStyleRawValue: displayEntry.paperStyleRawValue,
+            paperColorIndex: displayEntry.paperColorIndex,
+            isBold: displayEntry.isBold,
+            isItalic: displayEntry.isItalic,
+            isUnderlined: displayEntry.isUnderlined,
+            isStrikethrough: displayEntry.isStrikethrough,
+            isHighlighted: displayEntry.isHighlighted,
+            textAlignmentRawValue: displayEntry.textAlignmentRawValue,
+            thumbnail: displayEntry.thumbnail
+        )
+
+        return displayEntry
     }
 }
 
@@ -12152,6 +13039,75 @@ struct PrototypeChapter: Identifiable {
         case storyboard
     }
 
+    enum SystemJournal: String, CaseIterable {
+        case drafts
+        case completed
+
+        static let orderedCases: [SystemJournal] = [.drafts, .completed]
+
+        static func journal(for id: UUID) -> SystemJournal? {
+            orderedCases.first { $0.id == id }
+        }
+
+        var title: String {
+            switch self {
+            case .drafts:
+                return "Drafts"
+            case .completed:
+                return "Completed"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .drafts:
+                return "Entries without storyboards"
+            case .completed:
+                return "Generated storyboards"
+            }
+        }
+
+        var id: UUID {
+            switch self {
+            case .drafts:
+                return UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
+            case .completed:
+                return UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
+            }
+        }
+
+        var sortOrder: Int {
+            switch self {
+            case .drafts:
+                return 0
+            case .completed:
+                return 1
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .drafts:
+                return Color.homeAccent
+            case .completed:
+                return Color.storyInk
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .drafts:
+                return "doc.text.fill"
+            case .completed:
+                return "checkmark.seal.fill"
+            }
+        }
+
+        var coverStorageKey: String {
+            "system-\(rawValue)"
+        }
+    }
+
     let id: UUID
     let title: String
     let subtitle: String
@@ -12163,7 +13119,16 @@ struct PrototypeChapter: Identifiable {
     let isFavorite: Bool
     let createdAt: Date
     let updatedAt: Date
+    let systemJournal: SystemJournal?
     var entries: [PrototypeEntry]
+
+    var isSystemJournal: Bool {
+        systemJournal != nil
+    }
+
+    var coverStorageKey: String {
+        systemJournal?.coverStorageKey ?? title
+    }
 
     var imageCount: Int {
         entries.reduce(0) { $0 + $1.imageNames.count }
@@ -12185,6 +13150,7 @@ struct PrototypeChapter: Identifiable {
         isFavorite: Bool,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
+        systemJournal: SystemJournal? = nil,
         entries: [PrototypeEntry]
     ) {
         self.id = id
@@ -12198,6 +13164,7 @@ struct PrototypeChapter: Identifiable {
         self.isFavorite = isFavorite
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.systemJournal = systemJournal
         self.entries = entries
     }
 
@@ -12208,12 +13175,13 @@ struct PrototypeChapter: Identifiable {
             subtitle: cloudJournal.subtitle ?? "Personal journal",
             color: cloudJournal.colorHex.flatMap(Color.init(hex:)) ?? Color.storyPurple,
             symbol: cloudJournal.symbol ?? "book.closed.fill",
-            coverImageName: nil,
+            coverImageName: cloudJournal.coverImageName,
             remoteCover: cloudJournal.remoteCover,
             kind: cloudJournal.kind == "storyboard" ? .storyboard : .journal,
             isFavorite: cloudJournal.isFavorite,
             createdAt: cloudJournal.createdAt,
             updatedAt: cloudJournal.updatedAt,
+            systemJournal: nil,
             entries: []
         )
     }
@@ -12231,6 +13199,7 @@ struct PrototypeChapter: Identifiable {
             isFavorite: isFavorite,
             createdAt: createdAt,
             updatedAt: Date(),
+            systemJournal: systemJournal,
             entries: entries
         )
     }
@@ -12567,6 +13536,7 @@ enum UserChapterStore {
                 subtitle: chapter.subtitle,
                 colorHex: colorHex(for: chapter),
                 symbol: chapter.symbol,
+                coverImageName: chapter.coverImageName,
                 remoteCover: chapter.remoteCover,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 isFavorite: chapter.isFavorite,
@@ -12594,6 +13564,7 @@ enum UserChapterStore {
                         subtitle: chapter.subtitle,
                         colorHex: colorHex(for: chapter),
                         symbol: chapter.symbol,
+                        coverImageName: chapter.coverImageName,
                         remoteCover: chapter.remoteCover,
                         kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                         isFavorite: chapter.isFavorite,
@@ -12612,6 +13583,12 @@ enum UserChapterStore {
     static func uploadCoverToCloud(_ image: UIImage, journalID: UUID) {
         Task {
             try? await SupabaseJournalRepository().uploadCover(image, journalID: journalID)
+        }
+    }
+
+    static func clearCoverInCloud(journalID: UUID) {
+        Task {
+            try? await SupabaseJournalRepository().clearCover(journalID: journalID)
         }
     }
 
@@ -12636,6 +13613,7 @@ enum UserChapterStore {
                 subtitle: chapter.subtitle,
                 colorHex: colorHex(for: chapter),
                 symbol: chapter.symbol,
+                coverImageName: chapter.coverImageName,
                 remoteCover: chapter.remoteCover,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 isFavorite: chapter.isFavorite,
@@ -12740,7 +13718,7 @@ enum UserChapterStore {
         colorHex(for: chapter.color)
     }
 
-    private static func colorHex(for color: Color) -> String {
+    fileprivate static func colorHex(for color: Color) -> String {
         UIColor(color).storytopiaHexString ?? "#3D2678"
     }
 
@@ -12760,6 +13738,154 @@ enum UserChapterStore {
             uuidBytes[8], uuidBytes[9], uuidBytes[10], uuidBytes[11],
             uuidBytes[12], uuidBytes[13], uuidBytes[14], uuidBytes[15]
         ))
+    }
+}
+
+private enum SystemJournalAppearanceStore {
+    struct Appearance {
+        let color: Color?
+        let coverImageName: String?
+        let remoteCover: JournalRemoteCover?
+    }
+
+    private struct Record: Codable {
+        let colorHex: String?
+        let coverImageName: String?
+        let remoteCover: JournalRemoteCover?
+    }
+
+    private static let legacyStorageKey = "StorytopiaSystemJournalAppearances"
+    private static let storagePrefix = "StorytopiaSystemJournalAppearance"
+
+    static func appearance(for systemJournal: PrototypeChapter.SystemJournal) -> Appearance {
+        let defaults = UserDefaults.standard
+        let legacyRecord = legacyRecords[systemJournal.rawValue]
+        let colorHex = defaults.string(forKey: key("colorHex", for: systemJournal)) ?? legacyRecord?.colorHex
+        let coverImageName = defaults.string(forKey: key("coverImageName", for: systemJournal)) ?? legacyRecord?.coverImageName
+        let remoteCover = remoteCover(for: systemJournal) ?? legacyRecord?.remoteCover
+
+        return Appearance(
+            color: colorHex.flatMap(Color.init(hex:)),
+            coverImageName: coverImageName,
+            remoteCover: remoteCover
+        )
+    }
+
+    static func update(
+        _ systemJournal: PrototypeChapter.SystemJournal,
+        color: Color,
+        coverImageName: String?,
+        remoteCover: JournalRemoteCover?
+    ) {
+        let defaults = UserDefaults.standard
+        defaults.set(UserChapterStore.colorHex(for: color), forKey: key("colorHex", for: systemJournal))
+
+        if let coverImageName {
+            defaults.set(coverImageName, forKey: key("coverImageName", for: systemJournal))
+        } else {
+            defaults.removeObject(forKey: key("coverImageName", for: systemJournal))
+        }
+
+        if let remoteCover, let data = try? JSONEncoder().encode(remoteCover) {
+            defaults.set(data, forKey: key("remoteCover", for: systemJournal))
+        } else {
+            defaults.removeObject(forKey: key("remoteCover", for: systemJournal))
+        }
+
+        defaults.synchronize()
+    }
+
+    static func syncToCloud(_ chapter: PrototypeChapter, storedCoverImage: UIImage?) {
+        guard let systemJournal = chapter.systemJournal else {
+            return
+        }
+
+        Task {
+            do {
+                let repository = SupabaseJournalRepository()
+                try await repository.upsertJournal(
+                    id: systemJournal.id,
+                    title: systemJournal.title,
+                    subtitle: systemJournal.subtitle,
+                    colorHex: UserChapterStore.colorHex(for: chapter.color),
+                    symbol: systemJournal.symbol,
+                    coverImageName: chapter.coverImageName,
+                    remoteCover: chapter.remoteCover,
+                    kind: chapter.kind == .storyboard ? "storyboard" : "journal",
+                    isFavorite: chapter.isFavorite,
+                    displayOrder: systemJournal.sortOrder
+                )
+
+                if let storedCoverImage {
+                    try await repository.uploadCover(storedCoverImage, journalID: systemJournal.id)
+                } else if chapter.remoteCover != nil || JournalCoverStore.image(for: systemJournal.coverStorageKey) == nil {
+                    try await repository.clearCover(journalID: systemJournal.id)
+                }
+            } catch {
+                print("[Storytopia] System journal cloud sync failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    static func syncLocalAppearancesToCloudIfNeeded(existingCloudJournals: [StoryJournal]) {
+        let existingSystemIDs = Set(existingCloudJournals.compactMap { cloudJournal in
+            PrototypeChapter.SystemJournal.journal(for: cloudJournal.id)?.id
+        })
+
+        for systemJournal in PrototypeChapter.SystemJournal.orderedCases where !existingSystemIDs.contains(systemJournal.id) {
+            let appearance = appearance(for: systemJournal)
+            let storedCoverImage = JournalCoverStore.image(for: systemJournal.coverStorageKey)
+            let hasLocalAppearance = appearance.color != nil
+                || appearance.coverImageName != nil
+                || appearance.remoteCover != nil
+                || storedCoverImage != nil
+
+            guard hasLocalAppearance else {
+                continue
+            }
+
+            let chapter = PrototypeChapter(
+                id: systemJournal.id,
+                title: systemJournal.title,
+                subtitle: systemJournal.subtitle,
+                color: appearance.color ?? systemJournal.color,
+                symbol: systemJournal.symbol,
+                coverImageName: appearance.coverImageName,
+                remoteCover: appearance.remoteCover,
+                kind: .journal,
+                isFavorite: false,
+                createdAt: .distantPast,
+                updatedAt: Date(),
+                systemJournal: systemJournal,
+                entries: []
+            )
+            syncToCloud(chapter, storedCoverImage: storedCoverImage)
+        }
+    }
+
+    private static func key(_ field: String, for systemJournal: PrototypeChapter.SystemJournal) -> String {
+        "\(storagePrefix).\(systemJournal.rawValue).\(field)"
+    }
+
+    private static func remoteCover(for systemJournal: PrototypeChapter.SystemJournal) -> JournalRemoteCover? {
+        guard
+            let data = UserDefaults.standard.data(forKey: key("remoteCover", for: systemJournal))
+        else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(JournalRemoteCover.self, from: data)
+    }
+
+    private static var legacyRecords: [String: Record] {
+        guard
+            let data = UserDefaults.standard.data(forKey: legacyStorageKey),
+            let decodedRecords = try? JSONDecoder().decode([String: Record].self, from: data)
+        else {
+            return [:]
+        }
+
+        return decodedRecords
     }
 }
 
@@ -13302,5 +14428,31 @@ struct PrototypeEntry: Identifiable {
         default:
             return "A small moment, kept here before it could slip away."
         }
+    }
+}
+
+private extension PrototypeEntry {
+    init(cloudEntry entry: JournalEntry) {
+        let displayDate = entry.entryDate ?? entry.createdAt
+        let weekdayFormatter = DateFormatter()
+        weekdayFormatter.dateFormat = "EEE"
+
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "d"
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.timeStyle = .short
+
+        self.init(
+            id: entry.clientEntryID,
+            weekday: weekdayFormatter.string(from: displayDate).uppercased(),
+            day: dayFormatter.string(from: displayDate),
+            title: entry.title?.trimmedOrNil ?? "Untitled Entry",
+            body: entry.content ?? "",
+            richText: entry.richText ?? entry.content.map { NotebookRichTextDocument(text: $0) },
+            time: timeFormatter.string(from: displayDate),
+            location: entry.location?.trimmedOrNil,
+            imageNames: []
+        )
     }
 }

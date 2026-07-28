@@ -95,6 +95,15 @@ struct SettingsView: View {
             }
 
             Section("More Pages") {
+                SettingsRow(
+                    systemName: "doc.text",
+                    title: "Entries",
+                    subtitle: "Open your saved drafts and completed stories"
+                ) {
+                    selectedPage = .entries
+                    dismiss()
+                }
+
                 SettingsNavigationRow(
                     systemName: "safari",
                     title: "Explore",
