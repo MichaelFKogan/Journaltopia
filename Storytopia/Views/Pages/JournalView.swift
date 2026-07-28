@@ -1422,6 +1422,12 @@ private struct JournalCoverCard: View {
                 .overlay(alignment: .leading) {
                     journalSpine
                 }
+                .overlay(alignment: .topLeading) {
+                    if chapter.isSystemJournal {
+                        SystemJournalBadge(style: .cover)
+                            .padding(8)
+                    }
+                }
                 .overlay(alignment: .bottomLeading) {
                     journalTitleScrim
                 }
@@ -1451,6 +1457,11 @@ private struct JournalCoverCard: View {
                         Button(role: .destructive, action: onDelete) {
                             Label("Delete", systemImage: "trash")
                         }
+                    } else {
+                        Button {} label: {
+                            Label("Built-in: can't move or delete", systemImage: "shield.fill")
+                        }
+                        .disabled(true)
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -1472,6 +1483,7 @@ private struct JournalCoverCard: View {
                 .stroke(Color.homeBorder, lineWidth: 1)
         )
         .shadow(color: Color.storyInk.opacity(0.13), radius: 10, y: 5)
+        .accessibilityHint(chapter.isSystemJournal ? "Built-in journals can't be moved or deleted." : "")
     }
 
     private var journalTitleScrim: some View {
@@ -10319,11 +10331,17 @@ private struct JournalChapterListRow: View {
             .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(chapter.title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.storyInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                HStack(spacing: 7) {
+                    Text(chapter.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.storyInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+
+                    if chapter.isSystemJournal {
+                        SystemJournalBadge(style: .list)
+                    }
+                }
             }
             .layoutPriority(1)
 
@@ -10337,6 +10355,99 @@ private struct JournalChapterListRow: View {
         }
         .frame(height: JournalChapterListMetrics.rowHeight)
         .accessibilityLabel(chapter.title)
+        .accessibilityHint(chapter.isSystemJournal ? "Built-in journals can't be moved or deleted." : "")
+    }
+}
+
+private struct SystemJournalBadge: View {
+    enum Style {
+        case cover
+        case list
+    }
+
+    let style: Style
+
+    var body: some View {
+        HStack(spacing: iconTextSpacing) {
+            Image(systemName: "shield.fill")
+
+            Text("System")
+        }
+            .font(.system(size: fontSize, weight: .bold))
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, horizontalPadding)
+            .frame(height: height)
+            .background(backgroundColor, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(borderColor, lineWidth: 1)
+            )
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel("System journal")
+    }
+
+    private var iconTextSpacing: CGFloat {
+        switch style {
+        case .cover:
+            return 2
+        case .list:
+            return 3
+        }
+    }
+
+    private var fontSize: CGFloat {
+        switch style {
+        case .cover:
+            return 8
+        case .list:
+            return 10
+        }
+    }
+
+    private var horizontalPadding: CGFloat {
+        switch style {
+        case .cover:
+            return 5
+        case .list:
+            return 7
+        }
+    }
+
+    private var height: CGFloat {
+        switch style {
+        case .cover:
+            return 16
+        case .list:
+            return 20
+        }
+    }
+
+    private var foregroundColor: Color {
+        switch style {
+        case .cover:
+            return Color.white
+        case .list:
+            return Color.storyInk
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch style {
+        case .cover:
+            return Color.black.opacity(0.36)
+        case .list:
+            return Color.homeAccent.opacity(0.10)
+        }
+    }
+
+    private var borderColor: Color {
+        switch style {
+        case .cover:
+            return Color.white.opacity(0.26)
+        case .list:
+            return Color.homeAccent.opacity(0.22)
+        }
     }
 }
 
@@ -10545,7 +10656,13 @@ private struct PrototypeChapterDetailView: View {
     @State private var draggingEntryID: UUID?
     @State private var isShowingCoverCustomization = false
 
-    private let sections = ["Entries", "Media"]
+    private var sections: [String] {
+        chapter.systemJournal == .drafts ? ["Pages"] : ["Pages", "Media"]
+    }
+
+    private static func initialSection(for chapter: PrototypeChapter, presentation: Presentation) -> String {
+        chapter.systemJournal == .drafts || presentation == .dailyJournal ? "Pages" : "Media"
+    }
 
     private var mediaImageNames: [String] {
         chapter.entries.flatMap(\.imageNames)
@@ -10640,7 +10757,7 @@ private struct PrototypeChapterDetailView: View {
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         _chapter = State(initialValue: chapter)
-        _selectedSection = State(initialValue: presentation == .dailyJournal ? "Entries" : "Media")
+        _selectedSection = State(initialValue: Self.initialSection(for: chapter, presentation: presentation))
         self.entryDate = entryDate
         self.presentation = presentation
         self.onNewEntryPresentationChange = onNewEntryPresentationChange
@@ -10662,7 +10779,7 @@ private struct PrototypeChapterDetailView: View {
                         VStack(alignment: .leading, spacing: 16) {
                             sectionPicker
 
-                            if selectedSection == "Entries" {
+                            if selectedSection == "Pages" {
                                 entriesList
                             } else {
                                 mediaGrid
@@ -10729,7 +10846,7 @@ private struct PrototypeChapterDetailView: View {
                     } else {
                         chapter.entries.insert(entry, at: 0)
                     }
-                    selectedSection = "Entries"
+                    selectedSection = "Pages"
                     onCreateStory(entry)
                 }
             )
@@ -10745,7 +10862,7 @@ private struct PrototypeChapterDetailView: View {
             onNewEntryPresentationChange(isShowing)
         }
         .onChange(of: selectedSection) { newSection in
-            if newSection != "Entries" {
+            if newSection != "Pages" {
                 editMode = .inactive
                 draggingEntryID = nil
             }
@@ -10806,11 +10923,6 @@ private struct PrototypeChapterDetailView: View {
             .overlay(alignment: .bottomLeading) {
                 bannerTitleScrim
             }
-            .overlay(alignment: .bottomLeading) {
-                pageCountBadge
-                    .padding(.leading, 16)
-                    .padding(.bottom, 154)
-            }
             .contentShape(Rectangle())
             .onTapGesture {
                 isShowingCoverCustomization = true
@@ -10829,20 +10941,20 @@ private struct PrototypeChapterDetailView: View {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 15, weight: .bold))
                     }
-                    .foregroundStyle(Color.storyInk)
+                    .foregroundStyle(Color.white)
                     .frame(height: 54)
                     .padding(.horizontal, 18)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            .stroke(Color.homeBorder, lineWidth: 1)
+                            .stroke(Color.storyPurple.opacity(0.78), lineWidth: 1)
                     )
+                    .shadow(color: Color.storyPurple.opacity(0.28), radius: 10, y: 5)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open comic")
 
                 HStack(spacing: 18) {
-                    bannerStat(systemName: "doc.text", text: entryCountText)
                     bannerStat(systemName: "book.pages", text: pageCountText)
                     bannerStat(systemName: "photo", text: "\(chapter.imageCount) photos")
                 }
@@ -10901,20 +11013,6 @@ private struct PrototypeChapterDetailView: View {
         .frame(height: 152)
         .background(Color.clear)
         .allowsHitTesting(false)
-    }
-
-    private var pageCountBadge: some View {
-        Label(pageCountText, systemImage: "book.pages")
-            .font(.system(size: 11, weight: .heavy))
-            .foregroundStyle(Color.storyInk)
-            .padding(.horizontal, 10)
-            .frame(height: 28)
-            .background(Color.white.opacity(0.9), in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.white.opacity(0.8), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
 
     private func bannerStat(systemName: String, text: String) -> some View {
@@ -11159,16 +11257,6 @@ private struct PrototypeChapterDetailView: View {
 
     private func persistEntryOrder() {
         StoryEntryStore.saveStoredOrder(from: chapter.entries, for: chapter.title)
-    }
-
-    private var entryCountText: String {
-        let noun: String
-        if presentation == .dailyJournal {
-            noun = chapter.entries.count == 1 ? "entry" : "entries"
-        } else {
-            noun = chapter.entries.count == 1 ? "story" : "stories"
-        }
-        return "\(chapter.entries.count) \(noun)"
     }
 
     private var pageCountText: String {

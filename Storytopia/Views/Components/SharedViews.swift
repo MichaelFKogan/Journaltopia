@@ -80,14 +80,6 @@ struct BottomNavigationBar: View {
             ) {
                 selectedPage = .home
             }
-            NavItem(
-                title: "Entries",
-                systemName: selectedPage == .entries ? "doc.text.fill" : "doc.text",
-                isSelected: selectedPage == .entries,
-                selectedColor: .homeAccent
-            ) {
-                selectedPage = .entries
-            }
             CreateNavItem(isSelected: selectedPage == .create, selectedColor: .homeAccent) {
                 withAnimation(.snappy(duration: 0.32)) {
                     selectedPage = .create
