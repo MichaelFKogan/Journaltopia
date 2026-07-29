@@ -10,6 +10,7 @@ struct JournalView: View {
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningEntryFromEntries: Bool
     @Binding var isOpeningCompletedEntryFromEntries: Bool
+    @Binding var generatedStoryboards: [GeneratedStoryboard]
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     @State private var showsPrototypeData = false
@@ -20,6 +21,7 @@ struct JournalView: View {
     @State private var journalsPendingDeletion: [PrototypeChapter] = []
     @State private var journalBeingCustomized: PrototypeChapter?
     @State private var isCreateJournalAlertPresented = false
+    @State private var isCreateOptionsSheetPresented = false
     @State private var newJournalTitle = ""
     @State private var openingJournal: JournalOpeningContext?
     @State private var isJournalOpening = false
@@ -100,7 +102,8 @@ struct JournalView: View {
         activeDraftID: Binding<UUID?>,
         completedEntryOpenedStoryboardImage: Binding<UIImage?> = .constant(nil),
         isOpeningEntryFromEntries: Binding<Bool> = .constant(false),
-        isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false)
+        isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false),
+        generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([])
     ) {
         _selectedPage = selectedPage
         _isDraftSaved = isDraftSaved
@@ -108,6 +111,7 @@ struct JournalView: View {
         _completedEntryOpenedStoryboardImage = completedEntryOpenedStoryboardImage
         _isOpeningEntryFromEntries = isOpeningEntryFromEntries
         _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
+        _generatedStoryboards = generatedStoryboards
         _chapters = State(initialValue: DailyJournalData.allChapters())
     }
 
@@ -130,7 +134,14 @@ struct JournalView: View {
 
                 BottomNavigationBar(selectedPage: $selectedPage)
 
+                floatingAddButton
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .zIndex(2)
+
                 bottomPrototypeNotice
+
             }
             .toolbar(.hidden, for: .navigationBar)
             .environment(\.editMode, $editMode)
@@ -138,7 +149,16 @@ struct JournalView: View {
                 journalOpeningOverlay
             }
             .navigationDestination(for: JournalRoute.self) { route in
-                dailyJournalDetail(for: route.chapter, dayOffset: route.dayOffset)
+                switch route {
+                case let .journalDetail(detailRoute):
+                    dailyJournalDetail(for: detailRoute.chapter, dayOffset: detailRoute.dayOffset)
+                case .profile:
+                    ProfileView(
+                        selectedPage: $selectedPage,
+                        generatedStoryboards: $generatedStoryboards,
+                        embedsInNavigationStack: false
+                    )
+                }
             }
         }
         .onAppear {
@@ -193,12 +213,21 @@ struct JournalView: View {
                 onSave: applyJournalCustomization
             )
         }
+        .sheet(isPresented: $isCreateOptionsSheetPresented) {
+            JournalCreateOptionsSheet(
+                onNewEntry: openNewEntryFromCreateOptions,
+                onNewJournal: openNewJournalFromCreateOptions
+            )
+            .presentationDetents([.height(304)])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.white)
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 14) {
-                Text("Journals")
+                Text("My Journals")
                     .font(.system(size: 24, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
 
@@ -208,7 +237,7 @@ struct JournalView: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.homeAccent)
 
-                journalCreateButton
+                journalProfileButton
             }
 
             HStack(alignment: .center) {
@@ -309,6 +338,35 @@ struct JournalView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Create a new journal")
+    }
+
+    private var journalProfileButton: some View {
+        Button {
+            journalNavigationPath.append(.profile)
+        } label: {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 27, weight: .regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(Color.storyInk)
+                .frame(width: 32, height: 32)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Profile")
+    }
+
+    private var floatingAddButton: some View {
+        Button {
+            isCreateOptionsSheetPresented = true
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 27, weight: .bold))
+                .foregroundStyle(Color.white)
+                .frame(width: 64, height: 64)
+                .background(Color.homeAccent, in: Circle())
+                .shadow(color: Color.storyInk.opacity(0.18), radius: 12, y: 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add")
     }
 
     private var journalGridScroll: some View {
@@ -649,6 +707,18 @@ struct JournalView: View {
         isCreateJournalAlertPresented = true
     }
 
+    private func openNewEntryFromCreateOptions() {
+        isCreateOptionsSheetPresented = false
+        selectedPage = .create
+    }
+
+    private func openNewJournalFromCreateOptions() {
+        isCreateOptionsSheetPresented = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            handleCreateButtonTapped()
+        }
+    }
+
     private func createJournal() {
         let trimmedTitle = newJournalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else {
@@ -786,7 +856,7 @@ struct JournalView: View {
                 transaction.disablesAnimations = true
 
                 withTransaction(transaction) {
-                    journalNavigationPath = [JournalRoute(chapter: chapter, dayOffset: dayOffset)]
+                    journalNavigationPath = [.journalDetail(JournalDetailRoute(chapter: chapter, dayOffset: dayOffset))]
                     openingJournal = nil
                     isJournalOpening = false
                     areJournalPagesExpanded = false
@@ -1038,7 +1108,12 @@ private func journalFallbackCoverImageName(for chapter: PrototypeChapter, at _: 
     chapter.coverImageName
 }
 
-private struct JournalRoute: Hashable, Identifiable {
+private enum JournalRoute: Hashable {
+    case journalDetail(JournalDetailRoute)
+    case profile
+}
+
+private struct JournalDetailRoute: Hashable, Identifiable {
     let chapter: PrototypeChapter
     let dayOffset: Int
 
@@ -1046,7 +1121,7 @@ private struct JournalRoute: Hashable, Identifiable {
         chapter.id
     }
 
-    static func == (lhs: JournalRoute, rhs: JournalRoute) -> Bool {
+    static func == (lhs: JournalDetailRoute, rhs: JournalDetailRoute) -> Bool {
         lhs.id == rhs.id && lhs.dayOffset == rhs.dayOffset
     }
 
@@ -2446,6 +2521,102 @@ private enum JournalCoverStore {
             allowed.contains(scalar) ? String(scalar) : "-"
         }.joined()
         return "\(sanitized.isEmpty ? "journal" : sanitized).jpg"
+    }
+}
+
+private struct JournalCreateOptionsSheet: View {
+    let onNewEntry: () -> Void
+    let onNewJournal: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let tileColumns = [
+            GridItem(.flexible(), spacing: 12),
+            GridItem(.flexible(), spacing: 0)
+        ]
+
+        VStack(spacing: 0) {
+            Text("What would you like to create?")
+                .font(.system(size: 18, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+                .padding(.top, 46)
+                .padding(.bottom, 18)
+
+            LazyVGrid(columns: tileColumns, spacing: 0) {
+                JournalCreateOptionTile(
+                    title: "New Entry",
+                    subtitle: "Write and add to a journal.",
+                    systemName: "square.and.pencil",
+                    action: onNewEntry
+                )
+
+                JournalCreateOptionTile(
+                    title: "New Journal",
+                    subtitle: "Organize your stories.",
+                    systemName: "books.vertical",
+                    action: onNewJournal
+                )
+            }
+
+            Divider()
+                .padding(.top, 18)
+
+            Button("Cancel") {
+                dismiss()
+            }
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(Color.storyInk)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 22)
+        .padding(.bottom, 6)
+        .background(Color.white)
+    }
+}
+
+private struct JournalCreateOptionTile: View {
+    let title: String
+    let subtitle: String
+    let systemName: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 11) {
+                Image(systemName: systemName)
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .frame(width: 50, height: 50)
+                    .background(Color.homeAccent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .shadow(color: Color.homeAccent.opacity(0.22), radius: 7, y: 4)
+
+                VStack(spacing: 5) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.storyInk)
+                        .multilineTextAlignment(.center)
+
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.64))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.86)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .aspectRatio(1, contentMode: .fit)
+            .background(Color.homePageBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.storyInk.opacity(0.12), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -10718,6 +10889,8 @@ private struct PrototypeChapterDetailView: View {
         case dailyJournal
     }
 
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+
     @State private var chapter: PrototypeChapter
     let onCreateStory: (PrototypeEntry) -> Void
     let onNewEntryPresentationChange: (Bool) -> Void
@@ -10740,6 +10913,9 @@ private struct PrototypeChapterDetailView: View {
     @State private var editMode: EditMode = .inactive
     @State private var draggingEntryID: UUID?
     @State private var isShowingCoverCustomization = false
+    @State private var mediaStoryboards: [GeneratedStoryboard] = []
+    @State private var isLoadingMediaStoryboards = false
+    @State private var mediaStoryboardErrorMessage: String?
 
     private var sections: [String] {
         chapter.systemJournal == .drafts ? ["Pages"] : ["Pages", "Media"]
@@ -10753,8 +10929,9 @@ private struct PrototypeChapterDetailView: View {
         chapter.entries.flatMap(\.imageNames)
     }
 
-    private var heroImageName: String? {
-        mediaImageNames.first ?? chapter.coverImageName
+    private var mediaLoadID: String {
+        let entryIDs = chapter.entries.map(\.id.uuidString).sorted().joined(separator: ",")
+        return "\(chapter.id.uuidString)-\(entryIDs)-\(authStore.userID?.uuidString ?? "local")"
     }
 
     private func storyboardCoverCandidates(for chapter: PrototypeChapter) -> [JournalStoryboardCoverCandidate] {
@@ -10852,30 +11029,33 @@ private struct PrototypeChapterDetailView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.homePageBackground
-                .ignoresSafeArea()
+        GeometryReader { proxy in
+            ZStack {
+                Color.homePageBackground
+                    .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        journalHeroHeader
+                VStack(spacing: 0) {
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            journalHeroHeader(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
 
-                        VStack(alignment: .leading, spacing: 16) {
-                            sectionPicker
+                            VStack(alignment: .leading, spacing: 16) {
+                                sectionPicker
 
-                            if selectedSection == "Pages" {
-                                entriesList
-                            } else {
-                                mediaGrid
+                                if selectedSection == "Pages" {
+                                    entriesList
+                                } else {
+                                    mediaGrid
+                                }
                             }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 16)
+                            .padding(.bottom, 32)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 16)
-                        .padding(.bottom, 32)
                     }
+                    .ignoresSafeArea(edges: .top)
                 }
-                .ignoresSafeArea(edges: .top)
+
             }
         }
         .preferredColorScheme(.light)
@@ -10945,12 +11125,20 @@ private struct PrototypeChapterDetailView: View {
         }
         .onChange(of: isShowingNewStory) { isShowing in
             onNewEntryPresentationChange(isShowing)
+            if !isShowing {
+                Task {
+                    await loadMediaStoryboards()
+                }
+            }
         }
         .onChange(of: selectedSection) { newSection in
             if newSection != "Pages" {
                 editMode = .inactive
                 draggingEntryID = nil
             }
+        }
+        .task(id: mediaLoadID) {
+            await loadMediaStoryboards()
         }
         .fullScreenCover(
             isPresented: Binding(
@@ -10962,11 +11150,11 @@ private struct PrototypeChapterDetailView: View {
                 }
             )
         ) {
-            if let selectedMediaIndex {
-                VerticalComicViewer(
-                    imageNames: mediaImageNames,
-                    initialIndex: selectedMediaIndex,
-                    accentColor: Color.homeAccent
+            if let selectedMediaIndex,
+               mediaStoryboards.indices.contains(selectedMediaIndex) {
+                StoryboardImageViewer(
+                    storyboards: mediaStoryboards,
+                    initialIndex: selectedMediaIndex
                 )
             }
         }
@@ -10988,13 +11176,16 @@ private struct PrototypeChapterDetailView: View {
         )
     }
 
-    private var journalHeroHeader: some View {
-        heroBanner
+    private func journalHeroHeader(toolbarBottomOffset: CGFloat) -> some View {
+        heroBanner(toolbarBottomOffset: toolbarBottomOffset)
             .padding(.bottom, 14)
     }
 
-    private var heroBanner: some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private func heroBanner(toolbarBottomOffset: CGFloat) -> some View {
+        let bannerHeight: CGFloat = 276
+        let coverOverlap = max(0, bannerHeight - toolbarBottomOffset)
+
+        return VStack(alignment: .leading, spacing: 0) {
             JournalDetailBannerBackground(
                 color: chapter.color,
                 coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
@@ -11003,7 +11194,7 @@ private struct PrototypeChapterDetailView: View {
                 symbol: chapter.symbol
             )
             .frame(maxWidth: .infinity)
-            .frame(height: 276)
+            .frame(height: bannerHeight)
             .clipped()
             .contentShape(Rectangle())
             .onTapGesture {
@@ -11021,7 +11212,7 @@ private struct PrototypeChapterDetailView: View {
                         remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                         fallbackImageName: chapter.coverImageName
                     )
-                    .frame(width: UIScreen.main.bounds.width * 0.60)
+                    .frame(width: UIScreen.main.bounds.width * 0.50)
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
@@ -11037,7 +11228,7 @@ private struct PrototypeChapterDetailView: View {
 
                     HStack(spacing: 16) {
                         bannerStat(systemName: "book.pages", text: pageCountText)
-                        bannerStat(systemName: "photo", text: "\(chapter.imageCount) photos")
+                        bannerStat(systemName: "photo.on.rectangle", text: mediaCountText)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -11055,10 +11246,10 @@ private struct PrototypeChapterDetailView: View {
                     style: .continuous
                 )
                 .fill(Color.homePageBackground)
-                .padding(.top, 132)
+                .padding(.top, coverOverlap)
             }
-            .offset(y: -132)
-            .padding(.bottom, -132)
+            .offset(y: -coverOverlap)
+            .padding(.bottom, -coverOverlap)
         }
     }
 
@@ -11307,18 +11498,45 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private var pageCountText: String {
-        let pageCount = max(mediaImageNames.count, chapter.entries.count)
+        let pageCount = max(mediaStoryboards.count, chapter.entries.count)
         return "\(pageCount) \(pageCount == 1 ? "page" : "pages")"
+    }
+
+    private var mediaCountText: String {
+        "\(mediaStoryboards.count) \(mediaStoryboards.count == 1 ? "storyboard" : "storyboards")"
     }
 
     private var mediaGrid: some View {
         Group {
-            if mediaImageNames.isEmpty {
-                Text("No photos yet")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.homeMutedText)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 36)
+            if isLoadingMediaStoryboards && mediaStoryboards.isEmpty {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 8),
+                        GridItem(.flexible(), spacing: 8)
+                    ],
+                    spacing: 8
+                ) {
+                    ForEach(0..<4, id: \.self) { index in
+                        LoadingStoryboardCard()
+                            .aspectRatio(1, contentMode: .fit)
+                            .accessibilityLabel("Loading storyboard \(index + 1)")
+                    }
+                }
+            } else if mediaStoryboards.isEmpty {
+                VStack(spacing: 10) {
+                    Text("No storyboards yet")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+
+                    if let mediaStoryboardErrorMessage {
+                        Text(mediaStoryboardErrorMessage)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.homeMutedText.opacity(0.82))
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 36)
             } else {
                 LazyVGrid(
                     columns: [
@@ -11327,11 +11545,11 @@ private struct PrototypeChapterDetailView: View {
                     ],
                     spacing: 8
                 ) {
-                    ForEach(Array(mediaImageNames.enumerated()), id: \.offset) { index, imageName in
+                    ForEach(Array(mediaStoryboards.enumerated()), id: \.element.id) { index, storyboard in
                         Button {
                             selectedMediaIndex = index
                         } label: {
-                            Image(imageName)
+                            Image(uiImage: storyboard.image)
                                 .resizable()
                                 .scaledToFill()
                                 .frame(maxWidth: .infinity)
@@ -11343,11 +11561,104 @@ private struct PrototypeChapterDetailView: View {
                                 )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Open photo \(index + 1) of \(mediaImageNames.count)")
+                        .accessibilityLabel("Open storyboard \(index + 1) of \(mediaStoryboards.count)")
                     }
                 }
             }
         }
+    }
+
+    @MainActor
+    private func loadMediaStoryboards() async {
+        guard chapter.systemJournal != .drafts else {
+            mediaStoryboards = []
+            mediaStoryboardErrorMessage = nil
+            isLoadingMediaStoryboards = false
+            return
+        }
+
+        let localClientEntryIDs = mediaClientEntryIDsFromLocalEntries()
+        let localStoryboards = storyboardsForMedia(clientEntryIDs: localClientEntryIDs, in: GeneratedStoryboardStore.load())
+        mediaStoryboards = localStoryboards
+        mediaStoryboardErrorMessage = nil
+
+        guard authStore.userID != nil else {
+            isLoadingMediaStoryboards = false
+            return
+        }
+
+        isLoadingMediaStoryboards = true
+        defer { isLoadingMediaStoryboards = false }
+
+        do {
+            let cloudClientEntryIDs = try await mediaClientEntryIDsFromCloudEntries()
+            let allClientEntryIDs = localClientEntryIDs.union(cloudClientEntryIDs)
+            let cloudStoryboards = try await SupabaseStoryboardService().loadStoryboardImages(for: allClientEntryIDs)
+            mediaStoryboards = mergedMediaStoryboards(localStoryboards + cloudStoryboards)
+        } catch {
+            mediaStoryboardErrorMessage = "Could not load cloud storyboards."
+        }
+    }
+
+    private func mediaClientEntryIDsFromLocalEntries() -> Set<UUID> {
+        let localEntries = CreateEntryDraftStore.loadAll()
+
+        switch chapter.systemJournal {
+        case .drafts:
+            return []
+        case .completed:
+            return Set(localEntries.filter { $0.status == JournalEntryStatus.completed.rawValue }.map(\.id))
+                .union(chapter.entries.map(\.id))
+        case nil:
+            let storedMemberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
+            let linkedLocalIDs = localEntries
+                .filter { EntryJournalLinkStore.loadJournalTitles(for: $0.id).contains(chapter.title) }
+                .map(\.id)
+            return storedMemberIDs
+                .union(chapter.entries.map(\.id))
+                .union(linkedLocalIDs)
+        }
+    }
+
+    private func mediaClientEntryIDsFromCloudEntries() async throws -> Set<UUID> {
+        let repository = SupabaseEntryRepository()
+        let entries = try await repository.getEntrySummaries()
+
+        switch chapter.systemJournal {
+        case .drafts:
+            return []
+        case .completed:
+            return Set(entries.filter { $0.status == JournalEntryStatus.completed.rawValue }.map(\.clientEntryID))
+        case nil:
+            let memberships = try await SupabaseJournalRepository().getJournalEntryMemberships()
+            return Set(
+                memberships
+                    .filter { $0.journalID == chapter.id }
+                    .map { $0.clientEntryID }
+            )
+        }
+    }
+
+    private func storyboardsForMedia(
+        clientEntryIDs: Set<UUID>,
+        in storyboards: [GeneratedStoryboard]
+    ) -> [GeneratedStoryboard] {
+        mergedMediaStoryboards(
+            storyboards.filter { storyboard in
+                guard let clientEntryID = storyboard.clientEntryID else {
+                    return false
+                }
+
+                return clientEntryIDs.contains(clientEntryID)
+            }
+        )
+    }
+
+    private func mergedMediaStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
+        var seen = Set<UUID>()
+        return storyboards
+            .filter { seen.insert($0.id).inserted }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 }
 

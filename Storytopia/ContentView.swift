@@ -11,8 +11,8 @@ import UIKit
 struct ContentView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
-    @State private var selectedPage: StoryPage = .home
-    @State private var pageBehindCreate: StoryPage = .home
+    @State private var selectedPage: StoryPage = .journal
+    @State private var pageBehindCreate: StoryPage = .journal
     @State private var entryText: String
     @State private var draftStoryTitle: String
     @State private var draftStoryboardPhotos: [CreateEntryReferencePhoto?]
@@ -118,7 +118,8 @@ struct ContentView: View {
                 activeDraftID: $activeDraftID,
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
-                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries
+                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+                generatedStoryboards: $generatedStoryboards
             )
                 .transition(.identity)
                 .zIndex(0)

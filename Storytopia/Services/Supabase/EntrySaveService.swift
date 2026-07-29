@@ -424,6 +424,25 @@ struct SupabaseStoryboardService {
 
     func loadCompletedJournalStoryboardImages(limit: Int = 9, offset: Int = 0) async throws -> [GeneratedStoryboard] {
         let rows = try await loadCompletedJournalStoryboards(limit: limit, offset: offset)
+        return await downloadStoryboardImages(from: rows)
+    }
+
+    func loadStoryboardImages(for clientEntryIDs: Set<UUID>) async throws -> [GeneratedStoryboard] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        let rows = (try await loadStoryboards())
+            .filter {
+                clientEntryIDs.contains($0.clientEntryID)
+                    && $0.generationStatus == JournalEntryStatus.completed.rawValue
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+
+        return await downloadStoryboardImages(from: rows)
+    }
+
+    private func downloadStoryboardImages(from rows: [EntryStoryboard]) async -> [GeneratedStoryboard] {
         var storyboards: [GeneratedStoryboard] = []
 
         for row in rows {

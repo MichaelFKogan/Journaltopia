@@ -6,6 +6,7 @@ struct ProfileView: View {
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
+    var embedsInNavigationStack = true
 
     @State private var selectedStoryboardIndex: Int?
     @State private var isSelecting = false
@@ -26,33 +27,7 @@ struct ProfileView: View {
     ]
 
     var body: some View {
-        NavigationStack {
-            ZStack(alignment: .bottom) {
-                Color.homePageBackground
-                    .ignoresSafeArea()
-
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        header
-                        profileSummary
-                        storyboardsSection
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 14)
-                    .padding(.bottom, isSelecting ? 150 : 96)
-                }
-
-                VStack(spacing: 0) {
-                    if isSelecting {
-                        selectionActionBar
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-
-                    BottomNavigationBar(selectedPage: $selectedPage)
-                }
-            }
-            .toolbar(.hidden, for: .navigationBar)
-        }
+        wrappedProfileContent
         .fullScreenCover(
             isPresented: Binding(
                 get: { selectedStoryboardIndex != nil },
@@ -87,6 +62,64 @@ struct ProfileView: View {
         }
     }
 
+    @ViewBuilder
+    private var wrappedProfileContent: some View {
+        if embedsInNavigationStack {
+            NavigationStack {
+                profileContent
+                    .toolbar(.hidden, for: .navigationBar)
+            }
+        } else {
+            profileContent
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar(.visible, for: .navigationBar)
+                .toolbarBackground(Color.homePageBackground, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        Text("Profile")
+                            .font(.system(size: 24, weight: .bold, design: .serif))
+                            .foregroundStyle(Color.storyInk)
+                    }
+
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        settingsButton
+                    }
+                }
+        }
+    }
+
+    private var profileContent: some View {
+        ZStack(alignment: .bottom) {
+            Color.homePageBackground
+                .ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    if embedsInNavigationStack {
+                        header
+                    }
+
+                    profileSummary
+                    storyboardsSection
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, isSelecting ? 150 : 96)
+            }
+
+            VStack(spacing: 0) {
+                if isSelecting {
+                    selectionActionBar
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
+                BottomNavigationBar(selectedPage: $selectedPage)
+            }
+        }
+    }
+
     private var header: some View {
         HStack(alignment: .center) {
             Text("Profile")
@@ -95,20 +128,24 @@ struct ProfileView: View {
 
             Spacer()
 
-            NavigationLink {
-                SettingsView(selectedPage: $selectedPage)
-                    .enableInteractivePopGesture()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(Color.storyInk.opacity(0.65))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open settings")
+            settingsButton
         }
         .padding(.top, 2)
+    }
+
+    private var settingsButton: some View {
+        NavigationLink {
+            SettingsView(selectedPage: $selectedPage)
+                .enableInteractivePopGesture()
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.65))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open settings")
     }
 
     private var profileSummary: some View {

@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let isBottomNavigationVisible = false
+
 struct SectionTitle: View {
     let title: String
     let action: String
@@ -70,48 +72,51 @@ struct ProfilePlaceholder: View {
 struct BottomNavigationBar: View {
     @Binding var selectedPage: StoryPage
 
+    @ViewBuilder
     var body: some View {
-        HStack(spacing: 0) {
-            NavItem(
-                title: "Home",
-                systemName: selectedPage == .home ? "house.fill" : "house",
-                isSelected: selectedPage == .home,
-                selectedColor: .homeAccent
-            ) {
-                selectedPage = .home
-            }
-            CreateNavItem(isSelected: selectedPage == .create, selectedColor: .homeAccent) {
-                withAnimation(.snappy(duration: 0.32)) {
-                    selectedPage = .create
+        if isBottomNavigationVisible {
+            HStack(spacing: 0) {
+                NavItem(
+                    title: "Home",
+                    systemName: selectedPage == .home ? "house.fill" : "house",
+                    isSelected: selectedPage == .home,
+                    selectedColor: .homeAccent
+                ) {
+                    selectedPage = .home
+                }
+                CreateNavItem(isSelected: selectedPage == .create, selectedColor: .homeAccent) {
+                    withAnimation(.snappy(duration: 0.32)) {
+                        selectedPage = .create
+                    }
+                }
+                NavItem(
+                    title: "Journals",
+                    systemName: selectedPage == .journal ? "book.closed.fill" : "book.closed",
+                    isSelected: selectedPage == .journal,
+                    selectedColor: .homeAccent
+                ) {
+                    selectedPage = .journal
+                }
+                NavItem(
+                    title: "Profile",
+                    systemName: selectedPage == .profile ? "person.fill" : "person",
+                    isSelected: selectedPage == .profile,
+                    selectedColor: .homeAccent
+                ) {
+                    selectedPage = .profile
                 }
             }
-            NavItem(
-                title: "Journals",
-                systemName: selectedPage == .journal ? "book.closed.fill" : "book.closed",
-                isSelected: selectedPage == .journal,
-                selectedColor: .homeAccent
-            ) {
-                selectedPage = .journal
-            }
-            NavItem(
-                title: "Profile",
-                systemName: selectedPage == .profile ? "person.fill" : "person",
-                isSelected: selectedPage == .profile,
-                selectedColor: .homeAccent
-            ) {
-                selectedPage = .profile
-            }
+            .padding(.horizontal, 22)
+            .padding(.top, 10)
+            .padding(.bottom, 0)
+            .background(Color.white)
+            .overlay(
+                Rectangle()
+                    .fill(Color.homeBorder)
+                    .frame(height: 1),
+                alignment: .top
+            )
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 10)
-        .padding(.bottom, 0)
-        .background(Color.white)
-        .overlay(
-            Rectangle()
-                .fill(Color.homeBorder)
-                .frame(height: 1),
-            alignment: .top
-        )
     }
 }
 
