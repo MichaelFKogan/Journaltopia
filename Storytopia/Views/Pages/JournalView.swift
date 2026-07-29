@@ -12042,6 +12042,7 @@ private struct PrototypeChapterDetailView: View {
     @State private var bookOpenHintProgress: CGFloat = 0
     @State private var bookNavigationOpenProgress: CGFloat = 0
     @State private var isOpeningJournalComicReader = false
+    @State private var skipsBookOpenHintOnNextAppear = false
     @State private var bookOpenHintTask: Task<Void, Never>?
     @State private var mediaStoryboards: [GeneratedStoryboard] = []
     @State private var isLoadingMediaStoryboards = false
@@ -12160,7 +12161,7 @@ private struct PrototypeChapterDetailView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
+            ZStack(alignment: .bottomTrailing) {
                 Color.homePageBackground
                     .ignoresSafeArea()
 
@@ -12180,12 +12181,16 @@ private struct PrototypeChapterDetailView: View {
                             }
                             .padding(.horizontal, 16)
                             .padding(.top, 16)
-                            .padding(.bottom, 32)
+                            .padding(.bottom, 112)
                         }
                     }
                     .ignoresSafeArea(edges: .top)
                 }
 
+                journalDetailFloatingWriteButton
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 22)
+                    .zIndex(2)
             }
         }
         .preferredColorScheme(.light)
@@ -12270,6 +12275,11 @@ private struct PrototypeChapterDetailView: View {
             )
         }
         .onAppear {
+            guard !skipsBookOpenHintOnNextAppear else {
+                skipsBookOpenHintOnNextAppear = false
+                return
+            }
+
             playBookOpenHint()
         }
         .onDisappear {
@@ -12357,21 +12367,23 @@ private struct PrototypeChapterDetailView: View {
 
         guard !reduceMotion else {
             bookOpenHintTask = nil
+            skipsBookOpenHintOnNextAppear = true
             isComicReaderPresented = true
             return
         }
 
         bookOpenHintTask = Task { @MainActor in
-            withAnimation(.easeOut(duration: 0.42)) {
+            withAnimation(.easeOut(duration: 0.14)) {
                 bookOpenHintProgress = 1
             }
 
-            try? await Task.sleep(nanoseconds: 460_000_000)
+            try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled else {
                 return
             }
 
             bookOpenHintTask = nil
+            skipsBookOpenHintOnNextAppear = true
             isComicReaderPresented = true
         }
     }
@@ -12475,7 +12487,7 @@ private struct PrototypeChapterDetailView: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text("Tap To Open")
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .font(.system(size: 14, weight: .heavy, design: .rounded))
 
                         Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .bold))
@@ -12505,6 +12517,21 @@ private struct PrototypeChapterDetailView: View {
             .offset(y: -coverOverlap)
             .padding(.bottom, -coverOverlap)
         }
+    }
+
+    private var journalDetailFloatingWriteButton: some View {
+        Button {
+        } label: {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 23, weight: .bold))
+                .foregroundStyle(Color.white)
+                .frame(width: 64, height: 64)
+                .offset(x: 0, y: -2)
+                .background(Color.homeAccent, in: Circle())
+                .shadow(color: Color.storyInk.opacity(0.18), radius: 12, y: 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Write")
     }
 
     private func bannerStat(systemName: String, text: String, foregroundColor: Color = Color.homeMutedText) -> some View {
