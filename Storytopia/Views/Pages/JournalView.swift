@@ -11801,31 +11801,49 @@ private struct JournalDetailBannerBackground: View {
 
     var body: some View {
         ZStack {
-            Group {
-                if let coverImage {
-                    Image(uiImage: coverImage)
-                        .resizable()
-                        .scaledToFill()
-                } else if let remoteCoverURL {
-                    RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
-                } else if let fallbackImageName {
-                    Image(fallbackImageName)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    color
-                        .overlay {
-                            Image(systemName: symbol)
-                                .font(.system(size: 74, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.24))
-                        }
-                }
-            }
+            bannerFill
 
             Color.black.opacity(0.46)
                 .allowsHitTesting(false)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+    }
+
+    @ViewBuilder
+    private var bannerFill: some View {
+        if let coverImage {
+            fillImage {
+                Image(uiImage: coverImage)
+                    .resizable()
+                    .scaledToFill()
+            }
+        } else if let remoteCoverURL {
+            fillImage {
+                RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
+            }
+        } else if let fallbackImageName {
+            fillImage {
+                Image(fallbackImageName)
+                    .resizable()
+                    .scaledToFill()
+            }
+        } else {
+            color
+                .overlay {
+                    Image(systemName: symbol)
+                        .font(.system(size: 74, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.24))
+                }
+        }
+    }
+
+    private func fillImage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        Color.clear
+            .overlay {
+                content()
+            }
+            .clipped()
     }
 }
 
@@ -12171,7 +12189,7 @@ private struct PrototypeChapterDetailView: View {
             }
         }
         .preferredColorScheme(.light)
-        .navigationTitle(chapter.title)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -12183,19 +12201,6 @@ private struct PrototypeChapterDetailView: View {
                     .foregroundStyle(Color.homeAccent)
                     .opacity(chapter.systemJournal == .completed ? 0 : 1)
                     .disabled(chapter.systemJournal == .completed)
-
-                if chapter.systemJournal != .completed {
-                    Button {
-                        activeDraftID = nil
-                        isOpeningCompletedEntryFromEntries = false
-                        completedEntryOpenedStoryboardImage = nil
-                        isShowingNewStory = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .fontWeight(.bold)
-                    }
-                    .accessibilityLabel(presentation == .dailyJournal ? "Create a new journal entry" : "Create a new story")
-                }
             }
         }
         .environment(\.editMode, $editMode)
@@ -12378,19 +12383,63 @@ private struct PrototypeChapterDetailView: View {
 
     private func heroBanner(toolbarBottomOffset: CGFloat) -> some View {
         let bannerHeight: CGFloat = 276
-        let coverOverlap = max(0, bannerHeight - toolbarBottomOffset)
+        let coverTopOffset = min(bannerHeight - 58, toolbarBottomOffset + 94)
+        let bannerTitleCenterY = max(112, coverTopOffset - 52)
+        let coverOverlap = max(0, bannerHeight - coverTopOffset)
         let coverWidth = min(UIScreen.main.bounds.width * 0.49, 188)
 
         return VStack(alignment: .leading, spacing: 0) {
-            JournalDetailBannerBackground(
-                color: chapter.color,
-                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
-                remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
-                fallbackImageName: chapter.coverImageName,
-                symbol: chapter.symbol
-            )
+            ZStack(alignment: .top) {
+                JournalDetailBannerBackground(
+                    color: chapter.color,
+                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                    remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
+                    fallbackImageName: chapter.coverImageName,
+                    symbol: chapter.symbol
+                )
+
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.62),
+                        Color.black.opacity(0.44),
+                        Color.black.opacity(0.16),
+                        Color.black.opacity(0.04)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                GeometryReader { bannerProxy in
+                    VStack(spacing: 8) {
+                        Text(chapter.title.uppercased())
+                            .font(.system(size: 24, weight: .heavy, design: .serif))
+                            .foregroundStyle(Color.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.76)
+                            .multilineTextAlignment(.center)
+                            .shadow(color: Color.black.opacity(0.42), radius: 10, y: 2)
+
+                        HStack(spacing: 16) {
+                            bannerStat(
+                                systemName: "book.pages",
+                                text: pageCountText,
+                                foregroundColor: Color.white.opacity(0.92)
+                            )
+                            bannerStat(
+                                systemName: "photo.on.rectangle",
+                                text: mediaCountText,
+                                foregroundColor: Color.white.opacity(0.92)
+                            )
+                        }
+                        .shadow(color: Color.black.opacity(0.36), radius: 7, y: 2)
+                    }
+                    .padding(.horizontal, 24)
+                    .frame(width: bannerProxy.size.width)
+                    .position(x: bannerProxy.size.width / 2, y: bannerTitleCenterY)
+                }
+            }
             .frame(maxWidth: .infinity)
-            .frame(height: bannerHeight)
+            .frame(height: bannerHeight, alignment: .top)
             .clipped()
             .contentShape(Rectangle())
             .onTapGesture {
@@ -12437,21 +12486,6 @@ private struct PrototypeChapterDetailView: View {
                 .buttonStyle(.plain)
                 .allowsHitTesting(!isOpeningJournalComicReader)
                 .accessibilityLabel("Tap to open journal comic")
-
-                VStack(spacing: 8) {
-                    Text(chapter.title.uppercased())
-                        .font(.system(size: 24, weight: .heavy, design: .serif))
-                        .foregroundStyle(Color.storyInk)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.76)
-                        .multilineTextAlignment(.center)
-
-                    HStack(spacing: 16) {
-                        bannerStat(systemName: "book.pages", text: pageCountText)
-                        bannerStat(systemName: "photo.on.rectangle", text: mediaCountText)
-                    }
-                }
-                .padding(.horizontal, 12)
             }
             .padding(.horizontal, 16)
             .padding(.top, 0)
@@ -12473,10 +12507,10 @@ private struct PrototypeChapterDetailView: View {
         }
     }
 
-    private func bannerStat(systemName: String, text: String) -> some View {
+    private func bannerStat(systemName: String, text: String, foregroundColor: Color = Color.homeMutedText) -> some View {
         Label(text, systemImage: systemName)
             .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(Color.homeMutedText)
+            .foregroundStyle(foregroundColor)
             .lineLimit(1)
     }
 
