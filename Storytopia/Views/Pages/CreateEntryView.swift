@@ -1391,6 +1391,7 @@ struct CreateEntryView: View {
     @State private var characterEditorSession: CharacterEditorSession?
     @State private var isPreviewingCompletedStoryboard = false
     @State private var isPhotoTabCollapsed = true
+    @State private var isCharacterTabCollapsed = true
     @State private var isStoryDetailsTabCollapsed = true
     @State private var isShowingEntryOptionsPage = false
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
@@ -3221,6 +3222,13 @@ struct CreateEntryView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
+            VStack(spacing: 8) {
+                photosAttachedTab
+                charactersAttachedTab
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+
             unifiedEditorToolbar
         }
     }
@@ -3369,13 +3377,77 @@ struct CreateEntryView: View {
                         .padding(.horizontal, 16)
 
                     referencePhotoStripRow
+                }
+                .padding(.top, 10)
+                .padding(.bottom, 12)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
 
-                    Divider()
-                        .overlay(Color.storyBorder.opacity(0.48))
+    private var charactersAttachedTab: some View {
+        Group {
+            if isCharacterTabCollapsed {
+                Button {
+                    toggleCharacterTabCollapsed()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: entryCharacters.isEmpty ? "person.crop.circle.badge.plus" : "person.2.crop.square.stack")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Color.storyPurple)
+                            .frame(width: 22, height: 22)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(collapsedCharacterTitleText)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(Color.storyInk)
+
+                            if entryCharacters.isEmpty {
+                                Text("Single out people from your photos")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(Color.storyInk.opacity(0.62))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.76)
+                            }
+                        }
+
+                        Spacer(minLength: 8)
+
+                        photoCollapseChevron(systemName: "chevron.up")
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 54)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(collapsedCharacterTitleText), expand characters")
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        characterStripHeader
+
+                        Spacer(minLength: 8)
+
+                        Button {
+                            toggleCharacterTabCollapsed()
+                        } label: {
+                            photoCollapseChevron(systemName: "chevron.down")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Collapse characters")
+                    }
+                    .padding(.horizontal, 16)
+
+                    characterPhotoExplainerText
                         .padding(.horizontal, 16)
-                        .padding(.top, 2)
 
-                    charactersSection
+                    characterPhotoStripRow
                 }
                 .padding(.top, 10)
                 .padding(.bottom, 12)
@@ -4217,8 +4289,6 @@ struct CreateEntryView: View {
         VStack(alignment: .leading, spacing: 14) {
             entryDetailsInfoBanner
 
-            entryDetailsReferencePhotosCard
-            entryDetailsCharactersCard
             artStylePickerSection
             journalDestinationCard
             storyDetailsCard
@@ -4908,42 +4978,17 @@ struct CreateEntryView: View {
         }
     }
 
-    private var entryDetailsReferencePhotosCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            photoStripHeader
-                .padding(.horizontal, 16)
+    private var characterStripHeader: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.84))
+                .frame(width: 20, height: 20)
 
-            referencePhotoExplainerText
-                .padding(.horizontal, 16)
-
-            referencePhotoStripRow
+            Text("Characters")
+                .font(.system(size: 14, weight: .semibold, design: .serif))
+                .foregroundStyle(Color.storyInk)
         }
-        .padding(.top, 10)
-        .padding(.bottom, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
-    }
-
-    private var entryDetailsCharactersCard: some View {
-        EntryDetailsCharactersCard(
-            characters: entryCharacters,
-            onAddCharacter: {
-                dismissKeyboard()
-                characterEditorSession = CharacterEditorSession(character: nil)
-            },
-            onEditCharacter: { character in
-                dismissKeyboard()
-                characterEditorSession = CharacterEditorSession(character: character)
-            },
-            onDeleteCharacter: { character in
-                deleteCharacter(character)
-            }
-        )
     }
 
     private var referencePhotoExplainerText: some View {
@@ -5059,6 +5104,15 @@ struct CreateEntryView: View {
         hasStoryboardPhotos ? attachedPhotoSummaryText : "Add reference photos"
     }
 
+    private var attachedCharacterSummaryText: String {
+        let count = entryCharacters.count
+        return "\(count) character\(count == 1 ? "" : "s") added"
+    }
+
+    private var collapsedCharacterTitleText: String {
+        entryCharacters.isEmpty ? "Add characters" : attachedCharacterSummaryText
+    }
+
     private func photoCollapseChevron(systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 13, weight: .bold))
@@ -5125,29 +5179,6 @@ struct CreateEntryView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Add reference photos")
-        }
-    }
-
-    private var charactersSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                Image(systemName: "person.crop.circle")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.storyPurple)
-                    .frame(width: 18, height: 18)
-
-                Text("Characters")
-                    .font(.system(size: 13, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 16)
-
-            characterPhotoExplainerText
-                .padding(.horizontal, 16)
-
-            characterPhotoStripRow
         }
     }
 
@@ -5277,6 +5308,12 @@ struct CreateEntryView: View {
     private func togglePhotoTabCollapsed() {
         withAnimation(.snappy(duration: 0.2)) {
             isPhotoTabCollapsed.toggle()
+        }
+    }
+
+    private func toggleCharacterTabCollapsed() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isCharacterTabCollapsed.toggle()
         }
     }
 

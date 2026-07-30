@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var draftStoryboardPhotos: [CreateEntryReferencePhoto?]
     @State private var isDraftSaved: Bool
     @State private var activeDraftID: UUID?
+    @State private var journalCreatePresentation: CreateEntryPresentation?
     @State private var generatedStoryboards: [GeneratedStoryboard]
     @State private var completedEntryOpenedStoryboardImage: UIImage?
     @State private var isOpeningEntryFromEntries: Bool
@@ -29,6 +30,7 @@ struct ContentView: View {
         _draftStoryboardPhotos = State(initialValue: Array(repeating: nil, count: 5))
         _isDraftSaved = State(initialValue: CreateEntryDraftStore.hasSavedDrafts())
         _activeDraftID = State(initialValue: nil)
+        _journalCreatePresentation = State(initialValue: nil)
         _generatedStoryboards = State(initialValue: [])
         _completedEntryOpenedStoryboardImage = State(initialValue: nil)
         _isOpeningEntryFromEntries = State(initialValue: false)
@@ -75,6 +77,7 @@ struct ContentView: View {
                     }
                 } else {
                     pageBehindCreate = newPage
+                    journalCreatePresentation = nil
                     isOpeningEntryFromEntries = false
                     isOpeningCompletedEntryFromEntries = false
                     completedEntryOpenedStoryboardImage = nil
@@ -116,6 +119,7 @@ struct ContentView: View {
                 selectedPage: pageSelection,
                 isDraftSaved: $isDraftSaved,
                 activeDraftID: $activeDraftID,
+                journalCreatePresentation: $journalCreatePresentation,
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
@@ -150,6 +154,10 @@ struct ContentView: View {
             return .editDraft
         }
 
+        if pageBehindCreate == .journal, let journalCreatePresentation {
+            return journalCreatePresentation
+        }
+
         return .compose
     }
 
@@ -168,6 +176,7 @@ struct ContentView: View {
             dismissCreate: {
                 endWindowEditing()
                 selectedPage = pageBehindCreate
+                journalCreatePresentation = nil
                 isOpeningEntryFromEntries = false
                 isOpeningCompletedEntryFromEntries = false
                 completedEntryOpenedStoryboardImage = nil
@@ -199,6 +208,7 @@ struct ContentView: View {
             generatedStoryboards = GeneratedStoryboardStore.load()
         }
         activeDraftID = nil
+        journalCreatePresentation = nil
         completedEntryOpenedStoryboardImage = nil
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false

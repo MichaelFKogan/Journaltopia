@@ -7,6 +7,7 @@ struct JournalView: View {
     @Binding var selectedPage: StoryPage
     @Binding var isDraftSaved: Bool
     @Binding var activeDraftID: UUID?
+    @Binding var journalCreatePresentation: CreateEntryPresentation?
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningEntryFromEntries: Bool
     @Binding var isOpeningCompletedEntryFromEntries: Bool
@@ -100,6 +101,7 @@ struct JournalView: View {
         selectedPage: Binding<StoryPage>,
         isDraftSaved: Binding<Bool>,
         activeDraftID: Binding<UUID?>,
+        journalCreatePresentation: Binding<CreateEntryPresentation?> = .constant(nil),
         completedEntryOpenedStoryboardImage: Binding<UIImage?> = .constant(nil),
         isOpeningEntryFromEntries: Binding<Bool> = .constant(false),
         isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false),
@@ -108,6 +110,7 @@ struct JournalView: View {
         _selectedPage = selectedPage
         _isDraftSaved = isDraftSaved
         _activeDraftID = activeDraftID
+        _journalCreatePresentation = journalCreatePresentation
         _completedEntryOpenedStoryboardImage = completedEntryOpenedStoryboardImage
         _isOpeningEntryFromEntries = isOpeningEntryFromEntries
         _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
@@ -897,6 +900,7 @@ struct JournalView: View {
         DailyJournalData.detailView(
             for: chapter,
             dayOffset: dayOffset,
+            onCreateEntryRequested: openFreshEntryFromJournalDetail,
             onChapterUpdated: updateChapterFromDetail,
             onOpenExistingEntry: openExistingEntryFromJournalDetail
         ) { entry in
@@ -921,6 +925,15 @@ struct JournalView: View {
         isOpeningCompletedEntryFromEntries = isCompleted
         completedEntryOpenedStoryboardImage = storyboardImage
         activeDraftID = entry.id
+        selectedPage = .create
+    }
+
+    private func openFreshEntryFromJournalDetail(_ presentation: CreateEntryPresentation) {
+        activeDraftID = nil
+        journalCreatePresentation = presentation
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
         selectedPage = .create
     }
 
@@ -6759,6 +6772,7 @@ enum DailyJournalData {
         for chapter: PrototypeChapter,
         dayOffset: Int,
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
+        onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)? = nil,
         onAddEntry: @escaping (PrototypeEntry) -> Void
@@ -6770,6 +6784,7 @@ enum DailyJournalData {
             entryDate: journalDate(dayOffset: dayOffset),
             presentation: .dailyJournal,
             onNewEntryPresentationChange: onNewEntryPresentationChange,
+            onCreateEntryRequested: onCreateEntryRequested,
             onChapterUpdated: onChapterUpdated,
             onOpenExistingEntry: onOpenExistingEntry,
             onCreateStory: onAddEntry
@@ -12018,6 +12033,7 @@ private struct PrototypeChapterDetailView: View {
     @State private var chapter: PrototypeChapter
     let onCreateStory: (PrototypeEntry) -> Void
     let onNewEntryPresentationChange: (Bool) -> Void
+    let onCreateEntryRequested: ((CreateEntryPresentation) -> Void)?
     let onChapterUpdated: (PrototypeChapter) -> Void
     let onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)?
     let entryDate: Date
@@ -12145,6 +12161,7 @@ private struct PrototypeChapterDetailView: View {
         entryDate: Date = Date(),
         presentation: Presentation = .story,
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
+        onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)? = nil,
         onCreateStory: @escaping (PrototypeEntry) -> Void
@@ -12154,6 +12171,7 @@ private struct PrototypeChapterDetailView: View {
         self.entryDate = entryDate
         self.presentation = presentation
         self.onNewEntryPresentationChange = onNewEntryPresentationChange
+        self.onCreateEntryRequested = onCreateEntryRequested
         self.onChapterUpdated = onChapterUpdated
         self.onOpenExistingEntry = onOpenExistingEntry
         self.onCreateStory = onCreateStory
@@ -12521,6 +12539,7 @@ private struct PrototypeChapterDetailView: View {
 
     private var journalDetailFloatingWriteButton: some View {
         Button {
+            openFreshEntryFromJournalDetail()
         } label: {
             Image(systemName: "square.and.pencil")
                 .font(.system(size: 23, weight: .bold))
@@ -12532,6 +12551,18 @@ private struct PrototypeChapterDetailView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Write")
+    }
+
+    private func openFreshEntryFromJournalDetail() {
+        activeDraftID = nil
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
+
+        if let onCreateEntryRequested {
+            onCreateEntryRequested(newEntryPresentation)
+        } else {
+            isShowingNewStory = true
+        }
     }
 
     private func bannerStat(systemName: String, text: String, foregroundColor: Color = Color.homeMutedText) -> some View {
@@ -12657,10 +12688,7 @@ private struct PrototypeChapterDetailView: View {
             chapter: chapter,
             allowsCreation: chapter.systemJournal != .completed,
             onCreateEntry: {
-                activeDraftID = nil
-                isOpeningCompletedEntryFromEntries = false
-                completedEntryOpenedStoryboardImage = nil
-                isShowingNewStory = true
+                openFreshEntryFromJournalDetail()
             },
             onOpenEntry: { entry, isCompleted, storyboardImage in
                 if let onOpenExistingEntry {
@@ -13107,6 +13135,7 @@ private struct JournalDetailEntryBrowser: View {
                         title: entryDisplayTitle(displayEntry),
                         sortOption: selectedSort,
                         storyboardImage: storyboardImage(for: item, fallbackIndex: index),
+                        category: chapter.isSystemJournal ? nil : .completed,
                         onOpen: {
                             openItem(item, displayEntry: displayEntry, fallbackIndex: index)
                         }
@@ -13118,6 +13147,7 @@ private struct JournalDetailEntryBrowser: View {
                         isEditing: false,
                         showsActions: false,
                         title: entryDisplayTitle(displayEntry),
+                        category: chapter.isSystemJournal ? nil : .drafts,
                         isOpening: false,
                         onOpen: {
                             openItem(item, displayEntry: displayEntry, fallbackIndex: index)

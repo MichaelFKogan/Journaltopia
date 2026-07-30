@@ -1065,7 +1065,7 @@ struct SupabaseEntryRepository {
         status: JournalEntryStatus = .draft
     ) async throws -> JournalEntry {
         let userID = try await authenticatedUserID()
-        let cleanTitle = title.trimmedOrNil
+        let cleanTitle = title.trimmedOrNil ?? (content.trimmedOrNil == nil ? "Untitled Entry" : nil)
         let cleanContent = content.trimmedOrNil
 
         guard cleanTitle != nil || cleanContent != nil else {
@@ -1109,6 +1109,7 @@ struct SupabaseEntryRepository {
                 .execute()
                 .value
         } catch {
+            print("[Storytopia] Supabase entry upsert failed: \(error.localizedDescription)")
             throw JournalEntryRepositoryError.operationFailed
         }
     }
