@@ -174,6 +174,14 @@ struct JournalView: View {
                 loadCloudJournalsIfNeeded()
             }
         }
+        .onChange(of: authStore.userID) { userID in
+            guard userID != nil else {
+                return
+            }
+
+            chapters = DailyJournalData.allChapters()
+            loadCloudJournalsIfNeeded()
+        }
         .preferredColorScheme(.light)
         .alert("Rename Journal", isPresented: isRenameAlertPresented) {
             TextField("Journal name", text: $renamedJournalTitle)
@@ -417,6 +425,7 @@ struct JournalView: View {
                     .moveDisabled(chapter.isSystemJournal)
                     .modifier(JournalDragModifier(
                         chapter: chapter,
+                        isEnabled: editMode == .active && selectedJournalSort == .manual,
                         draggingJournalID: $draggingJournalID
                     ))
                     .onDrop(
@@ -425,7 +434,7 @@ struct JournalView: View {
                             chapter: chapter,
                             chapters: $chapters,
                             draggingJournalID: $draggingJournalID,
-                            isEnabled: selectedJournalSort == .manual && !chapter.isSystemJournal,
+                            isEnabled: editMode == .active && selectedJournalSort == .manual && !chapter.isSystemJournal,
                             onReorder: persistManualJournalOrder
                         )
                     )
@@ -522,6 +531,21 @@ struct JournalView: View {
             ))
             .listRowBackground(Color.homePageBackground)
             .moveDisabled(chapter.isSystemJournal)
+            .modifier(JournalDragModifier(
+                chapter: chapter,
+                isEnabled: editMode == .active && selectedJournalSort == .manual,
+                draggingJournalID: $draggingJournalID
+            ))
+            .onDrop(
+                of: [UTType.text],
+                delegate: JournalGridDropDelegate(
+                    chapter: chapter,
+                    chapters: $chapters,
+                    draggingJournalID: $draggingJournalID,
+                    isEnabled: editMode == .active && selectedJournalSort == .manual && !chapter.isSystemJournal,
+                    onReorder: persistManualJournalOrder
+                )
+            )
             .swipeActions(edge: .leading, allowsFullSwipe: false) {
                 if !chapter.isSystemJournal {
                     Button {
@@ -800,7 +824,7 @@ struct JournalView: View {
     }
 
     private func moveChapters(from source: IndexSet, to destination: Int) {
-        guard selectedJournalSort == .manual else {
+        guard editMode == .active, selectedJournalSort == .manual else {
             return
         }
 
@@ -965,6 +989,17 @@ struct JournalView: View {
                 let cloudChapters = cloudJournals
                     .filter { PrototypeChapter.SystemJournal.journal(for: $0.id) == nil }
                     .map(PrototypeChapter.init(cloudJournal:))
+                let membershipRepairs = await MainActor.run {
+                    StoryEntryStore.missingCloudMembershipRepairs(
+                        journals: cloudChapters,
+                        entries: cloudEntries,
+                        existingMemberships: memberships
+                    )
+                }
+                try await journalRepository.upsertJournalEntryMemberships(membershipRepairs)
+                let repairedMemberships = membershipRepairs.isEmpty
+                    ? memberships
+                    : try await journalRepository.getJournalEntryMemberships()
 
                 await MainActor.run {
                     let mergedCloudChapters = Self.cloudChapters(
@@ -973,7 +1008,7 @@ struct JournalView: View {
                     )
                     UserChapterStore.replace(with: mergedCloudChapters)
                     StoryEntryStore.replaceCloudMemberships(
-                        memberships,
+                        repairedMemberships,
                         journals: mergedCloudChapters,
                         entries: cloudEntries
                     )
@@ -1304,10 +1339,11 @@ private struct JournalGridDropDelegate: DropDelegate {
 
 private struct JournalDragModifier: ViewModifier {
     let chapter: PrototypeChapter
+    let isEnabled: Bool
     @Binding var draggingJournalID: UUID?
 
     func body(content: Content) -> some View {
-        if chapter.isSystemJournal {
+        if chapter.isSystemJournal || !isEnabled {
             content
         } else {
             content
@@ -12686,6 +12722,7 @@ private struct PrototypeChapterDetailView: View {
     private var entriesList: some View {
         JournalDetailEntryBrowser(
             chapter: chapter,
+            editMode: $editMode,
             allowsCreation: chapter.systemJournal != .completed,
             onCreateEntry: {
                 openFreshEntryFromJournalDetail()
@@ -12975,6 +13012,7 @@ private struct JournalDetailEntryBrowser: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     let chapter: PrototypeChapter
+    @Binding var editMode: EditMode
     let allowsCreation: Bool
     let onCreateEntry: () -> Void
     let onOpenEntry: (CreateEntryDraft, Bool, UIImage?) -> Void
@@ -12987,6 +13025,12 @@ private struct JournalDetailEntryBrowser: View {
     @State private var failedCloudStoryboardClientIDs: Set<UUID> = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var isShowingAddSelectedEntriesToJournalSheet = false
+    @State private var selectedEntriesJournalTitle: String?
+    @State private var selectedEntriesJournalTitles: Set<String> = []
+    @State private var draggingEntryID: UUID?
+    @State private var manualEntryOrderOverrides: [UUID: Int] = [:]
     @AppStorage("StorytopiaSelectedJournalDetailEntryLayout") private var selectedLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedJournalDetailEntrySort") private var selectedSortRawValue = EntrySortOption.entryDate.rawValue
 
@@ -13023,9 +13067,14 @@ private struct JournalDetailEntryBrowser: View {
             .sorted(by: sortEntryItems)
     }
 
+    private var isEntryReorderingEnabled: Bool {
+        selectedSort == .manual && !chapter.isSystemJournal
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             controlsRow
+            selectedEntriesToolbar
 
             if let errorMessage {
                 cloudErrorNotice(errorMessage)
@@ -13044,6 +13093,29 @@ private struct JournalDetailEntryBrowser: View {
         .onAppear(perform: refreshEntries)
         .onChange(of: authStore.userID) { _ in
             refreshEntries()
+        }
+        .onChange(of: editMode) { mode in
+            if mode != .active {
+                selectedEntryIDs = []
+            }
+        }
+        .onChange(of: selectedSortRawValue) { _ in
+            draggingEntryID = nil
+            manualEntryOrderOverrides = [:]
+        }
+        .sheet(isPresented: $isShowingAddSelectedEntriesToJournalSheet) {
+            NavigationStack {
+                AddEntryToJournalPage(
+                    selectedJournalTitle: $selectedEntriesJournalTitle,
+                    selectedJournalTitles: $selectedEntriesJournalTitles,
+                    onSelect: { journalTitle in
+                        addSelectedEntriesToJournals(Set([journalTitle]))
+                    },
+                    onSaveSelection: addSelectedEntriesToJournals
+                )
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -13125,6 +13197,51 @@ private struct JournalDetailEntryBrowser: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
+    @ViewBuilder
+    private var selectedEntriesToolbar: some View {
+        if editMode == .active && !selectedEntryIDs.isEmpty {
+            HStack(spacing: 12) {
+                Text("\(selectedEntryIDs.count) selected")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    deleteSelectedEntries()
+                } label: {
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.red)
+                        .frame(width: 38, height: 38)
+                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete selected entries")
+
+                Button {
+                    openAddSelectedEntriesToJournalPage()
+                } label: {
+                    Label("Add to Journal", systemImage: "book.closed.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 54)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.08), radius: 10, y: 5)
+        }
+    }
+
     private var entryGrid: some View {
         LazyVGrid(columns: entryGridColumns, spacing: 14) {
             ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
@@ -13136,9 +13253,26 @@ private struct JournalDetailEntryBrowser: View {
                         sortOption: selectedSort,
                         storyboardImage: storyboardImage(for: item, fallbackIndex: index),
                         category: chapter.isSystemJournal ? nil : .completed,
+                        isSelecting: editMode == .active,
+                        isSelected: selectedEntryIDs.contains(item.id),
                         onOpen: {
-                            openItem(item, displayEntry: displayEntry, fallbackIndex: index)
+                            handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
                         }
+                    )
+                    .modifier(JournalDetailEntryDragModifier(
+                        entryID: item.id,
+                        isEnabled: isEntryReorderingEnabled,
+                        draggingEntryID: $draggingEntryID
+                    ))
+                    .onDrop(
+                        of: [UTType.text],
+                        delegate: EntryDropDelegate(
+                            item: item,
+                            items: filteredItems,
+                            draggingEntryID: $draggingEntryID,
+                            isEnabled: isEntryReorderingEnabled,
+                            onReorder: moveEntryItem
+                        )
                     )
                 } else {
                     EntryGridPreviewCard(
@@ -13149,11 +13283,28 @@ private struct JournalDetailEntryBrowser: View {
                         title: entryDisplayTitle(displayEntry),
                         category: chapter.isSystemJournal ? nil : .drafts,
                         isOpening: false,
+                        isSelecting: editMode == .active,
+                        isSelected: selectedEntryIDs.contains(item.id),
                         onOpen: {
-                            openItem(item, displayEntry: displayEntry, fallbackIndex: index)
+                            handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
                         },
                         onDelete: {},
                         onRename: nil
+                    )
+                    .modifier(JournalDetailEntryDragModifier(
+                        entryID: item.id,
+                        isEnabled: isEntryReorderingEnabled,
+                        draggingEntryID: $draggingEntryID
+                    ))
+                    .onDrop(
+                        of: [UTType.text],
+                        delegate: EntryDropDelegate(
+                            item: item,
+                            items: filteredItems,
+                            draggingEntryID: $draggingEntryID,
+                            isEnabled: isEntryReorderingEnabled,
+                            onReorder: moveEntryItem
+                        )
                     )
                 }
             }
@@ -13165,7 +13316,7 @@ private struct JournalDetailEntryBrowser: View {
             ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
                 let displayEntry = entryForDisplay(item)
                 Button {
-                    openItem(item, displayEntry: displayEntry, fallbackIndex: index)
+                    handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
                 } label: {
                     EntryListRow(
                         entry: displayEntry,
@@ -13173,9 +13324,30 @@ private struct JournalDetailEntryBrowser: View {
                         category: chapter.isSystemJournal ? nil : (isCompleted(item) ? .completed : .drafts),
                         completedStoryboardImage: isCompleted(item) ? storyboardImage(for: item, fallbackIndex: index) : nil
                     )
+                    .overlay(alignment: .leading) {
+                        if editMode == .active {
+                            EntrySelectionBadge(isSelected: selectedEntryIDs.contains(item.id))
+                                .padding(.leading, 8)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 4)
+                .modifier(JournalDetailEntryDragModifier(
+                    entryID: item.id,
+                    isEnabled: isEntryReorderingEnabled,
+                    draggingEntryID: $draggingEntryID
+                ))
+                .onDrop(
+                    of: [UTType.text],
+                    delegate: EntryDropDelegate(
+                        item: item,
+                        items: filteredItems,
+                        draggingEntryID: $draggingEntryID,
+                        isEnabled: isEntryReorderingEnabled,
+                        onReorder: moveEntryItem
+                    )
+                )
             }
         }
     }
@@ -13381,6 +13553,24 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func sortEntryItems(_ lhs: EntryDisplayItem, _ rhs: EntryDisplayItem) -> Bool {
+        if selectedSort == .manual {
+            let positions = StoryEntryStore.clientEntryIDPositions(for: chapter.title)
+
+            let lhsPosition = manualEntryOrderOverrides[lhs.id] ?? positions[lhs.id]
+            let rhsPosition = manualEntryOrderOverrides[rhs.id] ?? positions[rhs.id]
+
+            switch (lhsPosition, rhsPosition) {
+            case let (lhsPosition?, rhsPosition?) where lhsPosition != rhsPosition:
+                return lhsPosition < rhsPosition
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return lhs.createdAt > rhs.createdAt
+            }
+        }
+
         let lhsDate = sortDate(for: lhs)
         let rhsDate = sortDate(for: rhs)
 
@@ -13434,6 +13624,168 @@ private struct JournalDetailEntryBrowser: View {
 
     private func isCompleted(_ item: EntryDisplayItem) -> Bool {
         item.status == JournalEntryStatus.completed.rawValue
+    }
+
+    private var selectedItems: [EntryDisplayItem] {
+        filteredItems.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private func handleItemTap(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
+        if editMode == .active {
+            toggleEntrySelection(item.id)
+        } else {
+            openItem(item, displayEntry: displayEntry, fallbackIndex: fallbackIndex)
+        }
+    }
+
+    private func toggleEntrySelection(_ entryID: UUID) {
+        if selectedEntryIDs.contains(entryID) {
+            selectedEntryIDs.remove(entryID)
+        } else {
+            selectedEntryIDs.insert(entryID)
+        }
+    }
+
+    private func moveEntryItem(draggingEntryID: UUID, targetEntryID: UUID) {
+        guard
+            isEntryReorderingEnabled,
+            draggingEntryID != targetEntryID
+        else {
+            return
+        }
+
+        var reorderedItems = filteredItems
+        guard
+            let fromIndex = reorderedItems.firstIndex(where: { $0.id == draggingEntryID }),
+            let toIndex = reorderedItems.firstIndex(where: { $0.id == targetEntryID })
+        else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            let movedItem = reorderedItems.remove(at: fromIndex)
+            reorderedItems.insert(movedItem, at: toIndex)
+        }
+
+        let reorderedEntries = reorderedItems.map { entryForDisplay($0).prototypeEntry() }
+        manualEntryOrderOverrides = Dictionary(
+            uniqueKeysWithValues: reorderedItems.enumerated().map { offset, item in
+                (item.id, offset)
+            }
+        )
+        StoryEntryStore.saveStoredOrder(from: reorderedEntries, for: chapter.title)
+        onEntriesChanged(reorderedEntries)
+        Task {
+            await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
+        }
+    }
+
+    private func openAddSelectedEntriesToJournalPage() {
+        selectedEntriesJournalTitles = []
+        selectedEntriesJournalTitle = nil
+
+        Task {
+            await refreshCloudJournalsBeforeShowingSelectedEntrySheet()
+            isShowingAddSelectedEntriesToJournalSheet = true
+        }
+    }
+
+    private func addSelectedEntriesToJournals(_ journalTitles: Set<String>) {
+        guard !journalTitles.isEmpty else {
+            return
+        }
+
+        selectedItems.forEach { item in
+            let entry = entryForDisplay(item).prototypeEntry()
+            journalTitles.sorted().forEach { journalTitle in
+                StoryEntryStore.upsert(entry, to: journalTitle)
+                EntryJournalLinkStore.save(journalTitle: journalTitle, journalEntryID: entry.id, for: item.id)
+            }
+        }
+
+        Task {
+            await syncSelectedEntryJournalsToCloud(journalTitles)
+        }
+
+        selectedEntriesJournalTitles = journalTitles
+        selectedEntriesJournalTitle = journalTitles.sorted().first
+        selectedEntryIDs = []
+        editMode = .inactive
+        refreshEntries()
+    }
+
+    private func deleteSelectedEntries() {
+        let itemsToDelete = selectedItems
+        guard !itemsToDelete.isEmpty else {
+            return
+        }
+
+        if chapter.systemJournal == .drafts {
+            selectedEntryIDs = []
+            editMode = .inactive
+            Task {
+                for item in itemsToDelete {
+                    await deleteDraftEntry(item)
+                }
+                await MainActor.run {
+                    refreshEntries()
+                }
+            }
+            return
+        }
+
+        itemsToDelete.forEach { item in
+            let entry = entryForDisplay(item).prototypeEntry()
+            StoryEntryStore.delete(entry, from: chapter.title)
+            EntryJournalLinkStore.remove(journalTitle: chapter.title, for: item.id)
+        }
+        selectedEntryIDs = []
+        editMode = .inactive
+        refreshEntries()
+        Task {
+            await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
+        }
+    }
+
+    @MainActor
+    private func deleteDraftEntry(_ item: EntryDisplayItem) async {
+        do {
+            try await EntrySaveService().deleteEntry(
+                localDraftID: item.id,
+                cloudEntry: item.cloudEntry,
+                isSignedIn: authStore.userID != nil
+            )
+            StoryEntryStore.delete(entryID: item.id)
+            EntryJournalLinkStore.remove(for: item.id)
+            localEntries.removeAll { $0.id == item.id }
+            cloudEntries.removeAll { $0.clientEntryID == item.id }
+        } catch {
+            errorMessage = "Could not delete one or more entries."
+        }
+    }
+
+    private func syncSelectedEntryJournalsToCloud(_ journalTitles: Set<String>) async {
+        guard authStore.userID != nil else {
+            return
+        }
+
+        for journalTitle in journalTitles {
+            await UserChapterStore.syncJournalAndEntriesToCloud(title: journalTitle)
+        }
+    }
+
+    private func refreshCloudJournalsBeforeShowingSelectedEntrySheet() async {
+        guard authStore.userID != nil else {
+            return
+        }
+
+        do {
+            let cloudJournals = try await SupabaseJournalRepository().getJournals()
+            let chapters = cloudJournals.map(PrototypeChapter.init(cloudJournal:))
+            UserChapterStore.replace(with: chapters)
+        } catch {
+            print("[Storytopia] Could not refresh journals before adding selected entries.")
+        }
     }
 
     private func storyboardImage(for item: EntryDisplayItem, fallbackIndex: Int) -> CompletedStoryboardImage {
@@ -13543,6 +13895,24 @@ private struct PrototypeEntryReorderDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         DropProposal(operation: .move)
+    }
+}
+
+private struct JournalDetailEntryDragModifier: ViewModifier {
+    let entryID: UUID
+    let isEnabled: Bool
+    @Binding var draggingEntryID: UUID?
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content
+                .onDrag {
+                    draggingEntryID = entryID
+                    return NSItemProvider(object: entryID.uuidString as NSString)
+                }
+        } else {
+            content
+        }
     }
 }
 
@@ -15772,6 +16142,14 @@ enum StoryEntryStore {
             .compactMap(\.id)
     }
 
+    static func clientEntryIDPositions(for chapterTitle: String) -> [UUID: Int] {
+        var positions: [UUID: Int] = [:]
+        for (offset, id) in clientEntryIDs(for: chapterTitle).enumerated() where positions[id] == nil {
+            positions[id] = offset
+        }
+        return positions
+    }
+
     static func replaceCloudMemberships(
         _ memberships: [JournalEntryMembership],
         journals: [PrototypeChapter],
@@ -15812,6 +16190,47 @@ enum StoryEntryStore {
         UserDefaults.standard.set(data, forKey: storageKey)
     }
 
+    static func missingCloudMembershipRepairs(
+        journals: [PrototypeChapter],
+        entries: [JournalEntry],
+        existingMemberships: [JournalEntryMembership]
+    ) -> [JournalEntryMembershipRepair] {
+        let journalIDsByTitle = Dictionary(uniqueKeysWithValues: journals.map { ($0.title, $0.id) })
+        let cloudEntryIDs = Set(entries.map(\.clientEntryID))
+        let existingKeys = Set(existingMemberships.map { MembershipKey(journalID: $0.journalID, clientEntryID: $0.clientEntryID) })
+
+        var seenKeys = existingKeys
+        var positionsByJournalID = Dictionary(
+            grouping: existingMemberships,
+            by: \.journalID
+        ).mapValues { memberships in
+            (memberships.map(\.position).max() ?? -1) + 1
+        }
+
+        return records.compactMap { record in
+            guard
+                let clientEntryID = record.id,
+                cloudEntryIDs.contains(clientEntryID),
+                let journalID = journalIDsByTitle[record.chapterTitle]
+            else {
+                return nil
+            }
+
+            let key = MembershipKey(journalID: journalID, clientEntryID: clientEntryID)
+            guard seenKeys.insert(key).inserted else {
+                return nil
+            }
+
+            let position = positionsByJournalID[journalID] ?? 0
+            positionsByJournalID[journalID] = position + 1
+            return JournalEntryMembershipRepair(
+                journalID: journalID,
+                clientEntryID: clientEntryID,
+                position: position
+            )
+        }
+    }
+
     static func add(_ entry: PrototypeEntry, to chapterTitle: String) {
         let newRecord = Record(
             id: entry.id,
@@ -15833,7 +16252,7 @@ enum StoryEntryStore {
         syncToCloud(chapterTitle: chapterTitle)
     }
 
-    static func upsert(_ entry: PrototypeEntry, to chapterTitle: String) {
+    static func upsert(_ entry: PrototypeEntry, to chapterTitle: String, syncsToCloud: Bool = true) {
         let newRecord = Record(
             id: entry.id,
             chapterTitle: chapterTitle,
@@ -15861,7 +16280,9 @@ enum StoryEntryStore {
         }
 
         UserDefaults.standard.set(data, forKey: storageKey)
-        syncToCloud(chapterTitle: chapterTitle)
+        if syncsToCloud {
+            syncToCloud(chapterTitle: chapterTitle)
+        }
     }
 
     static func delete(_ entry: PrototypeEntry, from chapterTitle: String) {
@@ -16078,6 +16499,11 @@ enum StoryEntryStore {
             },
             journalID: journalID
         )
+    }
+
+    private struct MembershipKey: Hashable {
+        let journalID: UUID
+        let clientEntryID: UUID
     }
 }
 

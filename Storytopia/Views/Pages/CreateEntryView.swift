@@ -1390,6 +1390,7 @@ struct CreateEntryView: View {
     @State private var entryCharacters: [EntryCharacter] = []
     @State private var characterEditorSession: CharacterEditorSession?
     @State private var isPreviewingCompletedStoryboard = false
+    @State private var isEditingCompletedEntry = false
     @State private var isPhotoTabCollapsed = true
     @State private var isCharacterTabCollapsed = true
     @State private var isStoryDetailsTabCollapsed = true
@@ -1517,12 +1518,24 @@ struct CreateEntryView: View {
         selectedPaperStyleChoice.backgroundImageName != nil
     }
 
+    private var isCompletedEntryViewMode: Bool {
+        isOpeningCompletedEntryFromEntries && !isEditingCompletedEntry
+    }
+
     private var showsComposeFlowControls: Bool {
         canShowEntryOptionsPage
     }
 
     private var canShowEntryOptionsPage: Bool {
-        presentation.showsEntryOptionsFlow && !isOpeningCompletedEntryFromEntries
+        presentation.showsEntryOptionsFlow && !isCompletedEntryViewMode
+    }
+
+    private var editorToolbarTitle: String {
+        if isCompletedEntryViewMode {
+            return "Entry"
+        }
+
+        return presentation.editorToolbarTitle
     }
 
     var body: some View {
@@ -1531,7 +1544,7 @@ struct CreateEntryView: View {
 
     private var editorCore: some View {
         NavigationStack {
-            if canShowEntryOptionsPage {
+            if presentation.showsEntryOptionsFlow {
                 editorNavigationRoot
                     .navigationDestination(isPresented: $isShowingEntryOptionsPage) {
                         entryOptionsPage
@@ -1864,6 +1877,9 @@ struct CreateEntryView: View {
         }
         .onAppear {
             configureDirectJournalEntryIfNeeded()
+            if isOpeningCompletedEntryFromEntries {
+                isEditingCompletedEntry = false
+            }
             if !canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = false
             }
@@ -1873,6 +1889,11 @@ struct CreateEntryView: View {
         }
         .onChange(of: activeDraftID) { newDraftID in
             handleActiveDraftChange(newDraftID)
+        }
+        .onChange(of: isOpeningCompletedEntryFromEntries) { isCompleted in
+            if isCompleted {
+                isEditingCompletedEntry = false
+            }
         }
         .onChange(of: canShowEntryOptionsPage) { canShowOptions in
             if !canShowOptions {
@@ -1900,6 +1921,7 @@ struct CreateEntryView: View {
         dismissKeyboard()
         isFullScreenEditorVisible = false
         isShowingEntryOptionsPage = false
+        isEditingCompletedEntry = false
 
         guard draftID != nil else {
             clearEditor()
@@ -2071,6 +2093,17 @@ struct CreateEntryView: View {
                     textAlignmentRawValue: generationPayload.textAlignmentRawValue
                 )
 
+                if let journalTitle,
+                   let journalEntry = currentJournalEntry(id: prepareResult.localDraftID) {
+                    StoryEntryStore.upsert(journalEntry, to: journalTitle, syncsToCloud: false)
+                    onJournalEntryCreated(journalTitle, journalEntry)
+                    EntryJournalLinkStore.save(
+                        journalTitle: journalTitle,
+                        journalEntryID: journalEntry.id,
+                        for: prepareResult.localDraftID
+                    )
+                }
+
                 let completionResult = try await EntrySaveService().markEntryCompletedAfterStoryboardSaved(
                     payload: completionPayload,
                     isSignedIn: authStore.userID != nil
@@ -2083,16 +2116,6 @@ struct CreateEntryView: View {
                     let completedSnapshot = currentDraftSnapshot(id: completionResult.localDraftID)
                     loadedDraftSnapshot = completedSnapshot
                     toolbarSavedSnapshot = completedSnapshot
-                    if let journalTitle,
-                       let journalEntry = currentJournalEntry(id: completionResult.localDraftID) {
-                        StoryEntryStore.upsert(journalEntry, to: journalTitle)
-                        onJournalEntryCreated(journalTitle, journalEntry)
-                        EntryJournalLinkStore.save(
-                            journalTitle: journalTitle,
-                            journalEntryID: journalEntry.id,
-                            for: completionResult.localDraftID
-                        )
-                    }
                     generatedStoryboards = storyboardsAfterLocalSave
                     GeneratedStoryboardStore.save(generatedStoryboards)
                     currentEntryStatus = .completed
@@ -2143,7 +2166,7 @@ struct CreateEntryView: View {
         .toolbar {
             if !isFullScreenEditorVisible {
                 createToolbarItems(
-                    title: presentation.editorToolbarTitle,
+                    title: editorToolbarTitle,
                     showsCloseButton: true
                 )
             }
@@ -2339,7 +2362,7 @@ struct CreateEntryView: View {
                         .frame(width: 48, height: 48)
                         .contentShape(Rectangle())
                 }
-                .frame(width: showsToolbarSaveButton ? 94 : 48, alignment: .leading)
+                .frame(width: showsTrailingToolbarAction ? 94 : 48, alignment: .leading)
                 .buttonStyle(.plain)
                 .accessibilityLabel(presentation.closeButtonAccessibilityLabel)
                 .disabled(isBlockingSaveInProgress)
@@ -2379,46 +2402,116 @@ struct CreateEntryView: View {
             }
         }
 
-        if showsToolbarSaveButton {
+        if isCompletedEntryViewMode {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    performToolbarSave()
-                } label: {
-                    HStack(spacing: 4) {
-                        if isToolbarSaveInProgress {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .tint(Color.storyPurple)
-                        }
-
-                        Text(toolbarSaveButtonTitle)
-                            .font(.system(size: 13, weight: .bold))
-                            .lineLimit(1)
-
+                HStack(spacing: 6) {
+                    if hasUnsavedDraftChanges {
+                        toolbarSaveActionButton
                     }
-                    .frame(width: 82, height: 38)
-                    .foregroundStyle(toolbarSaveButtonColor)
-                    .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
-                    )
-                    .frame(width: 94, height: 48)
-                    .contentShape(Rectangle())
-                    .opacity(canUseToolbarSaveButton || isToolbarSaveInProgress ? 1 : 0.52)
-                    .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
+
+                    completedEntryModeButton(title: "Edit", accessibilityLabel: "Edit entry") {
+                        withAnimation(.snappy(duration: 0.22)) {
+                            isEditingCompletedEntry = true
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(!canUseToolbarSaveButton || isToolbarSaveInProgress)
+            }
+            .hideSharedBackgroundIfAvailable()
+        } else if isOpeningCompletedEntryFromEntries && isEditingCompletedEntry {
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: 6) {
+                    if showsToolbarSaveButton {
+                        toolbarSaveActionButton
+                    }
+
+                    completedEntryModeButton(title: "Done", accessibilityLabel: "Done editing") {
+                        finishCompletedEntryEditing()
+                    }
+                }
+            }
+            .hideSharedBackgroundIfAvailable()
+        } else if showsToolbarSaveButton {
+            ToolbarItem(placement: .topBarTrailing) {
+                toolbarSaveActionButton
             }
             .hideSharedBackgroundIfAvailable()
         }
     }
 
+    private func completedEntryModeButton(
+        title: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .bold))
+                .lineLimit(1)
+                .frame(width: 82, height: 38)
+                .foregroundStyle(Color.storyPurple)
+                .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
+                )
+                .frame(width: 94, height: 48)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var toolbarSaveActionButton: some View {
+        Button {
+            performToolbarSave()
+        } label: {
+            HStack(spacing: 4) {
+                if isToolbarSaveInProgress {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(Color.storyPurple)
+                }
+
+                Text(toolbarSaveButtonTitle)
+                    .font(.system(size: 13, weight: .bold))
+                    .lineLimit(1)
+
+            }
+            .frame(width: 82, height: 38)
+            .foregroundStyle(toolbarSaveButtonColor)
+            .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
+            )
+            .frame(width: 94, height: 48)
+            .contentShape(Rectangle())
+            .opacity(canUseToolbarSaveButton || isToolbarSaveInProgress ? 1 : 0.52)
+            .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
+        }
+        .buttonStyle(.plain)
+        .disabled(!canUseToolbarSaveButton || isToolbarSaveInProgress)
+    }
+
+    private var showsTrailingToolbarAction: Bool {
+        isOpeningCompletedEntryFromEntries || showsToolbarSaveButton
+    }
+
     private var showsToolbarSaveButton: Bool {
-        presentation.showsNextButton
-            || presentation.isEditDraft
-            || presentation.savesDirectlyToJournal
+        !isCompletedEntryViewMode
+            && (
+                presentation.showsNextButton
+                    || presentation.isEditDraft
+                    || presentation.savesDirectlyToJournal
+            )
+    }
+
+    private func finishCompletedEntryEditing() {
+        dismissKeyboard()
+        isShowingEntryOptionsPage = false
+        withAnimation(.snappy(duration: 0.22)) {
+            isEditingCompletedEntry = false
+        }
     }
 
     private var canUseToolbarSaveButton: Bool {
@@ -2976,6 +3069,7 @@ struct CreateEntryView: View {
         loadedDraftSnapshot = nil
         linkedJournalTitle = nil
         linkedJournalTitles = []
+        isEditingCompletedEntry = false
         resetKeyboardFormattingState()
         isBodyEditorEditing = false
         isKeyboardVisible = false
@@ -3128,6 +3222,7 @@ struct CreateEntryView: View {
                                 editorFocusRequestID += 1
                             }
                         )
+                        .allowsHitTesting(!isCompletedEntryViewMode)
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
@@ -3138,7 +3233,8 @@ struct CreateEntryView: View {
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !isKeyboardVisible
+                if !isCompletedEntryViewMode
+                    && !isKeyboardVisible
                     && !isBodyEditorEditing
                     && activeKeyboardFormattingMode == nil {
                     entryDraftBottomBar
@@ -3148,6 +3244,7 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: isKeyboardVisible)
             .animation(.snappy(duration: 0.22), value: activeKeyboardFormattingMode)
             .animation(.snappy(duration: 0.22), value: hasStoryboardPhotos)
+            .animation(.snappy(duration: 0.22), value: isCompletedEntryViewMode)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -4292,7 +4389,7 @@ struct CreateEntryView: View {
             artStylePickerSection
             journalDestinationCard
             storyDetailsCard
-            entryPrivacyCard
+            // entryPrivacyCard — Save Entry / Private Entry toggles (kept for later reuse)
             generateStoryboardButton
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -4688,9 +4785,10 @@ struct CreateEntryView: View {
         dismissKeyboard()
         setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
+        let entryID = activeDraftID ?? UUID()
         Task {
             let payload = EntryDraftSavePayload(
-                id: activeDraftID,
+                id: entryID,
                 title: storyTitle,
                 text: entryText,
                 richText: currentEntryRichText(),
@@ -4714,6 +4812,16 @@ struct CreateEntryView: View {
                 isHighlighted: false,
                 textAlignmentRawValue: "leading"
             )
+
+            if let journalEntry = currentJournalEntry(id: entryID) {
+                StoryEntryStore.upsert(journalEntry, to: journalTitle, syncsToCloud: false)
+                onJournalEntryCreated(journalTitle, journalEntry)
+                EntryJournalLinkStore.save(
+                    journalTitle: journalTitle,
+                    journalEntryID: journalEntry.id,
+                    for: entryID
+                )
+            }
 
             let result = try? await EntrySaveService().saveEntryPreservingStatus(
                 payload: payload,
@@ -4790,6 +4898,14 @@ struct CreateEntryView: View {
                 isHighlighted: false,
                 textAlignmentRawValue: "leading"
             )
+            StoryEntryStore.upsert(entry, to: journalTitle, syncsToCloud: false)
+            onJournalEntryCreated(journalTitle, entry)
+            EntryJournalLinkStore.save(
+                journalTitle: journalTitle,
+                journalEntryID: entry.id,
+                for: entry.id
+            )
+
             let result = try? await EntrySaveService().saveEntryPreservingStatus(
                 payload: payload,
                 isSignedIn: authStore.userID != nil,

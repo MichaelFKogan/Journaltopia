@@ -498,6 +498,12 @@ enum JournalEntryRepositoryError: LocalizedError {
     }
 }
 
+struct JournalEntryMembershipRepair: Sendable {
+    let journalID: UUID
+    let clientEntryID: UUID
+    let position: Int
+}
+
 enum StoryJournalRepositoryError: LocalizedError {
     case notAuthenticated
     case operationFailed
@@ -652,6 +658,31 @@ struct SupabaseJournalRepository {
             try await client
                 .from("journal_entries")
                 .insert(payloads)
+                .execute()
+        } catch {
+            throw StoryJournalRepositoryError.operationFailed
+        }
+    }
+
+    func upsertJournalEntryMemberships(_ repairs: [JournalEntryMembershipRepair]) async throws {
+        guard !repairs.isEmpty else {
+            return
+        }
+
+        let userID = try await authenticatedUserID()
+        let payloads = repairs.map { repair in
+            JournalEntryMembershipPayload(
+                userID: userID,
+                journalID: repair.journalID,
+                clientEntryID: repair.clientEntryID,
+                position: repair.position
+            )
+        }
+
+        do {
+            try await client
+                .from("journal_entries")
+                .upsert(payloads, onConflict: "user_id,journal_id,client_entry_id")
                 .execute()
         } catch {
             throw StoryJournalRepositoryError.operationFailed
