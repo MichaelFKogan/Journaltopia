@@ -11981,6 +11981,8 @@ private struct PrototypeChapterDetailView: View {
                 Color.homePageBackground
                     .ignoresSafeArea()
 
+                journalDetailLowerBannerBackground(proxy: proxy)
+
                 journalHeroHeader(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .ignoresSafeArea(edges: .top)
@@ -12132,6 +12134,51 @@ private struct PrototypeChapterDetailView: View {
         }
     }
 
+    private func journalDetailLowerBannerBackground(proxy: GeometryProxy) -> some View {
+        let metrics = journalHeroMetrics(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
+
+        return VStack(spacing: 0) {
+            journalDetailBannerBackdrop
+                .frame(maxWidth: .infinity)
+                .frame(height: metrics.backdropHeight)
+
+            journalDetailBannerBackdrop
+                .frame(maxWidth: .infinity)
+                .frame(height: metrics.backdropHeight)
+                .scaleEffect(x: 1, y: -1, anchor: .center)
+
+            journalDetailBannerBackdrop
+                .frame(maxWidth: .infinity)
+                .frame(height: max(0, proxy.size.height - (metrics.backdropHeight * 2) + proxy.safeAreaInsets.bottom))
+                .scaleEffect(x: 1, y: -1, anchor: .center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea(edges: [.top, .bottom])
+        .allowsHitTesting(false)
+    }
+
+    private var journalDetailBannerBackdrop: some View {
+        ZStack {
+            JournalDetailBannerBackground(
+                color: chapter.color,
+                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
+                fallbackImageName: chapter.coverImageName
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.62),
+                    Color.black.opacity(0.42),
+                    Color.black.opacity(0.22),
+                    Color.black.opacity(0.12)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
     private func journalDetailSheetScroll(proxy: GeometryProxy) -> some View {
         let sheetTopOffset = journalDetailSheetTopOffset(
             height: proxy.size.height,
@@ -12168,7 +12215,7 @@ private struct PrototypeChapterDetailView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 112 + proxy.safeAreaInsets.bottom)
+                .padding(.bottom, 112 + proxy.safeAreaInsets.bottom + min(sheetTopOffset * 0.45, 260))
                 .frame(maxWidth: .infinity, minHeight: proxy.size.height + proxy.safeAreaInsets.bottom, alignment: .top)
                 .background(Color.homePageBackground)
                 .clipShape(
@@ -12183,7 +12230,7 @@ private struct PrototypeChapterDetailView: View {
                 .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -8)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: [.top, .bottom])
     }
 
@@ -12398,27 +12445,6 @@ private struct PrototypeChapterDetailView: View {
             .padding(.bottom, -metrics.coverOverlap)
         }
         .frame(maxWidth: .infinity)
-        .background {
-            ZStack {
-                JournalDetailBannerBackground(
-                    color: chapter.color,
-                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
-                    remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
-                    fallbackImageName: chapter.coverImageName
-                )
-
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.62),
-                        Color.black.opacity(0.42),
-                        Color.black.opacity(0.22),
-                        Color.black.opacity(0.12)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-        }
         .clipped()
     }
 
@@ -12426,14 +12452,18 @@ private struct PrototypeChapterDetailView: View {
         let bannerHeight: CGFloat = 246
         let coverTopOffset = min(bannerHeight - 58, toolbarBottomOffset + 32)
         let coverWidth = min(UIScreen.main.bounds.width * 0.49, 188)
+        let coverHeight = coverWidth / JournalOpeningBook.compactAspectRatio
+        let coverOverlap = max(0, bannerHeight - coverTopOffset)
+        let coverStackHeight = coverHeight + 14 + 24 + 64
 
         return JournalHeroMetrics(
             bannerHeight: bannerHeight,
             coverTopOffset: coverTopOffset,
             bannerTitleCenterY: max(78, coverTopOffset - 44),
-            coverOverlap: max(0, bannerHeight - coverTopOffset),
+            coverOverlap: coverOverlap,
             coverWidth: coverWidth,
-            coverHeight: coverWidth / JournalOpeningBook.compactAspectRatio
+            coverHeight: coverHeight,
+            backdropHeight: bannerHeight + coverStackHeight - coverOverlap
         )
     }
 
@@ -12853,6 +12883,7 @@ private struct JournalHeroMetrics {
     let coverOverlap: CGFloat
     let coverWidth: CGFloat
     let coverHeight: CGFloat
+    let backdropHeight: CGFloat
 }
 
 private struct JournalDetailEntryBrowser: View {
