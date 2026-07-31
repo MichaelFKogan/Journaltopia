@@ -11981,53 +11981,21 @@ private struct PrototypeChapterDetailView: View {
                 Color.homePageBackground
                     .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            journalHeroHeader(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
-
-                            VStack(alignment: .leading, spacing: 16) {
-                                if isCoverSyncInProgress || pendingCoverSync != nil {
-                                    JournalCoverSyncNotice(
-                                        isInProgress: isCoverSyncInProgress,
-                                        message: pendingCoverSync?.message,
-                                        onRetry: retryPendingCoverSync
-                                    )
-                                }
-
-                                sectionPicker
-
-                                if selectedSection == "Pages" {
-                                    entriesList
-                                } else {
-                                    mediaGrid
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.top, 16)
-                            .padding(.bottom, 112)
-                            .background(alignment: .top) {
-                                UnevenRoundedRectangle(
-                                    topLeadingRadius: 32,
-                                    bottomLeadingRadius: 0,
-                                    bottomTrailingRadius: 0,
-                                    topTrailingRadius: 32,
-                                    style: .continuous
-                                )
-                                .fill(Color.homePageBackground)
-                                .ignoresSafeArea(edges: .horizontal)
-                                .offset(y: -44)
-                            }
-                        }
-                    }
+                journalHeroHeader(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .ignoresSafeArea(edges: .top)
-                }
+
+                journalDetailSheetScroll(proxy: proxy)
+                    .zIndex(1)
+
+                journalHeroOpenTapTargets(proxy: proxy)
+                    .zIndex(2)
 
                 if !chapter.entries.isEmpty {
                     journalDetailFloatingWriteButton
                         .padding(.trailing, 20)
-                        .padding(.bottom, 22)
-                        .zIndex(2)
+                        .padding(.bottom, max(22, proxy.safeAreaInsets.bottom + 10))
+                        .zIndex(3)
                 }
             }
         }
@@ -12164,6 +12132,106 @@ private struct PrototypeChapterDetailView: View {
         }
     }
 
+    private func journalDetailSheetScroll(proxy: GeometryProxy) -> some View {
+        let sheetTopOffset = journalDetailSheetTopOffset(
+            height: proxy.size.height,
+            safeAreaTop: proxy.safeAreaInsets.top
+        )
+
+        return ScrollView(showsIndicators: false) {
+            VStack(spacing: 0) {
+                Color.clear
+                    .frame(height: sheetTopOffset)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Capsule()
+                        .fill(Color.homeMutedText.opacity(0.22))
+                        .frame(width: 44, height: 5)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
+
+                    if isCoverSyncInProgress || pendingCoverSync != nil {
+                        JournalCoverSyncNotice(
+                            isInProgress: isCoverSyncInProgress,
+                            message: pendingCoverSync?.message,
+                            onRetry: retryPendingCoverSync
+                        )
+                    }
+
+                    sectionPicker
+
+                    if selectedSection == "Pages" {
+                        entriesList
+                    } else {
+                        mediaGrid
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 112 + proxy.safeAreaInsets.bottom)
+                .frame(maxWidth: .infinity, minHeight: proxy.size.height + proxy.safeAreaInsets.bottom, alignment: .top)
+                .background(Color.homePageBackground)
+                .clipShape(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 32,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 0,
+                        topTrailingRadius: 32,
+                        style: .continuous
+                    )
+                )
+                .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .ignoresSafeArea(edges: [.top, .bottom])
+    }
+
+    private func journalDetailSheetTopOffset(height: CGFloat, safeAreaTop: CGFloat) -> CGFloat {
+        let preferredOffset = height * 0.64
+        let minimumOffset = safeAreaTop + 420
+        let maximumOffset = height - 210
+        return min(max(preferredOffset, minimumOffset), maximumOffset)
+    }
+
+    private func journalHeroOpenTapTargets(proxy: GeometryProxy) -> some View {
+        let metrics = journalHeroMetrics(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
+
+        return VStack(spacing: 0) {
+            Color.clear
+                .frame(height: metrics.coverTopOffset)
+
+            Button {
+                openJournalComicReader()
+            } label: {
+                Color.clear
+                    .frame(width: metrics.coverWidth, height: metrics.coverHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .allowsHitTesting(!isOpeningJournalComicReader)
+            .accessibilityHidden(true)
+
+            Color.clear
+                .frame(height: 8)
+
+            Button {
+                openJournalComicReader()
+            } label: {
+                Color.clear
+                    .frame(width: 160, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .allowsHitTesting(!isOpeningJournalComicReader)
+            .accessibilityHidden(true)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea(edges: .top)
+    }
+
     private func playBookOpenHint() {
         bookOpenHintTask?.cancel()
         bookOpenHintProgress = 0
@@ -12244,11 +12312,7 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private func heroBanner(toolbarBottomOffset: CGFloat) -> some View {
-        let bannerHeight: CGFloat = 276
-        let coverTopOffset = min(bannerHeight - 58, toolbarBottomOffset + 70)
-        let bannerTitleCenterY = max(96, coverTopOffset - 52)
-        let coverOverlap = max(0, bannerHeight - coverTopOffset)
-        let coverWidth = min(UIScreen.main.bounds.width * 0.49, 188)
+        let metrics = journalHeroMetrics(toolbarBottomOffset: toolbarBottomOffset)
 
         return VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .top) {
@@ -12278,11 +12342,11 @@ private struct PrototypeChapterDetailView: View {
                     }
                     .padding(.horizontal, 24)
                     .frame(width: bannerProxy.size.width)
-                    .position(x: bannerProxy.size.width / 2, y: bannerTitleCenterY)
+                    .position(x: bannerProxy.size.width / 2, y: metrics.bannerTitleCenterY)
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: bannerHeight, alignment: .top)
+            .frame(height: metrics.bannerHeight, alignment: .top)
             .clipped()
 
             VStack(alignment: .center, spacing: 14) {
@@ -12298,8 +12362,8 @@ private struct PrototypeChapterDetailView: View {
                         navigationOpenProgress: bookNavigationOpenProgress
                     )
                     .frame(
-                        width: coverWidth,
-                        height: coverWidth / JournalOpeningBook.compactAspectRatio
+                        width: metrics.coverWidth,
+                        height: metrics.coverHeight
                     )
                 }
                 .buttonStyle(.plain)
@@ -12330,8 +12394,8 @@ private struct PrototypeChapterDetailView: View {
             .padding(.top, 0)
             .padding(.bottom, 64)
             .frame(maxWidth: .infinity)
-            .offset(y: -coverOverlap)
-            .padding(.bottom, -coverOverlap)
+            .offset(y: -metrics.coverOverlap)
+            .padding(.bottom, -metrics.coverOverlap)
         }
         .frame(maxWidth: .infinity)
         .background {
@@ -12356,6 +12420,21 @@ private struct PrototypeChapterDetailView: View {
             }
         }
         .clipped()
+    }
+
+    private func journalHeroMetrics(toolbarBottomOffset: CGFloat) -> JournalHeroMetrics {
+        let bannerHeight: CGFloat = 246
+        let coverTopOffset = min(bannerHeight - 58, toolbarBottomOffset + 32)
+        let coverWidth = min(UIScreen.main.bounds.width * 0.49, 188)
+
+        return JournalHeroMetrics(
+            bannerHeight: bannerHeight,
+            coverTopOffset: coverTopOffset,
+            bannerTitleCenterY: max(78, coverTopOffset - 44),
+            coverOverlap: max(0, bannerHeight - coverTopOffset),
+            coverWidth: coverWidth,
+            coverHeight: coverWidth / JournalOpeningBook.compactAspectRatio
+        )
     }
 
     private var journalDetailFloatingWriteButton: some View {
@@ -12765,6 +12844,15 @@ private struct PrototypeChapterDetailView: View {
             .filter { seen.insert($0.id).inserted }
             .sorted { $0.createdAt > $1.createdAt }
     }
+}
+
+private struct JournalHeroMetrics {
+    let bannerHeight: CGFloat
+    let coverTopOffset: CGFloat
+    let bannerTitleCenterY: CGFloat
+    let coverOverlap: CGFloat
+    let coverWidth: CGFloat
+    let coverHeight: CGFloat
 }
 
 private struct JournalDetailEntryBrowser: View {
