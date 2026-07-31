@@ -12006,6 +12006,18 @@ private struct PrototypeChapterDetailView: View {
                             .padding(.horizontal, 16)
                             .padding(.top, 16)
                             .padding(.bottom, 112)
+                            .background(alignment: .top) {
+                                UnevenRoundedRectangle(
+                                    topLeadingRadius: 32,
+                                    bottomLeadingRadius: 0,
+                                    bottomTrailingRadius: 0,
+                                    topTrailingRadius: 32,
+                                    style: .continuous
+                                )
+                                .fill(Color.homePageBackground)
+                                .ignoresSafeArea(edges: .horizontal)
+                                .offset(y: -44)
+                            }
                         }
                     }
                     .ignoresSafeArea(edges: .top)
@@ -12229,36 +12241,17 @@ private struct PrototypeChapterDetailView: View {
 
     private func journalHeroHeader(toolbarBottomOffset: CGFloat) -> some View {
         heroBanner(toolbarBottomOffset: toolbarBottomOffset)
-            .padding(.bottom, 14)
     }
 
     private func heroBanner(toolbarBottomOffset: CGFloat) -> some View {
         let bannerHeight: CGFloat = 276
-        let coverTopOffset = min(bannerHeight - 58, toolbarBottomOffset + 94)
-        let bannerTitleCenterY = max(112, coverTopOffset - 52)
+        let coverTopOffset = min(bannerHeight - 58, toolbarBottomOffset + 70)
+        let bannerTitleCenterY = max(96, coverTopOffset - 52)
         let coverOverlap = max(0, bannerHeight - coverTopOffset)
         let coverWidth = min(UIScreen.main.bounds.width * 0.49, 188)
 
         return VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .top) {
-                JournalDetailBannerBackground(
-                    color: chapter.color,
-                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
-                    remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
-                    fallbackImageName: chapter.coverImageName
-                )
-
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.62),
-                        Color.black.opacity(0.44),
-                        Color.black.opacity(0.16),
-                        Color.black.opacity(0.04)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-
                 GeometryReader { bannerProxy in
                     VStack(spacing: 8) {
                         Text(chapter.title.uppercased())
@@ -12325,7 +12318,8 @@ private struct PrototypeChapterDetailView: View {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .bold))
                     }
-                    .foregroundStyle(Color.homeAccent)
+                    .foregroundStyle(Color.white)
+                    .shadow(color: Color.black.opacity(0.38), radius: 7, y: 2)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -12334,22 +12328,34 @@ private struct PrototypeChapterDetailView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 0)
-            .padding(.bottom, 4)
+            .padding(.bottom, 64)
             .frame(maxWidth: .infinity)
-            .background(alignment: .top) {
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 28,
-                    bottomLeadingRadius: 0,
-                    bottomTrailingRadius: 0,
-                    topTrailingRadius: 28,
-                    style: .continuous
-                )
-                .fill(Color.homePageBackground)
-                .padding(.top, coverOverlap)
-            }
             .offset(y: -coverOverlap)
             .padding(.bottom, -coverOverlap)
         }
+        .frame(maxWidth: .infinity)
+        .background {
+            ZStack {
+                JournalDetailBannerBackground(
+                    color: chapter.color,
+                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                    remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
+                    fallbackImageName: chapter.coverImageName
+                )
+
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.62),
+                        Color.black.opacity(0.42),
+                        Color.black.opacity(0.22),
+                        Color.black.opacity(0.12)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+        .clipped()
     }
 
     private var journalDetailFloatingWriteButton: some View {
