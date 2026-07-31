@@ -21,8 +21,9 @@ struct JournalView: View {
     @State private var renamedJournalTitle = ""
     @State private var journalsPendingDeletion: [PrototypeChapter] = []
     @State private var journalBeingCustomized: PrototypeChapter?
+    @State private var pendingCoverSync: PendingJournalCoverSync?
+    @State private var isCoverSyncInProgress = false
     @State private var isCreateJournalAlertPresented = false
-    @State private var isCreateOptionsSheetPresented = false
     @State private var newJournalTitle = ""
     @State private var openingJournal: JournalOpeningContext?
     @State private var isJournalOpening = false
@@ -32,7 +33,6 @@ struct JournalView: View {
     @State private var draggingJournalID: UUID?
     @Namespace private var journalOpenNamespace
     @AppStorage("StorytopiaSelectedJournalLayout") private var selectedJournalLayoutRawValue = JournalDisplayLayout.grid3x3.rawValue
-    @AppStorage("StorytopiaSelectedJournalSort") private var selectedJournalSortRawValue = JournalSortOption.manual.rawValue
 
     private var selectedJournalLayout: JournalDisplayLayout {
         get {
@@ -48,53 +48,6 @@ struct JournalView: View {
             repeating: GridItem(.flexible(), spacing: 14),
             count: selectedJournalLayout.gridColumnCount
         )
-    }
-
-    private var selectedJournalSort: JournalSortOption {
-        get {
-            JournalSortOption(rawValue: selectedJournalSortRawValue) ?? .manual
-        }
-        nonmutating set {
-            selectedJournalSortRawValue = newValue.rawValue
-        }
-    }
-
-    private var sortedChapters: [PrototypeChapter] {
-        let systemChapters = PrototypeChapter.SystemJournal.orderedCases.compactMap { systemJournal in
-            chapters.first { $0.systemJournal == systemJournal }
-        }
-        let userChapters = chapters.filter { !$0.isSystemJournal }
-
-        if selectedJournalSort == .manual {
-            return systemChapters + userChapters
-        }
-
-        return systemChapters + userChapters.sorted { lhs, rhs in
-            switch selectedJournalSort {
-            case .created:
-                if lhs.createdAt == rhs.createdAt {
-                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-                }
-                return lhs.createdAt > rhs.createdAt
-            case .createdOldest:
-                if lhs.createdAt == rhs.createdAt {
-                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-                }
-                return lhs.createdAt < rhs.createdAt
-            case .updated:
-                if lhs.updatedAt == rhs.updatedAt {
-                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-                }
-                return lhs.updatedAt > rhs.updatedAt
-            case .updatedOldest:
-                if lhs.updatedAt == rhs.updatedAt {
-                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-                }
-                return lhs.updatedAt < rhs.updatedAt
-            case .manual:
-                return false
-            }
-        }
     }
 
     init(
@@ -128,6 +81,15 @@ struct JournalView: View {
                     header
                         .padding(.horizontal, 16)
 
+                    if isCoverSyncInProgress || pendingCoverSync != nil {
+                        JournalCoverSyncNotice(
+                            isInProgress: isCoverSyncInProgress,
+                            message: pendingCoverSync?.message,
+                            onRetry: retryPendingCoverSync
+                        )
+                        .padding(.horizontal, 16)
+                    }
+
                     if selectedJournalLayout == .list {
                         chapterList
                     } else {
@@ -139,7 +101,7 @@ struct JournalView: View {
 
                 floatingAddButton
                     .padding(.trailing, 20)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 20)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .zIndex(2)
 
@@ -167,11 +129,13 @@ struct JournalView: View {
         .onAppear {
             chapters = DailyJournalData.allChapters()
             loadCloudJournalsIfNeeded()
+            restorePendingCoverSyncIfNeeded()
         }
         .onChange(of: selectedPage) { newPage in
             if newPage != .create {
                 chapters = DailyJournalData.allChapters()
                 loadCloudJournalsIfNeeded()
+                restorePendingCoverSyncIfNeeded()
             }
         }
         .onChange(of: authStore.userID) { userID in
@@ -181,6 +145,8 @@ struct JournalView: View {
 
             chapters = DailyJournalData.allChapters()
             loadCloudJournalsIfNeeded()
+            restorePendingCoverSyncIfNeeded()
+            retryPendingCoverSync()
         }
         .preferredColorScheme(.light)
         .alert("Rename Journal", isPresented: isRenameAlertPresented) {
@@ -224,15 +190,6 @@ struct JournalView: View {
                 onSave: applyJournalCustomization
             )
         }
-        .sheet(isPresented: $isCreateOptionsSheetPresented) {
-            JournalCreateOptionsSheet(
-                onNewEntry: openNewEntryFromCreateOptions,
-                onNewJournal: openNewJournalFromCreateOptions
-            )
-            .presentationDetents([.height(304)])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.white)
-        }
     }
 
     private var header: some View {
@@ -244,7 +201,7 @@ struct JournalView: View {
 
                 Spacer()
 
-                EditButton()
+                journalSelectButton
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.homeAccent)
 
@@ -252,8 +209,6 @@ struct JournalView: View {
             }
 
             HStack(alignment: .center) {
-                journalSortMenu
-
                 Spacer()
 
                 journalLayoutSwitcher
@@ -262,39 +217,16 @@ struct JournalView: View {
         .padding(.top, 12)
     }
 
-    private var journalSortMenu: some View {
-        Menu {
-            ForEach(JournalSortOption.menuOptions) { option in
-                Button {
-                    selectedJournalSort = selectedJournalSort.selection(afterChoosing: option)
-                } label: {
-                    Label(option.menuTitle, systemImage: selectedJournalSort.menuSystemImage(for: option))
-                }
+    private var journalSelectButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                editMode = editMode == .active ? .inactive : .active
             }
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: selectedJournalSort.displaySystemImage)
-                    .font(.system(size: 13, weight: .bold))
-
-                Text(selectedJournalSort.shortTitle)
-                    .font(.system(size: 12, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .foregroundStyle(Color.storyInk)
-            .padding(.horizontal, 9)
-            .frame(height: 34)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(Color.homeBorder, lineWidth: 1)
-            )
+            Text(editMode == .active ? "Done" : "Select")
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Sort journals by \(selectedJournalSort.title)")
+        .accessibilityLabel(editMode == .active ? "Done selecting journals" : "Select journals")
     }
 
     private var journalLayoutSwitcher: some View {
@@ -367,7 +299,7 @@ struct JournalView: View {
 
     private var floatingAddButton: some View {
         Button {
-            isCreateOptionsSheetPresented = true
+            handleCreateButtonTapped()
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 27, weight: .bold))
@@ -392,18 +324,17 @@ struct JournalView: View {
 
     private var journalGrid: some View {
         LazyVGrid(columns: columns, spacing: 14) {
-            if sortedChapters.isEmpty {
+            if chapters.isEmpty {
                 emptyState
                     .gridCellColumns(selectedJournalLayout.gridColumnCount)
             } else {
-                ForEach(Array(sortedChapters.enumerated()), id: \.element.id) { index, chapter in
+                ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                     JournalCoverCard(
                         chapter: chapter,
                         coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
                         remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                         fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
                         isEditing: editMode == .active,
-                        allowsEditingActions: !chapter.isSystemJournal,
                         onCustomize: { beginCustomizing(chapter) },
                         onRename: { beginRenaming(chapter) },
                         onDelete: { requestDeleteJournals([chapter]) }
@@ -422,10 +353,9 @@ struct JournalView: View {
                     .accessibilityAction {
                         openJournal(chapter, dayOffset: index)
                     }
-                    .moveDisabled(chapter.isSystemJournal)
                     .modifier(JournalDragModifier(
                         chapter: chapter,
-                        isEnabled: editMode == .active && selectedJournalSort == .manual,
+                        isEnabled: true,
                         draggingJournalID: $draggingJournalID
                     ))
                     .onDrop(
@@ -434,7 +364,7 @@ struct JournalView: View {
                             chapter: chapter,
                             chapters: $chapters,
                             draggingJournalID: $draggingJournalID,
-                            isEnabled: editMode == .active && selectedJournalSort == .manual && !chapter.isSystemJournal,
+                            isEnabled: true,
                             onReorder: persistManualJournalOrder
                         )
                     )
@@ -494,7 +424,7 @@ struct JournalView: View {
     private var chapterList: some View {
         List {
             Section {
-                if sortedChapters.isEmpty {
+                if chapters.isEmpty {
                     noSearchResults
                         .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
                         .listRowBackground(Color.clear)
@@ -512,17 +442,8 @@ struct JournalView: View {
     }
 
     private var journalRows: some View {
-        ForEach(Array(sortedChapters.enumerated()), id: \.element.id) { index, chapter in
-            NavigationLink {
-                dailyJournalDetail(for: chapter, dayOffset: index)
-            } label: {
-                JournalChapterListRow(
-                    chapter: chapter,
-                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
-                    remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
-                    fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index)
-                )
-            }
+        ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
+            journalListRow(for: chapter, at: index)
             .listRowInsets(EdgeInsets(
                 top: 0,
                 leading: JournalChapterListMetrics.horizontalInset,
@@ -530,10 +451,9 @@ struct JournalView: View {
                 trailing: JournalChapterListMetrics.trailingInset
             ))
             .listRowBackground(Color.homePageBackground)
-            .moveDisabled(chapter.isSystemJournal)
             .modifier(JournalDragModifier(
                 chapter: chapter,
-                isEnabled: editMode == .active && selectedJournalSort == .manual,
+                isEnabled: true,
                 draggingJournalID: $draggingJournalID
             ))
             .onDrop(
@@ -542,23 +462,41 @@ struct JournalView: View {
                     chapter: chapter,
                     chapters: $chapters,
                     draggingJournalID: $draggingJournalID,
-                    isEnabled: editMode == .active && selectedJournalSort == .manual && !chapter.isSystemJournal,
+                    isEnabled: true,
                     onReorder: persistManualJournalOrder
                 )
             )
             .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                if !chapter.isSystemJournal {
-                    Button {
-                        beginRenaming(chapter)
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-                    .tint(Color.homeAccent)
+                Button {
+                    beginRenaming(chapter)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
                 }
+                .tint(Color.homeAccent)
             }
         }
-        .onDelete(perform: deleteChapters)
-        .onMove(perform: moveChapters)
+    }
+
+    @ViewBuilder
+    private func journalListRow(for chapter: PrototypeChapter, at index: Int) -> some View {
+        let row = JournalChapterListRow(
+            chapter: chapter,
+            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+            remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
+            fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index),
+            isEditing: editMode == .active,
+            onDelete: { requestDeleteJournals([chapter]) }
+        )
+
+        if editMode == .active {
+            row
+        } else {
+            NavigationLink {
+                dailyJournalDetail(for: chapter, dayOffset: index)
+            } label: {
+                row
+            }
+        }
     }
 
     @ViewBuilder
@@ -613,9 +551,6 @@ struct JournalView: View {
     }
 
     private func beginRenaming(_ chapter: PrototypeChapter) {
-        guard !chapter.isSystemJournal else {
-            return
-        }
         journalBeingRenamed = chapter
         renamedJournalTitle = chapter.title
     }
@@ -674,37 +609,66 @@ struct JournalView: View {
             isFavorite: chapters[index].isFavorite,
             createdAt: chapters[index].createdAt,
             updatedAt: Date(),
-            systemJournal: chapters[index].systemJournal,
             entries: chapters[index].entries
         )
 
         chapters[index] = updatedChapter
-        if let systemJournal = updatedChapter.systemJournal {
-            SystemJournalAppearanceStore.update(
-                systemJournal,
-                color: updatedChapter.color,
-                coverImageName: updatedChapter.coverImageName,
-                remoteCover: updatedChapter.remoteCover
-            )
-            SystemJournalAppearanceStore.syncToCloud(
-                updatedChapter,
-                storedCoverImage: customization.storedCoverImage
-            )
-        } else {
-            UserChapterStore.updateAppearance(
-                id: updatedChapter.id,
-                color: updatedChapter.color,
-                coverImageName: updatedChapter.coverImageName,
-                remoteCover: updatedChapter.remoteCover
-            )
-            UserChapterStore.syncToCloud(updatedChapter)
-            if let storedCoverImage = customization.storedCoverImage {
-                UserChapterStore.uploadCoverToCloud(storedCoverImage, journalID: updatedChapter.id)
-            } else if customization.clearsStoredCover {
-                UserChapterStore.clearCoverInCloud(journalID: updatedChapter.id)
+        UserChapterStore.updateAppearance(
+            id: updatedChapter.id,
+            color: updatedChapter.color,
+            coverImageName: updatedChapter.coverImageName,
+            remoteCover: updatedChapter.remoteCover
+        )
+        syncJournalCoverToCloud(PendingJournalCoverSync(
+            chapter: updatedChapter,
+            uploadsStoredCover: customization.storedCoverImage != nil,
+            clearsStoredCover: customization.clearsStoredCover
+        ))
+        journalBeingCustomized = nil
+    }
+
+    private func retryPendingCoverSync() {
+        guard let pendingCoverSync else {
+            return
+        }
+
+        syncJournalCoverToCloud(pendingCoverSync)
+    }
+
+    private func restorePendingCoverSyncIfNeeded() {
+        guard pendingCoverSync == nil else {
+            return
+        }
+
+        pendingCoverSync = PendingJournalCoverSyncStore.pendingSyncs(for: chapters).first
+    }
+
+    private func syncJournalCoverToCloud(_ pendingSync: PendingJournalCoverSync) {
+        pendingCoverSync = nil
+        isCoverSyncInProgress = true
+        PendingJournalCoverSyncStore.save(pendingSync)
+
+        Task {
+            do {
+                try await UserChapterStore.syncCoverCustomizationToCloud(
+                    pendingSync.chapter,
+                    storedCoverImage: pendingSync.storedCoverImage,
+                    requiresStoredCoverUpload: pendingSync.uploadsStoredCover,
+                    clearsStoredCover: pendingSync.clearsStoredCover
+                )
+
+                await MainActor.run {
+                    PendingJournalCoverSyncStore.delete(id: pendingSync.id)
+                    pendingCoverSync = nil
+                    isCoverSyncInProgress = false
+                }
+            } catch {
+                await MainActor.run {
+                    pendingCoverSync = pendingSync
+                    isCoverSyncInProgress = false
+                }
             }
         }
-        journalBeingCustomized = nil
     }
 
     private func renameSelectedJournal() {
@@ -734,18 +698,6 @@ struct JournalView: View {
         isCreateJournalAlertPresented = true
     }
 
-    private func openNewEntryFromCreateOptions() {
-        isCreateOptionsSheetPresented = false
-        selectedPage = .create
-    }
-
-    private func openNewJournalFromCreateOptions() {
-        isCreateOptionsSheetPresented = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            handleCreateButtonTapped()
-        }
-    }
-
     private func createJournal() {
         let trimmedTitle = newJournalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else {
@@ -770,8 +722,7 @@ struct JournalView: View {
     }
 
     private func deleteChapters(at offsets: IndexSet) {
-        let visibleChapters = sortedChapters
-        requestDeleteJournals(offsets.compactMap { visibleChapters.indices.contains($0) ? visibleChapters[$0] : nil })
+        requestDeleteJournals(offsets.compactMap { chapters.indices.contains($0) ? chapters[$0] : nil })
     }
 
     private var isDeleteJournalAlertPresented: Binding<Bool> {
@@ -798,7 +749,7 @@ struct JournalView: View {
     }
 
     private func requestDeleteJournals(_ journals: [PrototypeChapter]) {
-        journalsPendingDeletion = journals.filter { !$0.isSystemJournal }
+        journalsPendingDeletion = journals
     }
 
     private func deletePendingJournals() {
@@ -808,9 +759,6 @@ struct JournalView: View {
     }
 
     private func deleteJournal(_ journal: PrototypeChapter) {
-        guard !journal.isSystemJournal else {
-            return
-        }
         let isUserJournal = UserChapterStore.contains(title: journal.title)
         UserChapterStore.delete(title: journal.title)
         UserChapterStore.deleteFromCloud(journal)
@@ -824,21 +772,12 @@ struct JournalView: View {
     }
 
     private func moveChapters(from source: IndexSet, to destination: Int) {
-        guard editMode == .active, selectedJournalSort == .manual else {
-            return
-        }
-
-        let systemCount = chapters.filter(\.isSystemJournal).count
-        guard source.allSatisfy({ $0 >= systemCount }), destination >= systemCount else {
-            return
-        }
-
         chapters.move(fromOffsets: source, toOffset: destination)
         persistManualJournalOrder()
     }
 
     private func persistManualJournalOrder() {
-        let userChapters = chapters.filter { !$0.isSystemJournal && UserChapterStore.contains(title: $0.title) }
+        let userChapters = chapters.filter { UserChapterStore.contains(title: $0.title) }
         UserChapterStore.replace(with: userChapters)
         UserChapterStore.syncOrderToCloud(userChapters)
     }
@@ -984,11 +923,13 @@ struct JournalView: View {
                 let cloudJournals = try await journalRepository.getJournals()
                 let cloudEntries = try await SupabaseEntryRepository().getEntries()
                 let memberships = try await journalRepository.getJournalEntryMemberships()
-                await Self.cacheCloudSystemJournalAppearances(cloudJournals)
-                SystemJournalAppearanceStore.syncLocalAppearancesToCloudIfNeeded(existingCloudJournals: cloudJournals)
                 let cloudChapters = cloudJournals
-                    .filter { PrototypeChapter.SystemJournal.journal(for: $0.id) == nil }
+                    .filter { !LegacySystemJournalIDs.all.contains($0.id) }
                     .map(PrototypeChapter.init(cloudJournal:))
+                await Self.reconcileCloudJournalCovers(
+                    cloudJournals,
+                    repository: journalRepository
+                )
                 let membershipRepairs = await MainActor.run {
                     StoryEntryStore.missingCloudMembershipRepairs(
                         journals: cloudChapters,
@@ -1027,29 +968,27 @@ struct JournalView: View {
         cloudChapters
     }
 
-    private static func cacheCloudSystemJournalAppearances(_ cloudJournals: [StoryJournal]) async {
-        let journalRepository = SupabaseJournalRepository()
+    private static func reconcileCloudJournalCovers(
+        _ cloudJournals: [StoryJournal],
+        repository: SupabaseJournalRepository
+    ) async {
+        for cloudJournal in cloudJournals where !LegacySystemJournalIDs.all.contains(cloudJournal.id) {
+            let coverStorageKey = cloudJournal.title
 
-        for cloudJournal in cloudJournals {
-            guard let systemJournal = PrototypeChapter.SystemJournal.journal(for: cloudJournal.id) else {
+            guard
+                cloudJournal.remoteCover == nil,
+                cloudJournal.coverImageName?.trimmedOrNil == nil,
+                let coverStoragePath = cloudJournal.coverStoragePath?.trimmedOrNil
+            else {
+                JournalCoverStore.delete(key: coverStorageKey)
                 continue
             }
 
-            let remoteCover = cloudJournal.remoteCover
-            SystemJournalAppearanceStore.update(
-                systemJournal,
-                color: cloudJournal.colorHex.flatMap(Color.init(hex:)) ?? systemJournal.color,
-                coverImageName: cloudJournal.coverImageName,
-                remoteCover: remoteCover
-            )
-
-            if remoteCover != nil {
-                JournalCoverStore.delete(key: systemJournal.coverStorageKey)
-            } else if let storagePath = cloudJournal.coverStoragePath,
-                      let image = try? await journalRepository.downloadCover(storagePath: storagePath) {
-                JournalCoverStore.save(image, for: systemJournal.coverStorageKey)
-            } else {
-                JournalCoverStore.delete(key: systemJournal.coverStorageKey)
+            do {
+                let coverImage = try await repository.downloadCover(storagePath: coverStoragePath)
+                JournalCoverStore.save(coverImage, for: coverStorageKey)
+            } catch {
+                print("[Storytopia] Cloud journal cover download failed: \(error.localizedDescription)")
             }
         }
     }
@@ -1179,129 +1118,6 @@ private struct JournalDetailRoute: Hashable, Identifiable {
     }
 }
 
-private enum JournalSortOption: String, CaseIterable, Identifiable {
-    case manual
-    case updated
-    case updatedOldest
-    case created
-    case createdOldest
-
-    static let menuOptions: [JournalSortOption] = [.manual, .updated, .created]
-
-    var id: String {
-        rawValue
-    }
-
-    var menuTitle: String {
-        switch self {
-        case .manual:
-            return "Custom Order"
-        case .updated, .updatedOldest:
-            return "Edited"
-        case .created, .createdOldest:
-            return "Created"
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .manual:
-            return "Custom Order"
-        case .updated:
-            return "Edited: Newest"
-        case .updatedOldest:
-            return "Edited: Oldest"
-        case .created:
-            return "Created: Newest"
-        case .createdOldest:
-            return "Created: Oldest"
-        }
-    }
-
-    var shortTitle: String {
-        switch self {
-        case .manual:
-            return "Custom Order"
-        case .updated:
-            return "Edited: Newest"
-        case .updatedOldest:
-            return "Edited: Oldest"
-        case .created:
-            return "Created: Newest"
-        case .createdOldest:
-            return "Created: Oldest"
-        }
-    }
-
-    var displaySystemImage: String {
-        switch self {
-        case .manual:
-            return systemImage
-        case .updated, .created:
-            return "arrow.down"
-        case .updatedOldest, .createdOldest:
-            return "arrow.up"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .manual:
-            return "line.3.horizontal"
-        case .updated:
-            return "clock.arrow.circlepath"
-        case .updatedOldest:
-            return "clock"
-        case .created:
-            return "plus.circle"
-        case .createdOldest:
-            return "plus.circle"
-        }
-    }
-
-    private var menuSelection: JournalSortOption {
-        switch self {
-        case .manual:
-            return .manual
-        case .updated, .updatedOldest:
-            return .updated
-        case .created, .createdOldest:
-            return .created
-        }
-    }
-
-    private var toggledDirection: JournalSortOption {
-        switch self {
-        case .manual:
-            return .manual
-        case .updated:
-            return .updatedOldest
-        case .updatedOldest:
-            return .updated
-        case .created:
-            return .createdOldest
-        case .createdOldest:
-            return .created
-        }
-    }
-
-    func selection(afterChoosing option: JournalSortOption) -> JournalSortOption {
-        guard option != .manual else {
-            return .manual
-        }
-
-        return menuSelection == option ? toggledDirection : option
-    }
-
-    func menuSystemImage(for option: JournalSortOption) -> String {
-        guard menuSelection == option else {
-            return option.systemImage
-        }
-
-        return option == .manual ? "checkmark" : displaySystemImage
-    }
-}
-
 private struct JournalGridDropDelegate: DropDelegate {
     let chapter: PrototypeChapter
     @Binding var chapters: [PrototypeChapter]
@@ -1324,7 +1140,6 @@ private struct JournalGridDropDelegate: DropDelegate {
             let movedChapter = chapters.remove(at: fromIndex)
             chapters.insert(movedChapter, at: toIndex)
         }
-        onReorder()
     }
 
     func dropUpdated(info _: DropInfo) -> DropProposal? {
@@ -1333,6 +1148,9 @@ private struct JournalGridDropDelegate: DropDelegate {
 
     func performDrop(info _: DropInfo) -> Bool {
         draggingJournalID = nil
+        if isEnabled {
+            onReorder()
+        }
         return isEnabled
     }
 }
@@ -1343,7 +1161,7 @@ private struct JournalDragModifier: ViewModifier {
     @Binding var draggingJournalID: UUID?
 
     func body(content: Content) -> some View {
-        if chapter.isSystemJournal || !isEnabled {
+        if !isEnabled {
             content
         } else {
             content
@@ -1523,13 +1341,25 @@ private struct JournalOpeningBook: View {
     }
 }
 
+private struct JournalDragHandle: View {
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(Color.storyInk.opacity(0.72))
+            .frame(width: 30, height: 30)
+            .background(Color.white.opacity(0.94), in: Circle())
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 private struct JournalCoverCard: View {
     let chapter: PrototypeChapter
     let coverImage: UIImage?
     let remoteCoverURL: URL?
     let fallbackImageName: String?
     let isEditing: Bool
-    var allowsEditingActions = true
     let onCustomize: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
@@ -1546,17 +1376,15 @@ private struct JournalCoverCard: View {
                 .overlay(alignment: .leading) {
                     journalSpine
                 }
-                .overlay(alignment: .topLeading) {
-                    if chapter.isSystemJournal {
-                        SystemJournalBadge(style: .cover)
-                            .padding(8)
-                    }
-                }
                 .overlay(alignment: .bottomLeading) {
                     journalTitleScrim
                 }
 
-            if isEditing && allowsEditingActions {
+            if isEditing {
+                JournalDragHandle()
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 24, weight: .bold))
@@ -1573,19 +1401,12 @@ private struct JournalCoverCard: View {
                         Label("Change Cover", systemImage: "photo.on.rectangle")
                     }
 
-                    if allowsEditingActions {
-                        Button(action: onRename) {
-                            Label("Rename", systemImage: "pencil")
-                        }
+                    Button(action: onRename) {
+                        Label("Rename", systemImage: "pencil")
+                    }
 
-                        Button(role: .destructive, action: onDelete) {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    } else {
-                        Button {} label: {
-                            Label("Built-in: can't move or delete", systemImage: "shield.fill")
-                        }
-                        .disabled(true)
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Delete", systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -1607,7 +1428,6 @@ private struct JournalCoverCard: View {
                 .stroke(Color.homeBorder, lineWidth: 1)
         )
         .shadow(color: Color.storyInk.opacity(0.13), radius: 10, y: 5)
-        .accessibilityHint(chapter.isSystemJournal ? "Built-in journals can't be moved or deleted." : "")
     }
 
     private var journalTitleScrim: some View {
@@ -1719,6 +1539,143 @@ private struct JournalCustomization {
     let remoteCover: JournalRemoteCover?
     let storedCoverImage: UIImage?
     let clearsStoredCover: Bool
+}
+
+private struct PendingJournalCoverSync: Identifiable {
+    let chapter: PrototypeChapter
+    let uploadsStoredCover: Bool
+    let clearsStoredCover: Bool
+
+    var id: UUID {
+        chapter.id
+    }
+
+    var storedCoverImage: UIImage? {
+        guard uploadsStoredCover else {
+            return nil
+        }
+
+        return JournalCoverStore.image(for: chapter.coverStorageKey)
+    }
+
+    var message: String {
+        "Cover saved on this device. Cloud sync failed."
+    }
+}
+
+private enum PendingJournalCoverSyncStore {
+    private struct Record: Codable {
+        let chapterID: UUID
+        let uploadsStoredCover: Bool
+        let clearsStoredCover: Bool
+        let updatedAt: Date
+    }
+
+    private static let storageKey = "StorytopiaPendingJournalCoverSyncs"
+
+    static func save(_ pendingSync: PendingJournalCoverSync) {
+        var updatedRecords = records.filter { $0.chapterID != pendingSync.id }
+        updatedRecords.append(Record(
+            chapterID: pendingSync.id,
+            uploadsStoredCover: pendingSync.uploadsStoredCover,
+            clearsStoredCover: pendingSync.clearsStoredCover,
+            updatedAt: Date()
+        ))
+        persist(updatedRecords)
+    }
+
+    static func delete(id: UUID) {
+        persist(records.filter { $0.chapterID != id })
+    }
+
+    static func pendingSync(for chapter: PrototypeChapter) -> PendingJournalCoverSync? {
+        guard let record = records.first(where: { $0.chapterID == chapter.id }) else {
+            return nil
+        }
+
+        return PendingJournalCoverSync(
+            chapter: chapter,
+            uploadsStoredCover: record.uploadsStoredCover,
+            clearsStoredCover: record.clearsStoredCover
+        )
+    }
+
+    static func pendingSyncs(for chapters: [PrototypeChapter]) -> [PendingJournalCoverSync] {
+        let chaptersByID = Dictionary(uniqueKeysWithValues: chapters.map { ($0.id, $0) })
+
+        return records
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .compactMap { record in
+                guard let chapter = chaptersByID[record.chapterID] else {
+                    return nil
+                }
+
+                return PendingJournalCoverSync(
+                    chapter: chapter,
+                    uploadsStoredCover: record.uploadsStoredCover,
+                    clearsStoredCover: record.clearsStoredCover
+                )
+            }
+    }
+
+    private static var records: [Record] {
+        guard
+            let data = UserDefaults.standard.data(forKey: storageKey),
+            let decodedRecords = try? JSONDecoder().decode([Record].self, from: data)
+        else {
+            return []
+        }
+
+        return decodedRecords
+    }
+
+    private static func persist(_ records: [Record]) {
+        guard let data = try? JSONEncoder().encode(records) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+}
+
+private struct JournalCoverSyncNotice: View {
+    let isInProgress: Bool
+    let message: String?
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            if isInProgress {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "icloud.slash")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.homeAccent)
+            }
+
+            Text(isInProgress ? "Saving cover..." : (message ?? "Cover saved on this device. Cloud sync failed."))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.homeMutedText)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 8)
+
+            if !isInProgress {
+                Button("Retry", action: onRetry)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.homeAccent)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.homeBorder, lineWidth: 1)
+        )
+    }
 }
 
 private struct JournalStoryboardCoverCandidate: Identifiable {
@@ -2576,102 +2533,6 @@ private enum JournalCoverStore {
             allowed.contains(scalar) ? String(scalar) : "-"
         }.joined()
         return "\(sanitized.isEmpty ? "journal" : sanitized).jpg"
-    }
-}
-
-private struct JournalCreateOptionsSheet: View {
-    let onNewEntry: () -> Void
-    let onNewJournal: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        let tileColumns = [
-            GridItem(.flexible(), spacing: 12),
-            GridItem(.flexible(), spacing: 0)
-        ]
-
-        VStack(spacing: 0) {
-            Text("What would you like to create?")
-                .font(.system(size: 18, weight: .bold, design: .serif))
-                .foregroundStyle(Color.storyInk)
-                .padding(.top, 46)
-                .padding(.bottom, 18)
-
-            LazyVGrid(columns: tileColumns, spacing: 0) {
-                JournalCreateOptionTile(
-                    title: "New Entry",
-                    subtitle: "Write and add to a journal.",
-                    systemName: "square.and.pencil",
-                    action: onNewEntry
-                )
-
-                JournalCreateOptionTile(
-                    title: "New Journal",
-                    subtitle: "Organize your stories.",
-                    systemName: "books.vertical",
-                    action: onNewJournal
-                )
-            }
-
-            Divider()
-                .padding(.top, 18)
-
-            Button("Cancel") {
-                dismiss()
-            }
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(Color.storyInk)
-            .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 22)
-        .padding(.bottom, 6)
-        .background(Color.white)
-    }
-}
-
-private struct JournalCreateOptionTile: View {
-    let title: String
-    let subtitle: String
-    let systemName: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 11) {
-                Image(systemName: systemName)
-                    .font(.system(size: 25, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                    .frame(width: 50, height: 50)
-                    .background(Color.homeAccent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .shadow(color: Color.homeAccent.opacity(0.22), radius: 7, y: 4)
-
-                VStack(spacing: 5) {
-                    Text(title)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(Color.storyInk)
-                        .multilineTextAlignment(.center)
-
-                    Text(subtitle)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.storyInk.opacity(0.64))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.86)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .aspectRatio(1, contentMode: .fit)
-            .background(Color.homePageBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.storyInk.opacity(0.12), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -6772,11 +6633,8 @@ private struct DaybookStoryPage: Identifiable {
 }
 
 enum DailyJournalData {
-    static func allChapters(cloudEntries: [JournalEntry]? = nil) -> [PrototypeChapter] {
-        systemChapters(cloudEntries: cloudEntries)
-            + UserChapterStore.load()
-                .filter { !SystemJournalTitles.all.contains($0.title) }
-                .map(chapterWithStoredEntries)
+    static func allChapters(cloudEntries _: [JournalEntry]? = nil) -> [PrototypeChapter] {
+        UserChapterStore.load().map(chapterWithStoredEntries)
     }
 
     static func journalDate(dayOffset: Int) -> Date {
@@ -6799,7 +6657,6 @@ enum DailyJournalData {
             isFavorite: chapter.isFavorite,
             createdAt: chapter.createdAt,
             updatedAt: chapter.updatedAt,
-            systemJournal: chapter.systemJournal,
             entries: chapter.entries
         )
     }
@@ -6836,60 +6693,13 @@ enum DailyJournalData {
         return chapter
     }
 
-    private static func systemChapters(cloudEntries: [JournalEntry]?) -> [PrototypeChapter] {
-        PrototypeChapter.SystemJournal.orderedCases.map { systemJournal in
-            let appearance = SystemJournalAppearanceStore.appearance(for: systemJournal)
-            return PrototypeChapter(
-                id: systemJournal.id,
-                title: systemJournal.title,
-                subtitle: systemJournal.subtitle,
-                color: appearance.color ?? systemJournal.color,
-                symbol: systemJournal.symbol,
-                coverImageName: appearance.coverImageName,
-                remoteCover: appearance.remoteCover,
-                kind: .journal,
-                isFavorite: false,
-                createdAt: .distantPast,
-                updatedAt: Date(),
-                systemJournal: systemJournal,
-                entries: systemEntries(for: systemJournal, cloudEntries: cloudEntries)
-            )
-        }
-    }
-
-    private static func systemEntries(
-        for systemJournal: PrototypeChapter.SystemJournal,
-        cloudEntries: [JournalEntry]?
-    ) -> [PrototypeEntry] {
-        if let cloudEntries {
-            return cloudEntries
-                .filter { $0.status != JournalEntryStatus.archived.rawValue }
-                .filter { entry in
-                    switch systemJournal {
-                    case .drafts:
-                        return entry.status != JournalEntryStatus.completed.rawValue
-                    case .completed:
-                        return entry.status == JournalEntryStatus.completed.rawValue
-                    }
-                }
-                .map { PrototypeEntry(cloudEntry: $0) }
-        }
-
-        return CreateEntryDraftStore.loadAll()
-            .filter { entry in
-                switch systemJournal {
-                case .drafts:
-                    return entry.status != JournalEntryStatus.completed.rawValue
-                case .completed:
-                    return entry.status == JournalEntryStatus.completed.rawValue
-                }
-            }
-            .map { $0.prototypeEntry() }
-    }
 }
 
-private enum SystemJournalTitles {
-    static let all = Set(PrototypeChapter.SystemJournal.orderedCases.map(\.title))
+private enum LegacySystemJournalIDs {
+    static let all: Set<UUID> = [
+        UUID(uuidString: "00000000-0000-0000-0000-000000000101")!,
+        UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
+    ]
 }
 
 private struct DailyJournalEntrySummary: Identifiable {
@@ -8940,8 +8750,9 @@ struct EntriesView: View {
     }
 
     private func openAddSelectedEntriesToJournalPage() {
-        selectedEntriesJournalTitles = []
-        selectedEntriesJournalTitle = nil
+        let journalTitles = selectedJournalTitlesForAddSheet()
+        selectedEntriesJournalTitles = journalTitles
+        selectedEntriesJournalTitle = journalTitles.sorted().first
 
         Task {
             await refreshCloudJournalsBeforeShowingSelectedEntrySheet()
@@ -8984,6 +8795,22 @@ struct EntriesView: View {
 
         for journalTitle in journalTitles {
             await UserChapterStore.syncJournalAndEntriesToCloud(title: journalTitle)
+        }
+    }
+
+    private func selectedJournalTitlesForAddSheet() -> Set<String> {
+        let titleSets = selectedEntryItems.map { item in
+            let entry = entryForDisplay(item).prototypeEntry()
+            return StoryEntryStore.journalTitles(containing: entry)
+                .union(EntryJournalLinkStore.loadJournalTitles(for: item.id))
+        }
+
+        guard let firstTitleSet = titleSets.first else {
+            return []
+        }
+
+        return titleSets.dropFirst().reduce(firstTitleSet) { sharedTitles, titles in
+            sharedTitles.intersection(titles)
         }
     }
 
@@ -11567,9 +11394,15 @@ private struct JournalChapterListRow: View {
     let coverImage: UIImage?
     let remoteCoverURL: URL?
     let fallbackImageName: String?
+    var isEditing = false
+    var onDelete: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 10) {
+            if isEditing {
+                JournalDragHandle()
+            }
+
             JournalListCover(
                 color: chapter.color,
                 coverImage: coverImage,
@@ -11580,19 +11413,11 @@ private struct JournalChapterListRow: View {
             )
             .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 7) {
-                    Text(chapter.title)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(Color.storyInk)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-
-                    if chapter.isSystemJournal {
-                        SystemJournalBadge(style: .list)
-                    }
-                }
-            }
+            Text(chapter.title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.storyInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
             .layoutPriority(1)
 
             Spacer(minLength: 8)
@@ -11602,102 +11427,20 @@ private struct JournalChapterListRow: View {
                 .foregroundStyle(Color.homeMutedText)
                 .lineLimit(1)
                 .multilineTextAlignment(.trailing)
+
+            if isEditing {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 22, weight: .bold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, Color.red)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete \(chapter.title)")
+            }
         }
         .frame(height: JournalChapterListMetrics.rowHeight)
         .accessibilityLabel(chapter.title)
-        .accessibilityHint(chapter.isSystemJournal ? "Built-in journals can't be moved or deleted." : "")
-    }
-}
-
-private struct SystemJournalBadge: View {
-    enum Style {
-        case cover
-        case list
-    }
-
-    let style: Style
-
-    var body: some View {
-        HStack(spacing: iconTextSpacing) {
-            Image(systemName: "shield.fill")
-
-            Text("System")
-        }
-            .font(.system(size: fontSize, weight: .bold))
-            .foregroundStyle(foregroundColor)
-            .padding(.horizontal, horizontalPadding)
-            .frame(height: height)
-            .background(backgroundColor, in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(borderColor, lineWidth: 1)
-            )
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityLabel("System journal")
-    }
-
-    private var iconTextSpacing: CGFloat {
-        switch style {
-        case .cover:
-            return 2
-        case .list:
-            return 3
-        }
-    }
-
-    private var fontSize: CGFloat {
-        switch style {
-        case .cover:
-            return 8
-        case .list:
-            return 10
-        }
-    }
-
-    private var horizontalPadding: CGFloat {
-        switch style {
-        case .cover:
-            return 5
-        case .list:
-            return 7
-        }
-    }
-
-    private var height: CGFloat {
-        switch style {
-        case .cover:
-            return 16
-        case .list:
-            return 20
-        }
-    }
-
-    private var foregroundColor: Color {
-        switch style {
-        case .cover:
-            return Color.white
-        case .list:
-            return Color.storyInk
-        }
-    }
-
-    private var backgroundColor: Color {
-        switch style {
-        case .cover:
-            return Color.black.opacity(0.36)
-        case .list:
-            return Color.homeAccent.opacity(0.10)
-        }
-    }
-
-    private var borderColor: Color {
-        switch style {
-        case .cover:
-            return Color.white.opacity(0.26)
-        case .list:
-            return Color.homeAccent.opacity(0.22)
-        }
     }
 }
 
@@ -11848,7 +11591,6 @@ private struct JournalDetailBannerBackground: View {
     let coverImage: UIImage?
     let remoteCoverURL: URL?
     let fallbackImageName: String?
-    let symbol: String
 
     var body: some View {
         ZStack {
@@ -11881,11 +11623,6 @@ private struct JournalDetailBannerBackground: View {
             }
         } else {
             color
-                .overlay {
-                    Image(systemName: symbol)
-                        .font(.system(size: 74, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.24))
-                }
         }
     }
 
@@ -11945,12 +11682,6 @@ private struct JournalDetailCoverImage: View {
                             )
                     }
                     .frame(width: proxy.size.width, height: proxy.size.height)
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                if chapter.isSystemJournal {
-                    SystemJournalBadge(style: .cover)
-                        .padding(8)
                 }
             }
     }
@@ -12089,6 +11820,8 @@ private struct PrototypeChapterDetailView: View {
     @State private var editMode: EditMode = .inactive
     @State private var draggingEntryID: UUID?
     @State private var isShowingCoverCustomization = false
+    @State private var pendingCoverSync: PendingJournalCoverSync?
+    @State private var isCoverSyncInProgress = false
     @State private var isComicReaderPresented = false
     @State private var comicPageIndex = 0
     @State private var bookOpenHintProgress: CGFloat = 0
@@ -12101,11 +11834,11 @@ private struct PrototypeChapterDetailView: View {
     @State private var mediaStoryboardErrorMessage: String?
 
     private var sections: [String] {
-        chapter.systemJournal == .drafts ? ["Pages"] : ["Pages", "Media"]
+        ["Pages", "Media"]
     }
 
-    private static func initialSection(for chapter: PrototypeChapter, presentation: Presentation) -> String {
-        chapter.systemJournal == .drafts || presentation == .dailyJournal ? "Pages" : "Media"
+    private static func initialSection(for _: PrototypeChapter, presentation: Presentation) -> String {
+        presentation == .dailyJournal ? "Pages" : "Media"
     }
 
     private var mediaImageNames: [String] {
@@ -12158,38 +11891,67 @@ private struct PrototypeChapterDetailView: View {
             isFavorite: chapter.isFavorite,
             createdAt: chapter.createdAt,
             updatedAt: Date(),
-            systemJournal: chapter.systemJournal,
             entries: chapter.entries
         )
 
         chapter = updatedChapter
         onChapterUpdated(updatedChapter)
-        if let systemJournal = updatedChapter.systemJournal {
-            SystemJournalAppearanceStore.update(
-                systemJournal,
-                color: updatedChapter.color,
-                coverImageName: updatedChapter.coverImageName,
-                remoteCover: updatedChapter.remoteCover
-            )
-            SystemJournalAppearanceStore.syncToCloud(
-                updatedChapter,
-                storedCoverImage: customization.storedCoverImage
-            )
-        } else {
-            UserChapterStore.updateAppearance(
-                id: updatedChapter.id,
-                color: updatedChapter.color,
-                coverImageName: updatedChapter.coverImageName,
-                remoteCover: updatedChapter.remoteCover
-            )
-            UserChapterStore.syncToCloud(updatedChapter)
-            if let storedCoverImage = customization.storedCoverImage {
-                UserChapterStore.uploadCoverToCloud(storedCoverImage, journalID: updatedChapter.id)
-            } else if customization.clearsStoredCover {
-                UserChapterStore.clearCoverInCloud(journalID: updatedChapter.id)
+        UserChapterStore.updateAppearance(
+            id: updatedChapter.id,
+            color: updatedChapter.color,
+            coverImageName: updatedChapter.coverImageName,
+            remoteCover: updatedChapter.remoteCover
+        )
+        syncJournalCoverToCloud(PendingJournalCoverSync(
+            chapter: updatedChapter,
+            uploadsStoredCover: customization.storedCoverImage != nil,
+            clearsStoredCover: customization.clearsStoredCover
+        ))
+        isShowingCoverCustomization = false
+    }
+
+    private func retryPendingCoverSync() {
+        guard let pendingCoverSync else {
+            return
+        }
+
+        syncJournalCoverToCloud(pendingCoverSync)
+    }
+
+    private func restorePendingCoverSyncIfNeeded() {
+        guard pendingCoverSync == nil else {
+            return
+        }
+
+        pendingCoverSync = PendingJournalCoverSyncStore.pendingSync(for: chapter)
+    }
+
+    private func syncJournalCoverToCloud(_ pendingSync: PendingJournalCoverSync) {
+        pendingCoverSync = nil
+        isCoverSyncInProgress = true
+        PendingJournalCoverSyncStore.save(pendingSync)
+
+        Task {
+            do {
+                try await UserChapterStore.syncCoverCustomizationToCloud(
+                    pendingSync.chapter,
+                    storedCoverImage: pendingSync.storedCoverImage,
+                    requiresStoredCoverUpload: pendingSync.uploadsStoredCover,
+                    clearsStoredCover: pendingSync.clearsStoredCover
+                )
+
+                await MainActor.run {
+                    PendingJournalCoverSyncStore.delete(id: pendingSync.id)
+                    pendingCoverSync = nil
+                    isCoverSyncInProgress = false
+                }
+            } catch {
+                await MainActor.run {
+                    pendingCoverSync = pendingSync
+                    isCoverSyncInProgress = false
+                }
             }
         }
-        isShowingCoverCustomization = false
     }
 
     init(
@@ -12225,6 +11987,14 @@ private struct PrototypeChapterDetailView: View {
                             journalHeroHeader(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
 
                             VStack(alignment: .leading, spacing: 16) {
+                                if isCoverSyncInProgress || pendingCoverSync != nil {
+                                    JournalCoverSyncNotice(
+                                        isInProgress: isCoverSyncInProgress,
+                                        message: pendingCoverSync?.message,
+                                        onRetry: retryPendingCoverSync
+                                    )
+                                }
+
                                 sectionPicker
 
                                 if selectedSection == "Pages" {
@@ -12241,10 +12011,12 @@ private struct PrototypeChapterDetailView: View {
                     .ignoresSafeArea(edges: .top)
                 }
 
-                journalDetailFloatingWriteButton
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 22)
-                    .zIndex(2)
+                if !chapter.entries.isEmpty {
+                    journalDetailFloatingWriteButton
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 22)
+                        .zIndex(2)
+                }
             }
         }
         .preferredColorScheme(.light)
@@ -12255,11 +12027,18 @@ private struct PrototypeChapterDetailView: View {
         .tint(Color.homeAccent)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    isShowingCoverCustomization = true
+                } label: {
+                    Label("Change Cover", systemImage: "photo.on.rectangle")
+                }
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.homeAccent)
+                .accessibilityLabel("Change journal cover")
+
                 EditButton()
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.homeAccent)
-                    .opacity(chapter.systemJournal == .completed ? 0 : 1)
-                    .disabled(chapter.systemJournal == .completed)
             }
         }
         .environment(\.editMode, $editMode)
@@ -12313,6 +12092,14 @@ private struct PrototypeChapterDetailView: View {
                 draggingEntryID = nil
             }
         }
+        .onChange(of: authStore.userID) { userID in
+            guard userID != nil else {
+                return
+            }
+
+            restorePendingCoverSyncIfNeeded()
+            retryPendingCoverSync()
+        }
         .onChange(of: isComicReaderPresented) { isPresented in
             if !isPresented {
                 bookNavigationOpenProgress = 0
@@ -12329,6 +12116,8 @@ private struct PrototypeChapterDetailView: View {
             )
         }
         .onAppear {
+            restorePendingCoverSyncIfNeeded()
+
             guard !skipsBookOpenHintOnNextAppear else {
                 skipsBookOpenHintOnNextAppear = false
                 return
@@ -12397,10 +12186,6 @@ private struct PrototypeChapterDetailView: View {
             return .editDraft
         }
 
-        if chapter.systemJournal == .drafts {
-            return .compose
-        }
-
         return .composeInJournal(
             title: chapter.title,
             initialDate: entryDate,
@@ -12460,8 +12245,7 @@ private struct PrototypeChapterDetailView: View {
                     color: chapter.color,
                     coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
                     remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
-                    fallbackImageName: chapter.coverImageName,
-                    symbol: chapter.symbol
+                    fallbackImageName: chapter.coverImageName
                 )
 
                 LinearGradient(
@@ -12507,11 +12291,6 @@ private struct PrototypeChapterDetailView: View {
             .frame(maxWidth: .infinity)
             .frame(height: bannerHeight, alignment: .top)
             .clipped()
-            .contentShape(Rectangle())
-            .onTapGesture {
-                isShowingCoverCustomization = true
-            }
-            .accessibilityLabel("Change journal cover")
 
             VStack(alignment: .center, spacing: 14) {
                 Button {
@@ -12723,7 +12502,7 @@ private struct PrototypeChapterDetailView: View {
         JournalDetailEntryBrowser(
             chapter: chapter,
             editMode: $editMode,
-            allowsCreation: chapter.systemJournal != .completed,
+            allowsCreation: true,
             onCreateEntry: {
                 openFreshEntryFromJournalDetail()
             },
@@ -12916,13 +12695,6 @@ private struct PrototypeChapterDetailView: View {
 
     @MainActor
     private func loadMediaStoryboards() async {
-        guard chapter.systemJournal != .drafts else {
-            mediaStoryboards = []
-            mediaStoryboardErrorMessage = nil
-            isLoadingMediaStoryboards = false
-            return
-        }
-
         let localClientEntryIDs = mediaClientEntryIDsFromLocalEntries()
         let localStoryboards = storyboardsForMedia(clientEntryIDs: localClientEntryIDs, in: GeneratedStoryboardStore.load())
         mediaStoryboards = localStoryboards
@@ -12948,41 +12720,22 @@ private struct PrototypeChapterDetailView: View {
 
     private func mediaClientEntryIDsFromLocalEntries() -> Set<UUID> {
         let localEntries = CreateEntryDraftStore.loadAll()
-
-        switch chapter.systemJournal {
-        case .drafts:
-            return []
-        case .completed:
-            return Set(localEntries.filter { $0.status == JournalEntryStatus.completed.rawValue }.map(\.id))
-                .union(chapter.entries.map(\.id))
-        case nil:
-            let storedMemberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
-            let linkedLocalIDs = localEntries
-                .filter { EntryJournalLinkStore.loadJournalTitles(for: $0.id).contains(chapter.title) }
-                .map(\.id)
-            return storedMemberIDs
-                .union(chapter.entries.map(\.id))
-                .union(linkedLocalIDs)
-        }
+        let storedMemberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
+        let linkedLocalIDs = localEntries
+            .filter { EntryJournalLinkStore.loadJournalTitles(for: $0.id).contains(chapter.title) }
+            .map(\.id)
+        return storedMemberIDs
+            .union(chapter.entries.map(\.id))
+            .union(linkedLocalIDs)
     }
 
     private func mediaClientEntryIDsFromCloudEntries() async throws -> Set<UUID> {
-        let repository = SupabaseEntryRepository()
-        let entries = try await repository.getEntrySummaries()
-
-        switch chapter.systemJournal {
-        case .drafts:
-            return []
-        case .completed:
-            return Set(entries.filter { $0.status == JournalEntryStatus.completed.rawValue }.map(\.clientEntryID))
-        case nil:
-            let memberships = try await SupabaseJournalRepository().getJournalEntryMemberships()
-            return Set(
-                memberships
-                    .filter { $0.journalID == chapter.id }
-                    .map { $0.clientEntryID }
-            )
-        }
+        let memberships = try await SupabaseJournalRepository().getJournalEntryMemberships()
+        return Set(
+            memberships
+                .filter { $0.journalID == chapter.id }
+                .map { $0.clientEntryID }
+        )
     }
 
     private func storyboardsForMedia(
@@ -13026,6 +12779,7 @@ private struct JournalDetailEntryBrowser: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var entriesPendingDeletion: [EntryDisplayItem] = []
     @State private var isShowingAddSelectedEntriesToJournalSheet = false
     @State private var selectedEntriesJournalTitle: String?
     @State private var selectedEntriesJournalTitles: Set<String> = []
@@ -13068,7 +12822,7 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private var isEntryReorderingEnabled: Bool {
-        selectedSort == .manual && !chapter.isSystemJournal
+        selectedSort == .manual
     }
 
     var body: some View {
@@ -13116,6 +12870,29 @@ private struct JournalDetailEntryBrowser: View {
             }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+        }
+        .alert(deleteEntryAlertTitle, isPresented: isDeleteEntryAlertPresented) {
+            Button("Cancel", role: .cancel) {
+                entriesPendingDeletion = []
+            }
+
+            Button("Remove from this Journal", role: .destructive) {
+                let itemsToDelete = entriesPendingDeletion
+                Task {
+                    await deletePendingEntriesFromCurrentJournal(itemsToDelete)
+                }
+            }
+
+            if hasEntriesPendingDeletionOutsideCurrentJournal {
+                Button("Delete in All", role: .destructive) {
+                    let itemsToDelete = entriesPendingDeletion
+                    Task {
+                        await deletePendingEntriesEverywhere(itemsToDelete)
+                    }
+                }
+            }
+        } message: {
+            Text(deleteEntryAlertMessage)
         }
     }
 
@@ -13208,7 +12985,7 @@ private struct JournalDetailEntryBrowser: View {
                 Spacer()
 
                 Button(role: .destructive) {
-                    deleteSelectedEntries()
+                    requestDeleteSelectedEntries()
                 } label: {
                     Image(systemName: "trash.fill")
                         .font(.system(size: 14, weight: .bold))
@@ -13252,7 +13029,7 @@ private struct JournalDetailEntryBrowser: View {
                         title: entryDisplayTitle(displayEntry),
                         sortOption: selectedSort,
                         storyboardImage: storyboardImage(for: item, fallbackIndex: index),
-                        category: chapter.isSystemJournal ? nil : .completed,
+                        category: nil,
                         isSelecting: editMode == .active,
                         isSelected: selectedEntryIDs.contains(item.id),
                         onOpen: {
@@ -13281,7 +13058,7 @@ private struct JournalDetailEntryBrowser: View {
                         isEditing: false,
                         showsActions: false,
                         title: entryDisplayTitle(displayEntry),
-                        category: chapter.isSystemJournal ? nil : .drafts,
+                        category: nil,
                         isOpening: false,
                         isSelecting: editMode == .active,
                         isSelected: selectedEntryIDs.contains(item.id),
@@ -13321,7 +13098,7 @@ private struct JournalDetailEntryBrowser: View {
                     EntryListRow(
                         entry: displayEntry,
                         sortOption: selectedSort,
-                        category: chapter.isSystemJournal ? nil : (isCompleted(item) ? .completed : .drafts),
+                        category: isCompleted(item) ? .completed : .drafts,
                         completedStoryboardImage: isCompleted(item) ? storyboardImage(for: item, fallbackIndex: index) : nil
                     )
                     .overlay(alignment: .leading) {
@@ -13519,37 +13296,16 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func matchesChapterFilter(_ entry: CreateEntryDraft) -> Bool {
-        switch chapter.systemJournal {
-        case .drafts:
-            return entry.status != JournalEntryStatus.completed.rawValue
-        case .completed:
-            return entry.status == JournalEntryStatus.completed.rawValue
-        case nil:
-            let memberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
-            return memberIDs.contains(entry.id) || EntryJournalLinkStore.loadJournalTitles(for: entry.id).contains(chapter.title)
-        }
+        let memberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
+        return memberIDs.contains(entry.id) || EntryJournalLinkStore.loadJournalTitles(for: entry.id).contains(chapter.title)
     }
 
     private func matchesChapterFilter(_ entry: JournalEntry) -> Bool {
-        switch chapter.systemJournal {
-        case .drafts:
-            return entry.status != JournalEntryStatus.completed.rawValue
-        case .completed:
-            return entry.status == JournalEntryStatus.completed.rawValue
-        case nil:
-            return Set(StoryEntryStore.clientEntryIDs(for: chapter.title)).contains(entry.clientEntryID)
-        }
+        Set(StoryEntryStore.clientEntryIDs(for: chapter.title)).contains(entry.clientEntryID)
     }
 
     private func matchesChapterFilter(_ item: EntryDisplayItem) -> Bool {
-        switch chapter.systemJournal {
-        case .drafts:
-            return item.status != JournalEntryStatus.completed.rawValue
-        case .completed:
-            return item.status == JournalEntryStatus.completed.rawValue
-        case nil:
-            return matchesChapterFilter(item.entry)
-        }
+        matchesChapterFilter(item.entry)
     }
 
     private func sortEntryItems(_ lhs: EntryDisplayItem, _ rhs: EntryDisplayItem) -> Bool {
@@ -13630,6 +13386,41 @@ private struct JournalDetailEntryBrowser: View {
         filteredItems.filter { selectedEntryIDs.contains($0.id) }
     }
 
+    private var isDeleteEntryAlertPresented: Binding<Bool> {
+        Binding(
+            get: { !entriesPendingDeletion.isEmpty },
+            set: { isPresented in
+                if !isPresented {
+                    entriesPendingDeletion = []
+                }
+            }
+        )
+    }
+
+    private var deleteEntryAlertTitle: String {
+        "Are u sure?"
+    }
+
+    private var hasEntriesPendingDeletionOutsideCurrentJournal: Bool {
+        entriesPendingDeletion.contains { !otherJournalTitles(for: $0).isEmpty }
+    }
+
+    private var deleteEntryAlertMessage: String {
+        if let entry = entriesPendingDeletion.first, entriesPendingDeletion.count == 1 {
+            if otherJournalTitles(for: entry).isEmpty {
+                return "\"\(entryDisplayTitle(entry.entry))\" is only in \(chapter.title). Removing it here will delete it permanently."
+            }
+
+            return "Remove \"\(entryDisplayTitle(entry.entry))\" from \(chapter.title), or delete it from every journal?"
+        }
+
+        if hasEntriesPendingDeletionOutsideCurrentJournal {
+            return "Remove these entries from \(chapter.title), or delete them from every journal? Entries with no other journals will be deleted permanently."
+        }
+
+        return "These entries are only in \(chapter.title). Removing them here will delete them permanently."
+    }
+
     private func handleItemTap(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
         if editMode == .active {
             toggleEntrySelection(item.id)
@@ -13681,8 +13472,9 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func openAddSelectedEntriesToJournalPage() {
-        selectedEntriesJournalTitles = []
-        selectedEntriesJournalTitle = nil
+        let journalTitles = selectedJournalTitlesForAddSheet()
+        selectedEntriesJournalTitles = journalTitles
+        selectedEntriesJournalTitle = journalTitles.sorted().first
 
         Task {
             await refreshCloudJournalsBeforeShowingSelectedEntrySheet()
@@ -13714,36 +13506,117 @@ private struct JournalDetailEntryBrowser: View {
         refreshEntries()
     }
 
-    private func deleteSelectedEntries() {
-        let itemsToDelete = selectedItems
+    private func requestDeleteSelectedEntries() {
+        entriesPendingDeletion = selectedItems
+    }
+
+    private func deletePendingEntriesFromCurrentJournal(_ itemsToDelete: [EntryDisplayItem]) async {
         guard !itemsToDelete.isEmpty else {
             return
         }
 
-        if chapter.systemJournal == .drafts {
-            selectedEntryIDs = []
-            editMode = .inactive
-            Task {
-                for item in itemsToDelete {
-                    await deleteDraftEntry(item)
-                }
-                await MainActor.run {
-                    refreshEntries()
-                }
-            }
+        let scopedItems = itemsToDelete.filter { !otherJournalTitles(for: $0).isEmpty }
+        let permanentItems = itemsToDelete.filter { otherJournalTitles(for: $0).isEmpty }
+
+        guard await deleteItemsEverywhereInCloud(permanentItems) else {
             return
         }
 
-        itemsToDelete.forEach { item in
+        if authStore.userID != nil && !scopedItems.isEmpty {
+            do {
+                try await SupabaseJournalRepository().deleteJournalEntryMemberships(
+                    journalID: chapter.id,
+                    clientEntryIDs: scopedItems.map(\.id)
+                )
+            } catch {
+                entriesPendingDeletion = itemsToDelete
+                errorMessage = "Could not delete from Storytopia cloud. Check your connection and try again."
+                return
+            }
+        }
+
+        scopedItems.forEach { item in
             let entry = entryForDisplay(item).prototypeEntry()
             StoryEntryStore.delete(entry, from: chapter.title)
             EntryJournalLinkStore.remove(journalTitle: chapter.title, for: item.id)
         }
-        selectedEntryIDs = []
+
+        permanentlyDeleteLocalItems(permanentItems)
+
+        completePendingDelete(itemsToDelete)
+        await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
+    }
+
+    private func deletePendingEntriesEverywhere(_ itemsToDelete: [EntryDisplayItem]) async {
+        guard !itemsToDelete.isEmpty else {
+            return
+        }
+
+        guard await deleteItemsEverywhereInCloud(itemsToDelete) else {
+            return
+        }
+
+        permanentlyDeleteLocalItems(itemsToDelete)
+        completePendingDelete(itemsToDelete)
+    }
+
+    private func deleteItemsEverywhereInCloud(_ items: [EntryDisplayItem]) async -> Bool {
+        guard authStore.userID != nil else {
+            return true
+        }
+
+        for item in items {
+            do {
+                try await EntrySaveService().deleteEntry(
+                    localDraftID: item.id,
+                    cloudEntry: item.cloudEntry,
+                    isSignedIn: true
+                )
+            } catch {
+                entriesPendingDeletion = items
+                errorMessage = "Could not delete from Storytopia cloud. Check your connection and try again."
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private func permanentlyDeleteLocalItems(_ items: [EntryDisplayItem]) {
+        items.forEach { item in
+            StoryEntryStore.delete(entryID: item.id)
+            EntryJournalLinkStore.remove(for: item.id)
+            localEntries.removeAll { $0.id == item.id }
+            cloudEntries.removeAll { $0.clientEntryID == item.id }
+        }
+    }
+
+    private func completePendingDelete(_ itemsToDelete: [EntryDisplayItem]) {
+        entriesPendingDeletion = []
+        errorMessage = nil
+        selectedEntryIDs.subtract(itemsToDelete.map(\.id))
         editMode = .inactive
         refreshEntries()
-        Task {
-            await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
+    }
+
+    private func otherJournalTitles(for item: EntryDisplayItem) -> Set<String> {
+        let entry = entryForDisplay(item).prototypeEntry()
+        return StoryEntryStore.journalTitles(containing: entry)
+            .union(EntryJournalLinkStore.loadJournalTitles(for: item.id))
+            .subtracting([chapter.title])
+    }
+
+    private func selectedJournalTitlesForAddSheet() -> Set<String> {
+        let titleSets = selectedItems.map { item in
+            otherJournalTitles(for: item).union([chapter.title])
+        }
+
+        guard let firstTitleSet = titleSets.first else {
+            return []
+        }
+
+        return titleSets.dropFirst().reduce(firstTitleSet) { sharedTitles, titles in
+            sharedTitles.intersection(titles)
         }
     }
 
@@ -15130,75 +15003,6 @@ struct PrototypeChapter: Identifiable {
         case storyboard
     }
 
-    enum SystemJournal: String, CaseIterable {
-        case drafts
-        case completed
-
-        static let orderedCases: [SystemJournal] = [.drafts, .completed]
-
-        static func journal(for id: UUID) -> SystemJournal? {
-            orderedCases.first { $0.id == id }
-        }
-
-        var title: String {
-            switch self {
-            case .drafts:
-                return "Drafts"
-            case .completed:
-                return "Completed"
-            }
-        }
-
-        var subtitle: String {
-            switch self {
-            case .drafts:
-                return "Entries without storyboards"
-            case .completed:
-                return "Generated storyboards"
-            }
-        }
-
-        var id: UUID {
-            switch self {
-            case .drafts:
-                return UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
-            case .completed:
-                return UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
-            }
-        }
-
-        var sortOrder: Int {
-            switch self {
-            case .drafts:
-                return 0
-            case .completed:
-                return 1
-            }
-        }
-
-        var color: Color {
-            switch self {
-            case .drafts:
-                return Color.homeAccent
-            case .completed:
-                return Color.storyInk
-            }
-        }
-
-        var symbol: String {
-            switch self {
-            case .drafts:
-                return "doc.text.fill"
-            case .completed:
-                return "checkmark.seal.fill"
-            }
-        }
-
-        var coverStorageKey: String {
-            "system-\(rawValue)"
-        }
-    }
-
     let id: UUID
     let title: String
     let subtitle: String
@@ -15210,15 +15014,10 @@ struct PrototypeChapter: Identifiable {
     let isFavorite: Bool
     let createdAt: Date
     let updatedAt: Date
-    let systemJournal: SystemJournal?
     var entries: [PrototypeEntry]
 
-    var isSystemJournal: Bool {
-        systemJournal != nil
-    }
-
     var coverStorageKey: String {
-        systemJournal?.coverStorageKey ?? title
+        title
     }
 
     var imageCount: Int {
@@ -15241,7 +15040,6 @@ struct PrototypeChapter: Identifiable {
         isFavorite: Bool,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        systemJournal: SystemJournal? = nil,
         entries: [PrototypeEntry]
     ) {
         self.id = id
@@ -15255,7 +15053,6 @@ struct PrototypeChapter: Identifiable {
         self.isFavorite = isFavorite
         self.createdAt = createdAt
         self.updatedAt = updatedAt
-        self.systemJournal = systemJournal
         self.entries = entries
     }
 
@@ -15272,7 +15069,6 @@ struct PrototypeChapter: Identifiable {
             isFavorite: cloudJournal.isFavorite,
             createdAt: cloudJournal.createdAt,
             updatedAt: cloudJournal.updatedAt,
-            systemJournal: nil,
             entries: []
         )
     }
@@ -15290,7 +15086,6 @@ struct PrototypeChapter: Identifiable {
             isFavorite: isFavorite,
             createdAt: createdAt,
             updatedAt: Date(),
-            systemJournal: systemJournal,
             entries: entries
         )
     }
@@ -15430,6 +15225,7 @@ enum UserChapterStore {
     }
 
     private static let storageKey = "StorytopiaUserChapters"
+    private static var orderSyncTask: Task<Void, Never>?
 
     static func load() -> [PrototypeChapter] {
         return records.map { record in
@@ -15483,7 +15279,7 @@ enum UserChapterStore {
         }
 
         UserDefaults.standard.set(data, forKey: storageKey)
-        syncToCloud(chapter)
+        syncToCloud(chapter, preservesDisplayOrder: false)
     }
 
     static func contains(title: String) -> Bool {
@@ -15615,7 +15411,7 @@ enum UserChapterStore {
         UserDefaults.standard.set(data, forKey: storageKey)
     }
 
-    static func syncToCloud(_ chapter: PrototypeChapter) {
+    static func syncToCloud(_ chapter: PrototypeChapter, preservesDisplayOrder: Bool = true) {
         guard contains(title: chapter.title) else {
             return
         }
@@ -15631,38 +15427,66 @@ enum UserChapterStore {
                 remoteCover: chapter.remoteCover,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 isFavorite: chapter.isFavorite,
-                displayOrder: displayOrder(for: chapter.title)
+                displayOrder: preservesDisplayOrder ? nil : displayOrder(for: chapter.title)
             )
             syncEntriesToCloud(chapter.entries, journalID: chapter.id)
+        }
+    }
+
+    static func syncCoverCustomizationToCloud(
+        _ chapter: PrototypeChapter,
+        storedCoverImage: UIImage?,
+        requiresStoredCoverUpload: Bool = false,
+        clearsStoredCover: Bool
+    ) async throws {
+        let repository = SupabaseJournalRepository()
+        try await repository.upsertJournal(
+            id: chapter.id,
+            title: chapter.title,
+            subtitle: chapter.subtitle,
+            colorHex: colorHex(for: chapter),
+            symbol: chapter.symbol,
+            coverImageName: chapter.coverImageName,
+            remoteCover: chapter.remoteCover,
+            kind: chapter.kind == .storyboard ? "storyboard" : "journal",
+            isFavorite: chapter.isFavorite,
+            displayOrder: nil
+        )
+
+        if let storedCoverImage {
+            try await repository.uploadCover(storedCoverImage, journalID: chapter.id)
+        } else if requiresStoredCoverUpload {
+            throw StoryJournalRepositoryError.invalidCover
+        } else if clearsStoredCover {
+            try await repository.clearCover(journalID: chapter.id)
         }
     }
 
     static func syncAllToCloud(_ chapters: [PrototypeChapter]) {
         chapters
             .filter { contains(title: $0.title) }
-            .forEach(syncToCloud)
+            .forEach { syncToCloud($0) }
     }
 
     static func syncOrderToCloud(_ chapters: [PrototypeChapter]) {
-        chapters
+        let orderedJournalIDs = chapters
             .filter { contains(title: $0.title) }
-            .enumerated()
-            .forEach { offset, chapter in
-                Task {
-                    try? await SupabaseJournalRepository().upsertJournal(
-                        id: chapter.id,
-                        title: chapter.title,
-                        subtitle: chapter.subtitle,
-                        colorHex: colorHex(for: chapter),
-                        symbol: chapter.symbol,
-                        coverImageName: chapter.coverImageName,
-                        remoteCover: chapter.remoteCover,
-                        kind: chapter.kind == .storyboard ? "storyboard" : "journal",
-                        isFavorite: chapter.isFavorite,
-                        displayOrder: offset
-                    )
+            .map(\.id)
+
+        orderSyncTask?.cancel()
+        orderSyncTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+                guard !Task.isCancelled else {
+                    return
                 }
+                try await SupabaseJournalRepository().updateJournalDisplayOrder(orderedJournalIDs)
+            } catch is CancellationError {
+                return
+            } catch {
+                print("[Storytopia] Could not sync journal order to cloud: \(error.localizedDescription)")
             }
+        }
     }
 
     static func deleteFromCloud(_ chapter: PrototypeChapter) {
@@ -15708,7 +15532,7 @@ enum UserChapterStore {
                 remoteCover: chapter.remoteCover,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 isFavorite: chapter.isFavorite,
-                displayOrder: displayOrder(for: chapter.title)
+                displayOrder: nil
             )
 
             try await SupabaseJournalRepository().replaceJournalEntries(
@@ -15829,154 +15653,6 @@ enum UserChapterStore {
             uuidBytes[8], uuidBytes[9], uuidBytes[10], uuidBytes[11],
             uuidBytes[12], uuidBytes[13], uuidBytes[14], uuidBytes[15]
         ))
-    }
-}
-
-private enum SystemJournalAppearanceStore {
-    struct Appearance {
-        let color: Color?
-        let coverImageName: String?
-        let remoteCover: JournalRemoteCover?
-    }
-
-    private struct Record: Codable {
-        let colorHex: String?
-        let coverImageName: String?
-        let remoteCover: JournalRemoteCover?
-    }
-
-    private static let legacyStorageKey = "StorytopiaSystemJournalAppearances"
-    private static let storagePrefix = "StorytopiaSystemJournalAppearance"
-
-    static func appearance(for systemJournal: PrototypeChapter.SystemJournal) -> Appearance {
-        let defaults = UserDefaults.standard
-        let legacyRecord = legacyRecords[systemJournal.rawValue]
-        let colorHex = defaults.string(forKey: key("colorHex", for: systemJournal)) ?? legacyRecord?.colorHex
-        let coverImageName = defaults.string(forKey: key("coverImageName", for: systemJournal)) ?? legacyRecord?.coverImageName
-        let remoteCover = remoteCover(for: systemJournal) ?? legacyRecord?.remoteCover
-
-        return Appearance(
-            color: colorHex.flatMap(Color.init(hex:)),
-            coverImageName: coverImageName,
-            remoteCover: remoteCover
-        )
-    }
-
-    static func update(
-        _ systemJournal: PrototypeChapter.SystemJournal,
-        color: Color,
-        coverImageName: String?,
-        remoteCover: JournalRemoteCover?
-    ) {
-        let defaults = UserDefaults.standard
-        defaults.set(UserChapterStore.colorHex(for: color), forKey: key("colorHex", for: systemJournal))
-
-        if let coverImageName {
-            defaults.set(coverImageName, forKey: key("coverImageName", for: systemJournal))
-        } else {
-            defaults.removeObject(forKey: key("coverImageName", for: systemJournal))
-        }
-
-        if let remoteCover, let data = try? JSONEncoder().encode(remoteCover) {
-            defaults.set(data, forKey: key("remoteCover", for: systemJournal))
-        } else {
-            defaults.removeObject(forKey: key("remoteCover", for: systemJournal))
-        }
-
-        defaults.synchronize()
-    }
-
-    static func syncToCloud(_ chapter: PrototypeChapter, storedCoverImage: UIImage?) {
-        guard let systemJournal = chapter.systemJournal else {
-            return
-        }
-
-        Task {
-            do {
-                let repository = SupabaseJournalRepository()
-                try await repository.upsertJournal(
-                    id: systemJournal.id,
-                    title: systemJournal.title,
-                    subtitle: systemJournal.subtitle,
-                    colorHex: UserChapterStore.colorHex(for: chapter.color),
-                    symbol: systemJournal.symbol,
-                    coverImageName: chapter.coverImageName,
-                    remoteCover: chapter.remoteCover,
-                    kind: chapter.kind == .storyboard ? "storyboard" : "journal",
-                    isFavorite: chapter.isFavorite,
-                    displayOrder: systemJournal.sortOrder
-                )
-
-                if let storedCoverImage {
-                    try await repository.uploadCover(storedCoverImage, journalID: systemJournal.id)
-                } else if chapter.remoteCover != nil || JournalCoverStore.image(for: systemJournal.coverStorageKey) == nil {
-                    try await repository.clearCover(journalID: systemJournal.id)
-                }
-            } catch {
-                print("[Storytopia] System journal cloud sync failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    static func syncLocalAppearancesToCloudIfNeeded(existingCloudJournals: [StoryJournal]) {
-        let existingSystemIDs = Set(existingCloudJournals.compactMap { cloudJournal in
-            PrototypeChapter.SystemJournal.journal(for: cloudJournal.id)?.id
-        })
-
-        for systemJournal in PrototypeChapter.SystemJournal.orderedCases where !existingSystemIDs.contains(systemJournal.id) {
-            let appearance = appearance(for: systemJournal)
-            let storedCoverImage = JournalCoverStore.image(for: systemJournal.coverStorageKey)
-            let hasLocalAppearance = appearance.color != nil
-                || appearance.coverImageName != nil
-                || appearance.remoteCover != nil
-                || storedCoverImage != nil
-
-            guard hasLocalAppearance else {
-                continue
-            }
-
-            let chapter = PrototypeChapter(
-                id: systemJournal.id,
-                title: systemJournal.title,
-                subtitle: systemJournal.subtitle,
-                color: appearance.color ?? systemJournal.color,
-                symbol: systemJournal.symbol,
-                coverImageName: appearance.coverImageName,
-                remoteCover: appearance.remoteCover,
-                kind: .journal,
-                isFavorite: false,
-                createdAt: .distantPast,
-                updatedAt: Date(),
-                systemJournal: systemJournal,
-                entries: []
-            )
-            syncToCloud(chapter, storedCoverImage: storedCoverImage)
-        }
-    }
-
-    private static func key(_ field: String, for systemJournal: PrototypeChapter.SystemJournal) -> String {
-        "\(storagePrefix).\(systemJournal.rawValue).\(field)"
-    }
-
-    private static func remoteCover(for systemJournal: PrototypeChapter.SystemJournal) -> JournalRemoteCover? {
-        guard
-            let data = UserDefaults.standard.data(forKey: key("remoteCover", for: systemJournal))
-        else {
-            return nil
-        }
-
-        return try? JSONDecoder().decode(JournalRemoteCover.self, from: data)
-    }
-
-    private static var legacyRecords: [String: Record] {
-        guard
-            let data = UserDefaults.standard.data(forKey: legacyStorageKey),
-            let decodedRecords = try? JSONDecoder().decode([String: Record].self, from: data)
-        else {
-            return [:]
-        }
-
-        return decodedRecords
     }
 }
 

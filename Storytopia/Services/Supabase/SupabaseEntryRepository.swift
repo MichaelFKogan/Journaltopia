@@ -368,7 +368,7 @@ private struct StoryJournalPayload: Encodable, Sendable {
     let coverDownloadLocation: String?
     let kind: String
     let isFavorite: Bool
-    let displayOrder: Int
+    let displayOrder: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -406,7 +406,7 @@ private struct StoryJournalPayload: Encodable, Sendable {
         try encodeNullableCoverField(coverDownloadLocation, forKey: .coverDownloadLocation, in: &container)
         try container.encode(kind, forKey: .kind)
         try container.encode(isFavorite, forKey: .isFavorite)
-        try container.encode(displayOrder, forKey: .displayOrder)
+        try container.encodeIfPresent(displayOrder, forKey: .displayOrder)
     }
 
     private func encodeNullableCoverField(
@@ -427,6 +427,14 @@ private struct JournalCoverUpdate: Encodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case coverStoragePath = "cover_storage_path"
+    }
+}
+
+private struct JournalDisplayOrderUpdate: Encodable, Sendable {
+    let displayOrder: Int
+
+    enum CodingKeys: String, CodingKey {
+        case displayOrder = "display_order"
     }
 }
 
@@ -574,7 +582,7 @@ struct SupabaseJournalRepository {
         remoteCover: JournalRemoteCover? = nil,
         kind: String,
         isFavorite: Bool,
-        displayOrder: Int
+        displayOrder: Int?
     ) async throws -> StoryJournal {
         let userID = try await authenticatedUserID()
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -622,6 +630,23 @@ struct SupabaseJournalRepository {
                 .eq("id", value: id)
                 .eq("user_id", value: userID)
                 .execute()
+        } catch {
+            throw StoryJournalRepositoryError.operationFailed
+        }
+    }
+
+    func updateJournalDisplayOrder(_ orderedJournalIDs: [UUID]) async throws {
+        let userID = try await authenticatedUserID()
+
+        do {
+            for (displayOrder, journalID) in orderedJournalIDs.enumerated() {
+                try await client
+                    .from("journals")
+                    .update(JournalDisplayOrderUpdate(displayOrder: displayOrder))
+                    .eq("id", value: journalID)
+                    .eq("user_id", value: userID)
+                    .execute()
+            }
         } catch {
             throw StoryJournalRepositoryError.operationFailed
         }
@@ -699,6 +724,28 @@ struct SupabaseJournalRepository {
                 .eq("client_entry_id", value: clientEntryID)
                 .eq("user_id", value: userID)
                 .execute()
+        } catch {
+            throw StoryJournalRepositoryError.operationFailed
+        }
+    }
+
+    func deleteJournalEntryMemberships(journalID: UUID, clientEntryIDs: [UUID]) async throws {
+        let userID = try await authenticatedUserID()
+        var seenEntryIDs = Set<UUID>()
+        let uniqueIDs = clientEntryIDs.filter { clientEntryID in
+            seenEntryIDs.insert(clientEntryID).inserted
+        }
+
+        do {
+            for clientEntryID in uniqueIDs {
+                try await client
+                    .from("journal_entries")
+                    .delete()
+                    .eq("journal_id", value: journalID)
+                    .eq("client_entry_id", value: clientEntryID)
+                    .eq("user_id", value: userID)
+                    .execute()
+            }
         } catch {
             throw StoryJournalRepositoryError.operationFailed
         }

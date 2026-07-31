@@ -12,19 +12,15 @@ enum CreateEntryPresentation {
 
     var showsNextButton: Bool {
         switch self {
-        case .compose, .editDraft:
+        case .compose, .composeInJournal, .editDraft:
             return true
-        case .composeInJournal:
-            return false
         }
     }
 
     var showsEntryOptionsFlow: Bool {
         switch self {
-        case .compose, .editDraft:
+        case .compose, .composeInJournal, .editDraft:
             return true
-        case .composeInJournal:
-            return false
         }
     }
 
