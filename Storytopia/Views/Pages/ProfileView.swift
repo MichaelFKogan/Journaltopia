@@ -680,6 +680,7 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
     let images: [UIImage]
     let initialIndex: Int
     @Binding var visibleIndex: Int
+    private let topOverlayClearance: CGFloat = 64
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -712,6 +713,14 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
 
         context.coordinator.stackView = stackView
         context.coordinator.imageViews = images.enumerated().map { index, image in
+            if index == 0 {
+                let spacer = UIView()
+                spacer.backgroundColor = .black
+                spacer.translatesAutoresizingMaskIntoConstraints = false
+                spacer.heightAnchor.constraint(equalToConstant: topOverlayClearance).isActive = true
+                stackView.addArrangedSubview(spacer)
+            }
+
             if index > 0 {
                 stackView.addArrangedSubview(
                     makeImageBoundary(nextIndex: index, totalCount: images.count)

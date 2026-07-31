@@ -302,10 +302,10 @@ struct JournalView: View {
             handleCreateButtonTapped()
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 27, weight: .bold))
+                .font(.system(size: 26, weight: .medium))
                 .foregroundStyle(Color.white)
                 .frame(width: 64, height: 64)
-                .background(Color.homeAccent, in: Circle())
+                .background(Color.black, in: Circle())
                 .shadow(color: Color.storyInk.opacity(0.18), radius: 12, y: 6)
         }
         .buttonStyle(.plain)
@@ -3869,6 +3869,13 @@ private struct DaybookComicReaderView: View {
 private struct JournalStoryboardComicReaderView: View {
     let storyboards: [GeneratedStoryboard]
     @Binding var currentPageIndex: Int
+    let journalTitle: String
+    let journalColor: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackCoverImageName: String?
+    let pageCountText: String
+    let storyboardCountText: String
 
     @Environment(\.dismiss) private var dismiss
     @AppStorage("journalStoryboardComicReaderGestureHintSeen") private var readerGestureHintSeen = false
@@ -3896,28 +3903,22 @@ private struct JournalStoryboardComicReaderView: View {
             Color.black
                 .ignoresSafeArea()
 
-            if storyboards.isEmpty {
-                emptyState
-            } else {
-                readerPageContent
-                    .zIndex(isPageTurnActive ? 3 : 0)
-            }
+            readerPageContent
+                .zIndex(isPageTurnActive ? 3 : 0)
 
             VStack(spacing: 0) {
                 readerTopBar
 
                 Spacer(minLength: 0)
 
-                if !storyboards.isEmpty {
-                    VStack(spacing: 0) {
-                        readerBottomBar
-                        readerThumbnailStrip
-                    }
-                        .background {
-                            Color.black.opacity(0.3)
-                                .ignoresSafeArea(edges: .bottom)
-                        }
+                VStack(spacing: 0) {
+                    readerBottomBar
+                    readerThumbnailStrip
                 }
+                    .background {
+                        Color.black.opacity(0.3)
+                            .ignoresSafeArea(edges: .bottom)
+                    }
             }
             .zIndex(1)
 
@@ -3966,7 +3967,7 @@ private struct JournalStoryboardComicReaderView: View {
 
             Spacer()
 
-            Text(storyboards.isEmpty ? "0 / 0" : "\(currentPageIndex + 1) / \(storyboards.count)")
+            Text("\(currentPageIndex + 1) / \(totalPageCount)")
                 .font(.system(size: 13, weight: .heavy, design: .rounded))
                 .foregroundStyle(.white.opacity(0.92))
 
@@ -4009,6 +4010,13 @@ private struct JournalStoryboardComicReaderView: View {
                     if showsPageTurnView {
                         JournalStoryboardPageTurnView(
                             images: storyboardImages,
+                            journalTitle: journalTitle,
+                            journalColor: journalColor,
+                            coverImage: coverImage,
+                            remoteCoverURL: remoteCoverURL,
+                            fallbackCoverImageName: fallbackCoverImageName,
+                            pageCountText: pageCountText,
+                            storyboardCountText: storyboardCountText,
                             currentPageIndex: $currentPageIndex,
                             programmaticTurnOffset: programmaticTurnOffset,
                             programmaticTurnProgress: programmaticTurnProgress,
@@ -4017,8 +4025,8 @@ private struct JournalStoryboardComicReaderView: View {
                         .frame(width: pageSize.width, height: pageSize.height)
                         .scaleEffect(isMagnifying ? zoomScale : 1)
                         .simultaneousGesture(fitZoomMagnificationGesture(pageSize: pageSize, viewport: viewport))
-                    } else if let image = image(for: currentPageIndex) {
-                        storyboardPage(image)
+                    } else {
+                        pageView(at: currentPageIndex)
                             .frame(width: pageSize.width, height: pageSize.height)
                             .scaleEffect(zoomScale)
                             .offset(panOffset)
@@ -4032,6 +4040,23 @@ private struct JournalStoryboardComicReaderView: View {
             }
             .padding(.top, readerTopToolbarClearance)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    @ViewBuilder
+    private func pageView(at pageIndex: Int) -> some View {
+        if pageIndex == 0 {
+            JournalStoryboardReaderCoverPage(
+                title: journalTitle,
+                color: journalColor,
+                coverImage: coverImage,
+                remoteCoverURL: remoteCoverURL,
+                fallbackImageName: fallbackCoverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: storyboardCountText
+            )
+        } else if let image = image(for: pageIndex) {
+            storyboardPage(image)
         }
     }
 
@@ -4096,7 +4121,7 @@ private struct JournalStoryboardComicReaderView: View {
             }
 
             readerControlButton(
-                isEnabled: currentPageIndex < storyboards.count - 1 && !isTurningProgrammatically,
+                isEnabled: currentPageIndex < totalPageCount - 1 && !isTurningProgrammatically,
                 accessibilityLabel: "Next page"
             ) {
                 Image(systemName: "chevron.right")
@@ -4167,18 +4192,32 @@ private struct JournalStoryboardComicReaderView: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                currentPageIndex = 0
+                            }
+                        } label: {
+                            readerCoverThumbnail()
+                        }
+                        .buttonStyle(.plain)
+                        .id(0)
+                        .accessibilityLabel("Go to journal cover")
+                        .accessibilityAddTraits(currentPageIndex == 0 ? .isSelected : [])
+
                         ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                            let pageIndex = index + 1
+
                             Button {
                                 withAnimation(.easeInOut(duration: 0.2)) {
-                                    currentPageIndex = index
+                                    currentPageIndex = pageIndex
                                 }
                             } label: {
-                                readerThumbnail(for: storyboard.image, at: index)
+                                readerThumbnail(for: storyboard.image, at: pageIndex)
                             }
                             .buttonStyle(.plain)
-                            .id(index)
+                            .id(pageIndex)
                             .accessibilityLabel("Go to storyboard \(index + 1)")
-                            .accessibilityAddTraits(index == currentPageIndex ? .isSelected : [])
+                            .accessibilityAddTraits(pageIndex == currentPageIndex ? .isSelected : [])
                         }
                     }
                     .frame(minWidth: geometry.size.width, alignment: .center)
@@ -4197,6 +4236,34 @@ private struct JournalStoryboardComicReaderView: View {
         }
         .frame(height: thumbnailHeight + 12)
         .padding(.bottom, 10)
+    }
+
+    private func readerCoverThumbnail() -> some View {
+        let isSelected = currentPageIndex == 0
+
+        return JournalStoryboardReaderCoverPage(
+            title: journalTitle,
+            color: journalColor,
+            coverImage: coverImage,
+            remoteCoverURL: remoteCoverURL,
+            fallbackImageName: fallbackCoverImageName,
+            pageCountText: pageCountText,
+            storyboardCountText: storyboardCountText,
+            showsDecorativeCopy: false
+        )
+        .frame(width: thumbnailHeight * readerPageAspectRatio, height: thumbnailHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(
+                    isSelected ? Color.white : Color.white.opacity(0.22),
+                    lineWidth: isSelected ? 2.5 : 1
+                )
+        }
+        .shadow(color: .black.opacity(isSelected ? 0.42 : 0.2), radius: isSelected ? 8 : 4, y: 2)
+        .opacity(isSelected ? 1 : 0.74)
+        .scaleEffect(isSelected ? 1.05 : 1)
+        .animation(.easeInOut(duration: 0.18), value: currentPageIndex)
     }
 
     private func readerThumbnail(for image: UIImage, at index: Int) -> some View {
@@ -4222,12 +4289,6 @@ private struct JournalStoryboardComicReaderView: View {
             .animation(.easeInOut(duration: 0.18), value: currentPageIndex)
     }
 
-    private var emptyState: some View {
-        Text("No storyboard images yet")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.78))
-    }
-
     private var gestureHintOverlay: some View {
         Text("Pinch to zoom. Swipe pages at 1x.")
             .font(.system(size: 13, weight: .semibold))
@@ -4241,6 +4302,19 @@ private struct JournalStoryboardComicReaderView: View {
 
     private var storyboardImages: [UIImage] {
         storyboards.map(\.image)
+    }
+
+    private var totalPageCount: Int {
+        storyboards.count + 1
+    }
+
+    private var readerPageAspectRatio: CGFloat {
+        guard let firstStoryboard = storyboards.first,
+              firstStoryboard.image.size.height > 0 else {
+            return 0.57
+        }
+
+        return firstStoryboard.image.size.width / firstStoryboard.image.size.height
     }
 
     private var isAtFitZoom: Bool {
@@ -4268,7 +4342,7 @@ private struct JournalStoryboardComicReaderView: View {
     }
 
     private func image(for pageIndex: Int) -> UIImage? {
-        let index = clampedPageIndex(pageIndex)
+        let index = clampedPageIndex(pageIndex) - 1
         guard storyboards.indices.contains(index) else {
             return nil
         }
@@ -4277,6 +4351,10 @@ private struct JournalStoryboardComicReaderView: View {
     }
 
     private func imageAspectRatio(for pageIndex: Int) -> CGFloat {
+        if clampedPageIndex(pageIndex) == 0 {
+            return readerPageAspectRatio
+        }
+
         guard let image = image(for: pageIndex), image.size.height > 0 else {
             return 0.57
         }
@@ -4477,7 +4555,7 @@ private struct JournalStoryboardComicReaderView: View {
     }
 
     private func presentGestureHintIfNeeded() {
-        guard !readerGestureHintSeen, !storyboards.isEmpty else {
+        guard !readerGestureHintSeen else {
             return
         }
 
@@ -4495,7 +4573,7 @@ private struct JournalStoryboardComicReaderView: View {
     }
 
     private func clampedPageIndex(_ pageIndex: Int) -> Int {
-        min(max(0, pageIndex), max(0, storyboards.count - 1))
+        min(max(0, pageIndex), max(0, totalPageCount - 1))
     }
 
     private func clampedScale(_ scale: CGFloat) -> CGFloat {
@@ -4569,6 +4647,13 @@ private struct JournalStoryboardComicReaderView: View {
 
 private struct JournalStoryboardTurningPage: View {
     let images: [UIImage]
+    let journalTitle: String
+    let journalColor: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackCoverImageName: String?
+    let pageCountText: String
+    let storyboardCountText: String
     let pageIndex: Int
     let progress: CGFloat
     let style: DaybookPageFoldStyle
@@ -4577,8 +4662,8 @@ private struct JournalStoryboardTurningPage: View {
 
     var body: some View {
         ZStack {
-            if showsFrontFace, let image = image(at: pageIndex) {
-                JournalStoryboardComicPage(image: image)
+            if showsFrontFace {
+                pageView(at: pageIndex)
                     .rotation3DEffect(
                         .degrees(frontRotation),
                         axis: (x: 0, y: 1, z: 0),
@@ -4600,8 +4685,25 @@ private struct JournalStoryboardTurningPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    @ViewBuilder
+    private func pageView(at pageIndex: Int) -> some View {
+        if pageIndex == 0 {
+            JournalStoryboardReaderCoverPage(
+                title: journalTitle,
+                color: journalColor,
+                coverImage: coverImage,
+                remoteCoverURL: remoteCoverURL,
+                fallbackImageName: fallbackCoverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: storyboardCountText
+            )
+        } else if let image = image(at: pageIndex) {
+            JournalStoryboardComicPage(image: image)
+        }
+    }
+
     private func image(at pageIndex: Int) -> UIImage? {
-        let index = min(max(0, pageIndex), max(0, images.count - 1))
+        let index = min(max(0, pageIndex - 1), max(0, images.count - 1))
         guard images.indices.contains(index) else {
             return nil
         }
@@ -4661,6 +4763,13 @@ private struct JournalStoryboardTurningPage: View {
 
 private struct JournalStoryboardPageTurnView: View {
     let images: [UIImage]
+    let journalTitle: String
+    let journalColor: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackCoverImageName: String?
+    let pageCountText: String
+    let storyboardCountText: String
     @Binding var currentPageIndex: Int
     let programmaticTurnOffset: Int
     let programmaticTurnProgress: CGFloat
@@ -4688,7 +4797,7 @@ private struct JournalStoryboardPageTurnView: View {
                     including: pendingTurnOffset == 0 ? .all : .subviews
                 )
                 .accessibilityElement(children: .contain)
-                .accessibilityLabel("Journal comic page \(currentPageIndex + 1) of \(images.count)")
+                .accessibilityLabel("Journal comic page \(currentPageIndex + 1) of \(totalPageCount)")
                 .onChange(of: pageTurn.isTurningForward || pageTurn.isTurningBackward || pendingTurnOffset != 0 || programmaticTurnOffset != 0) { turning in
                     isPageTurnActive = turning
                 }
@@ -4710,6 +4819,13 @@ private struct JournalStoryboardPageTurnView: View {
 
                     JournalStoryboardTurningPage(
                         images: images,
+                        journalTitle: journalTitle,
+                        journalColor: journalColor,
+                        coverImage: coverImage,
+                        remoteCoverURL: remoteCoverURL,
+                        fallbackCoverImageName: fallbackCoverImageName,
+                        pageCountText: pageCountText,
+                        storyboardCountText: storyboardCountText,
                         pageIndex: folding,
                         progress: pageTurn.progress,
                         style: .foldLeft
@@ -4721,6 +4837,13 @@ private struct JournalStoryboardPageTurnView: View {
 
                     JournalStoryboardTurningPage(
                         images: images,
+                        journalTitle: journalTitle,
+                        journalColor: journalColor,
+                        coverImage: coverImage,
+                        remoteCoverURL: remoteCoverURL,
+                        fallbackCoverImageName: fallbackCoverImageName,
+                        pageCountText: pageCountText,
+                        storyboardCountText: storyboardCountText,
                         pageIndex: folding,
                         progress: pageTurn.progress,
                         style: .unfoldFromLeft
@@ -4732,6 +4855,13 @@ private struct JournalStoryboardPageTurnView: View {
 
                     JournalStoryboardTurningPage(
                         images: images,
+                        journalTitle: journalTitle,
+                        journalColor: journalColor,
+                        coverImage: coverImage,
+                        remoteCoverURL: remoteCoverURL,
+                        fallbackCoverImageName: fallbackCoverImageName,
+                        pageCountText: pageCountText,
+                        storyboardCountText: storyboardCountText,
                         pageIndex: folding,
                         progress: pageTurn.progress,
                         style: .foldRight
@@ -4747,7 +4877,18 @@ private struct JournalStoryboardPageTurnView: View {
 
     @ViewBuilder
     private func pageView(at pageIndex: Int) -> some View {
-        if let image = image(at: pageIndex) {
+        if pageIndex == 0 {
+            JournalStoryboardReaderCoverPage(
+                title: journalTitle,
+                color: journalColor,
+                coverImage: coverImage,
+                remoteCoverURL: remoteCoverURL,
+                fallbackImageName: fallbackCoverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: storyboardCountText
+            )
+            .id(pageIndex)
+        } else if let image = image(at: pageIndex) {
             JournalStoryboardComicPage(image: image)
                 .id(pageIndex)
         }
@@ -4782,7 +4923,7 @@ private struct JournalStoryboardPageTurnView: View {
         for pageTurn: (progress: CGFloat, isTurningForward: Bool, isTurningBackward: Bool)
     ) -> DaybookPageTurnAnimation? {
         if pageTurn.isTurningForward {
-            guard currentPageIndex < images.count - 1 else { return nil }
+            guard currentPageIndex < totalPageCount - 1 else { return nil }
             return .forward(revealed: currentPageIndex + 1, folding: currentPageIndex)
         }
 
@@ -4803,7 +4944,7 @@ private struct JournalStoryboardPageTurnView: View {
         let threshold = max(64, width * 0.22)
         let releaseProgress = min(1, abs(value.translation.width) / (width * 0.62))
 
-        if predicted < -threshold, currentPageIndex < images.count - 1 {
+        if predicted < -threshold, currentPageIndex < totalPageCount - 1 {
             completeDragTurn(offset: 1, from: releaseProgress)
         } else if predicted > threshold, currentPageIndex > 0 {
             completeDragTurn(offset: -1, from: releaseProgress)
@@ -4843,7 +4984,7 @@ private struct JournalStoryboardPageTurnView: View {
     }
 
     private func image(at pageIndex: Int) -> UIImage? {
-        let index = clampedPageIndex(pageIndex)
+        let index = clampedPageIndex(pageIndex) - 1
         guard images.indices.contains(index) else {
             return nil
         }
@@ -4852,7 +4993,11 @@ private struct JournalStoryboardPageTurnView: View {
     }
 
     private func clampedPageIndex(_ pageIndex: Int) -> Int {
-        min(max(0, pageIndex), max(0, images.count - 1))
+        min(max(0, pageIndex), max(0, totalPageCount - 1))
+    }
+
+    private var totalPageCount: Int {
+        images.count + 1
     }
 }
 
@@ -4885,6 +5030,128 @@ private struct JournalStoryboardComicPage: View {
                 .shadow(color: .black.opacity(0.18), radius: 10, y: 6)
                 .frame(width: proxy.size.width, height: proxy.size.height)
         }
+    }
+}
+
+private struct JournalStoryboardReaderCoverPage: View {
+    let title: String
+    let color: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackImageName: String?
+    let pageCountText: String
+    let storyboardCountText: String
+    var showsDecorativeCopy = true
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                coverFill
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.18),
+                        Color.black.opacity(0.04),
+                        Color.black.opacity(0.64)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
+
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.5),
+                        Color.black.opacity(0.2),
+                        Color.clear
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: max(22, proxy.size.width * 0.13))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .allowsHitTesting(false)
+
+                VStack(spacing: max(8, proxy.size.height * 0.022)) {
+                    if showsDecorativeCopy {
+                        Text("STORYTOPIA JOURNAL")
+                            .font(.system(size: max(8, proxy.size.width * 0.036), weight: .heavy, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.86))
+                            .kerning(1.2)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Text(title.uppercased())
+                        .font(.system(size: max(16, min(40, proxy.size.width * 0.116)), weight: .heavy, design: .serif))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.62)
+                        .multilineTextAlignment(.center)
+                        .shadow(color: Color.black.opacity(0.42), radius: 10, y: 3)
+                        .padding(.horizontal, max(18, proxy.size.width * 0.11))
+
+                    if showsDecorativeCopy {
+                        HStack(spacing: 10) {
+                            coverStat(systemName: "book.pages", text: pageCountText)
+                            coverStat(systemName: "photo.on.rectangle", text: storyboardCountText)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                .padding(.horizontal, max(10, proxy.size.width * 0.055))
+                .padding(.top, max(12, proxy.size.height * 0.058))
+                .padding(.bottom, max(18, proxy.size.height * 0.082))
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.14))
+                    .frame(width: 1)
+                    .padding(.leading, max(14, proxy.size.width * 0.075))
+                    .blendMode(.screen)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var coverFill: some View {
+        if let coverImage {
+            Image(uiImage: coverImage)
+                .resizable()
+                .scaledToFill()
+        } else if let remoteCoverURL {
+            RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
+        } else if let fallbackImageName {
+            Image(fallbackImageName)
+                .resizable()
+                .scaledToFill()
+        } else {
+            color
+        }
+    }
+
+    private func coverStat(systemName: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemName)
+                .font(.system(size: 10, weight: .bold))
+
+            Text(text)
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .foregroundStyle(Color.white.opacity(0.9))
+        .padding(.horizontal, 8)
+        .frame(height: 22)
+        .background(Color.black.opacity(0.24), in: Capsule())
     }
 }
 
@@ -11832,6 +12099,7 @@ private struct PrototypeChapterDetailView: View {
     @State private var mediaStoryboards: [GeneratedStoryboard] = []
     @State private var isLoadingMediaStoryboards = false
     @State private var mediaStoryboardErrorMessage: String?
+    @State private var hasVisibleJournalEntries: Bool
 
     private var sections: [String] {
         ["Pages", "Media"]
@@ -11966,6 +12234,7 @@ private struct PrototypeChapterDetailView: View {
     ) {
         _chapter = State(initialValue: chapter)
         _selectedSection = State(initialValue: Self.initialSection(for: chapter, presentation: presentation))
+        _hasVisibleJournalEntries = State(initialValue: Self.hasLocalEntries(for: chapter))
         self.entryDate = entryDate
         self.presentation = presentation
         self.onNewEntryPresentationChange = onNewEntryPresentationChange
@@ -11989,16 +12258,6 @@ private struct PrototypeChapterDetailView: View {
 
                 journalDetailSheetScroll(proxy: proxy)
                     .zIndex(1)
-
-                journalHeroOpenTapTargets(proxy: proxy)
-                    .zIndex(2)
-
-                if !chapter.entries.isEmpty {
-                    journalDetailFloatingWriteButton
-                        .padding(.trailing, 20)
-                        .padding(.bottom, max(22, proxy.safeAreaInsets.bottom + 10))
-                        .zIndex(3)
-                }
             }
         }
         .preferredColorScheme(.light)
@@ -12048,6 +12307,7 @@ private struct PrototypeChapterDetailView: View {
                     } else {
                         chapter.entries.insert(entry, at: 0)
                     }
+                    hasVisibleJournalEntries = true
                     selectedSection = "Pages"
                     onCreateStory(entry)
                 }
@@ -12094,7 +12354,14 @@ private struct PrototypeChapterDetailView: View {
         .navigationDestination(isPresented: $isComicReaderPresented) {
             JournalStoryboardComicReaderView(
                 storyboards: mediaStoryboards,
-                currentPageIndex: $comicPageIndex
+                currentPageIndex: $comicPageIndex,
+                journalTitle: chapter.title,
+                journalColor: chapter.color,
+                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
+                fallbackCoverImageName: chapter.coverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: mediaCountText
             )
         }
         .onAppear {
@@ -12132,6 +12399,29 @@ private struct PrototypeChapterDetailView: View {
                 )
             }
         }
+        // Floating write button — must stay as an outer overlay so the
+        // full-bleed detail sheet cannot cover it.
+        .overlay(alignment: .bottomTrailing) {
+            journalDetailFloatingWriteButton
+                .padding(.trailing, 20)
+                .padding(.bottom, 36)
+        }
+    }
+
+    private var journalDetailFloatingWriteButton: some View {
+        Button {
+            openFreshEntryFromJournalDetail()
+        } label: {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 23, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 64, height: 64)
+                .offset(x: 0, y: -2)
+                .background(Color.black, in: Circle())
+                .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Write")
     }
 
     private func journalDetailLowerBannerBackground(proxy: GeometryProxy) -> some View {
@@ -12187,8 +12477,7 @@ private struct PrototypeChapterDetailView: View {
 
         return ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
-                Color.clear
-                    .frame(height: sheetTopOffset)
+                journalHeroSpacerTapTargets(height: sheetTopOffset, proxy: proxy)
 
                 VStack(alignment: .leading, spacing: 16) {
                     Capsule()
@@ -12208,10 +12497,15 @@ private struct PrototypeChapterDetailView: View {
 
                     sectionPicker
 
-                    if selectedSection == "Pages" {
+                    ZStack(alignment: .top) {
                         entriesList
-                    } else {
-                        mediaGrid
+                            .opacity(selectedSection == "Pages" ? 1 : 0)
+                            .allowsHitTesting(selectedSection == "Pages")
+                            .accessibilityHidden(selectedSection != "Pages")
+
+                        if selectedSection == "Media" {
+                            mediaGrid
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -12228,10 +12522,50 @@ private struct PrototypeChapterDetailView: View {
                     )
                 )
                 .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -8)
+                .contentShape(Rectangle())
+                .onTapGesture { }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(edges: [.top, .bottom])
+        .ignoresSafeArea(edges: .top)
+    }
+
+    private func journalHeroSpacerTapTargets(height: CGFloat, proxy: GeometryProxy) -> some View {
+        let metrics = journalHeroMetrics(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
+
+        return ZStack(alignment: .top) {
+            Color.clear
+                .frame(height: height)
+
+            VStack(alignment: .center, spacing: 14) {
+                Color.clear
+                    .frame(height: metrics.coverTopOffset)
+
+                Button {
+                    openJournalComicReader()
+                } label: {
+                    Color.clear
+                        .frame(width: metrics.coverWidth, height: metrics.coverHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .allowsHitTesting(!isOpeningJournalComicReader)
+                .accessibilityLabel("Open journal comic")
+                .accessibilityHint("Opens the storyboard images in the comic reader")
+
+                Button {
+                    openJournalComicReader()
+                } label: {
+                    Color.clear
+                        .frame(width: 160, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .allowsHitTesting(!isOpeningJournalComicReader)
+                .accessibilityLabel("Tap to open journal comic")
+            }
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
     }
 
     private func journalDetailSheetTopOffset(height: CGFloat, safeAreaTop: CGFloat) -> CGFloat {
@@ -12239,44 +12573,6 @@ private struct PrototypeChapterDetailView: View {
         let minimumOffset = safeAreaTop + 420
         let maximumOffset = height - 210
         return min(max(preferredOffset, minimumOffset), maximumOffset)
-    }
-
-    private func journalHeroOpenTapTargets(proxy: GeometryProxy) -> some View {
-        let metrics = journalHeroMetrics(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
-
-        return VStack(spacing: 0) {
-            Color.clear
-                .frame(height: metrics.coverTopOffset)
-
-            Button {
-                openJournalComicReader()
-            } label: {
-                Color.clear
-                    .frame(width: metrics.coverWidth, height: metrics.coverHeight)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .allowsHitTesting(!isOpeningJournalComicReader)
-            .accessibilityHidden(true)
-
-            Color.clear
-                .frame(height: 8)
-
-            Button {
-                openJournalComicReader()
-            } label: {
-                Color.clear
-                    .frame(width: 160, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .allowsHitTesting(!isOpeningJournalComicReader)
-            .accessibilityHidden(true)
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .ignoresSafeArea(edges: .top)
     }
 
     private func playBookOpenHint() {
@@ -12329,7 +12625,7 @@ private struct PrototypeChapterDetailView: View {
         bookOpenHintTask?.cancel()
         bookOpenHintProgress = 0
         bookNavigationOpenProgress = 0
-        comicPageIndex = min(max(comicPageIndex, 0), max(0, mediaStoryboards.count - 1))
+        comicPageIndex = 0
 
         guard !reduceMotion else {
             bookOpenHintTask = nil
@@ -12465,22 +12761,6 @@ private struct PrototypeChapterDetailView: View {
             coverHeight: coverHeight,
             backdropHeight: bannerHeight + coverStackHeight - coverOverlap
         )
-    }
-
-    private var journalDetailFloatingWriteButton: some View {
-        Button {
-            openFreshEntryFromJournalDetail()
-        } label: {
-            Image(systemName: "square.and.pencil")
-                .font(.system(size: 23, weight: .bold))
-                .foregroundStyle(Color.white)
-                .frame(width: 64, height: 64)
-                .offset(x: 0, y: -2)
-                .background(Color.homeAccent, in: Circle())
-                .shadow(color: Color.storyInk.opacity(0.18), radius: 12, y: 6)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Write")
     }
 
     private func openFreshEntryFromJournalDetail() {
@@ -12632,9 +12912,15 @@ private struct PrototypeChapterDetailView: View {
                 }
             },
             onEntriesChanged: { entries in
-                chapter.entries = entries
-                onChapterUpdated(chapter)
-            }
+                let hadKnownEntries = Self.hasLocalEntries(for: chapter)
+                // Avoid wiping known memberships while the browser is still loading
+                // cloud-backed entries into `filteredItems`.
+                if !entries.isEmpty || !hadKnownEntries {
+                    chapter.entries = entries
+                    onChapterUpdated(chapter)
+                }
+            },
+            hasVisibleJournalEntries: $hasVisibleJournalEntries
         )
     }
 
@@ -12853,6 +13139,14 @@ private struct PrototypeChapterDetailView: View {
         )
     }
 
+    private static func hasLocalEntries(for chapter: PrototypeChapter) -> Bool {
+        !chapter.entries.isEmpty
+            || !StoryEntryStore.clientEntryIDs(for: chapter.title).isEmpty
+            || CreateEntryDraftStore.loadAll().contains { entry in
+                EntryJournalLinkStore.loadJournalTitles(for: entry.id).contains(chapter.title)
+            }
+    }
+
     private func storyboardsForMedia(
         clientEntryIDs: Set<UUID>,
         in storyboards: [GeneratedStoryboard]
@@ -12895,6 +13189,7 @@ private struct JournalDetailEntryBrowser: View {
     let onCreateEntry: () -> Void
     let onOpenEntry: (CreateEntryDraft, Bool, UIImage?) -> Void
     let onEntriesChanged: ([PrototypeEntry]) -> Void
+    @Binding var hasVisibleJournalEntries: Bool
 
     @State private var localEntries: [CreateEntryDraft] = []
     @State private var cloudEntries: [JournalEntry] = []
@@ -12970,8 +13265,12 @@ private struct JournalDetailEntryBrowser: View {
             }
         }
         .onAppear(perform: refreshEntries)
+        .onAppear(perform: notifyVisibleEntriesAvailability)
         .onChange(of: authStore.userID) { _ in
             refreshEntries()
+        }
+        .onChange(of: filteredItems.map(\.id)) { _ in
+            notifyVisibleEntriesAvailability()
         }
         .onChange(of: editMode) { mode in
             if mode != .active {
@@ -13315,6 +13614,7 @@ private struct JournalDetailEntryBrowser: View {
         localEntries = CreateEntryDraftStore.loadAll()
         completedStoryboards = GeneratedStoryboardStore.load()
         onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
+        notifyVisibleEntriesAvailability()
 
         guard authStore.userID != nil else {
             cloudEntries = []
@@ -13334,6 +13634,7 @@ private struct JournalDetailEntryBrowser: View {
                     errorMessage = nil
                     isLoading = false
                     onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
+                    notifyVisibleEntriesAvailability()
                     loadMissingCompletedStoryboards()
                 }
             } catch {
@@ -13410,6 +13711,7 @@ private struct JournalDetailEntryBrowser: View {
                     cloudStoryboardClientIDs.subtract(failedClientEntryIDs)
                     failedCloudStoryboardClientIDs.formUnion(failedClientEntryIDs)
                     onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
+                    notifyVisibleEntriesAvailability()
                 }
             } catch {
                 await MainActor.run {
@@ -13591,8 +13893,21 @@ private struct JournalDetailEntryBrowser: View {
         )
         StoryEntryStore.saveStoredOrder(from: reorderedEntries, for: chapter.title)
         onEntriesChanged(reorderedEntries)
+        notifyVisibleEntriesAvailability()
         Task {
             await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
+        }
+    }
+
+    private func notifyVisibleEntriesAvailability() {
+        if !filteredItems.isEmpty {
+            hasVisibleJournalEntries = true
+            return
+        }
+
+        // Avoid flashing the button away while cloud entries are still loading.
+        if !isLoading {
+            hasVisibleJournalEntries = false
         }
     }
 
