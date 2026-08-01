@@ -9,17 +9,18 @@ enum CreateEntryPresentation {
     case compose
     case composeInJournal(title: String, initialDate: Date, locksEntryDate: Bool)
     case editDraft
+    case editDraftInJournal(title: String)
 
     var showsNextButton: Bool {
         switch self {
-        case .compose, .composeInJournal, .editDraft:
+        case .compose, .composeInJournal, .editDraft, .editDraftInJournal:
             return true
         }
     }
 
     var showsEntryOptionsFlow: Bool {
         switch self {
-        case .compose, .composeInJournal, .editDraft:
+        case .compose, .composeInJournal, .editDraft, .editDraftInJournal:
             return true
         }
     }
@@ -33,11 +34,12 @@ enum CreateEntryPresentation {
     }
 
     var isEditDraft: Bool {
-        if case .editDraft = self {
+        switch self {
+        case .editDraft, .editDraftInJournal:
             return true
+        default:
+            return false
         }
-
-        return false
     }
 
     var directJournalTitle: String? {
@@ -46,6 +48,15 @@ enum CreateEntryPresentation {
         }
 
         return nil
+    }
+
+    var initialJournalTitle: String? {
+        switch self {
+        case .composeInJournal(let title, _, _), .editDraftInJournal(let title):
+            return title
+        case .compose, .editDraft:
+            return nil
+        }
     }
 
     var directJournalInitialDate: Date? {
@@ -60,7 +71,7 @@ enum CreateEntryPresentation {
         switch self {
         case .compose, .composeInJournal:
             return "Write Entry"
-        case .editDraft:
+        case .editDraft, .editDraftInJournal:
             return "Edit Entry"
         }
     }
@@ -69,7 +80,7 @@ enum CreateEntryPresentation {
         switch self {
         case .compose, .composeInJournal:
             return "xmark"
-        case .editDraft:
+        case .editDraft, .editDraftInJournal:
             return "chevron.left"
         }
     }
@@ -78,7 +89,7 @@ enum CreateEntryPresentation {
         switch self {
         case .compose, .composeInJournal:
             return "Close"
-        case .editDraft:
+        case .editDraft, .editDraftInJournal:
             return "Back"
         }
     }
@@ -87,7 +98,7 @@ enum CreateEntryPresentation {
         switch self {
         case .compose, .composeInJournal:
             return "Save this entry?"
-        case .editDraft:
+        case .editDraft, .editDraftInJournal:
             return "Save changes?"
         }
     }
@@ -96,7 +107,7 @@ enum CreateEntryPresentation {
         switch self {
         case .compose, .composeInJournal:
             return "You've started an entry. Would you like to save it before leaving?"
-        case .editDraft:
+        case .editDraft, .editDraftInJournal:
             return "You've made changes to this entry. Would you like to save them before leaving?"
         }
     }
@@ -105,7 +116,7 @@ enum CreateEntryPresentation {
         switch self {
         case .compose, .composeInJournal:
             return "Save Entry"
-        case .editDraft:
+        case .editDraft, .editDraftInJournal:
             return "Save Changes"
         }
     }
@@ -114,7 +125,7 @@ enum CreateEntryPresentation {
         switch self {
         case .compose, .composeInJournal:
             return "Discard"
-        case .editDraft:
+        case .editDraft, .editDraftInJournal:
             return "Discard Changes"
         }
     }
@@ -1352,8 +1363,7 @@ struct CreateEntryView: View {
     @State private var isFullScreenEditorVisible = false
     @State private var isShowingArtStyleGrid = false
     @State private var isShowingJournalPromptsSheet = false
-    @State private var isShowingFontFormattingSheet = false
-    @State private var isShowingPaperFormattingSheet = false
+    @State private var isShowingCustomizeSheet = false
     @State private var isShowingEntryDateSheet = false
     @State private var isShowingEntryLocationSheet = false
     @State private var isShowingJournalDestinationSheet = false
@@ -1387,6 +1397,7 @@ struct CreateEntryView: View {
     @State private var characterEditorSession: CharacterEditorSession?
     @State private var isPreviewingCompletedStoryboard = false
     @State private var isEditingCompletedEntry = false
+    @State private var isPhotosPanelVisible = false
     @State private var isPhotoTabCollapsed = true
     @State private var isCharacterTabCollapsed = true
     @State private var isStoryDetailsTabCollapsed = true
@@ -1648,41 +1659,6 @@ struct CreateEntryView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $isShowingJournalPromptsSheet) {
-            NavigationStack {
-                JournalEntryPromptsSheet { prompt in
-                    applyJournalPrompt(prompt)
-                }
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $isShowingFontFormattingSheet) {
-            CreateFormattingSheet(
-                mode: .fontStyle,
-                selectedFont: $selectedFontChoice,
-                selectedPaperStyle: $selectedPaperStyleChoice,
-                selectedTextColorIndex: $selectedTextColorIndex,
-                selectedPaperColorIndex: $selectedPaperColorIndex,
-                previewTextSize: $previewTextSize
-            )
-            .presentationDetents([.height(430), .large])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.homePageBackground)
-        }
-        .sheet(isPresented: $isShowingPaperFormattingSheet) {
-            CreateFormattingSheet(
-                mode: .paperStyle,
-                selectedFont: $selectedFontChoice,
-                selectedPaperStyle: $selectedPaperStyleChoice,
-                selectedTextColorIndex: $selectedTextColorIndex,
-                selectedPaperColorIndex: $selectedPaperColorIndex,
-                previewTextSize: $previewTextSize
-            )
-            .presentationDetents([.height(430), .large])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.homePageBackground)
-        }
         .sheet(isPresented: $isShowingEntryDateSheet) {
             entryDateSheet
                 .presentationDetents([.height(520), .large])
@@ -1902,11 +1878,27 @@ struct CreateEntryView: View {
     }
 
     private func configureDirectJournalEntryIfNeeded() {
-        guard let initialDate = presentation.directJournalInitialDate, !hasDraftContent else {
+        if let initialDate = presentation.directJournalInitialDate, !hasDraftContent {
+            storyDate = initialDate
+        }
+
+        seedInitialJournalSelectionIfNeeded()
+    }
+
+    private func seedInitialJournalSelectionIfNeeded() {
+        guard let initialJournalTitle = presentation.initialJournalTitle else {
             return
         }
 
-        storyDate = initialDate
+        if selectedCustomJournalTitles.isEmpty {
+            selectedCustomJournalTitles = [initialJournalTitle]
+        } else {
+            selectedCustomJournalTitles.insert(initialJournalTitle)
+        }
+
+        if selectedCustomJournalTitle == nil {
+            selectedCustomJournalTitle = initialJournalTitle
+        }
     }
 
     private func handleActiveDraftChange(_ draftID: UUID?) {
@@ -2932,7 +2924,7 @@ struct CreateEntryView: View {
         }
 
         return EntryDraftSavePayload(
-            id: pendingSave.id,
+            id: pendingSave.id ?? UUID(),
             title: pendingSave.title,
             text: pendingSave.text,
             richText: pendingSave.richText,
@@ -2968,6 +2960,7 @@ struct CreateEntryView: View {
             return nil
         }
 
+        stageSelectedJournalMemberships(for: payload.id)
         setCloudSaveState(payload.photos.isEmpty ? .saving : .uploadingPhotos)
 
         do {
@@ -3014,7 +3007,7 @@ struct CreateEntryView: View {
     }
 
     private func discardDraftAndExit() {
-        if case .editDraft = presentation {
+        if presentation.isEditDraft {
             closeEditorWithoutSaving()
             return
         }
@@ -3077,14 +3070,19 @@ struct CreateEntryView: View {
             linkedJournalTitles = []
             selectedCustomJournalTitle = nil
             selectedCustomJournalTitles = []
+            seedInitialJournalSelectionIfNeeded()
             return
         }
 
         let journalTitles = EntryJournalLinkStore.loadJournalTitles(for: draftID)
-        linkedJournalTitles = journalTitles
-        linkedJournalTitle = journalTitles.sorted().first
-        selectedCustomJournalTitles = journalTitles
-        selectedCustomJournalTitle = journalTitles.sorted().first
+        var hydratedJournalTitles = journalTitles
+        if let initialJournalTitle = presentation.initialJournalTitle {
+            hydratedJournalTitles.insert(initialJournalTitle)
+        }
+        linkedJournalTitles = hydratedJournalTitles
+        linkedJournalTitle = hydratedJournalTitles.sorted().first
+        selectedCustomJournalTitles = hydratedJournalTitles
+        selectedCustomJournalTitle = hydratedJournalTitles.sorted().first
     }
 
     private func loadSavedDraftIfNeeded() {
@@ -3240,6 +3238,9 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: isKeyboardVisible)
             .animation(.snappy(duration: 0.22), value: activeKeyboardFormattingMode)
             .animation(.snappy(duration: 0.22), value: hasStoryboardPhotos)
+            .animation(.snappy(duration: 0.22), value: isPhotosPanelVisible)
+            .animation(.snappy(duration: 0.22), value: isShowingCustomizeSheet)
+            .animation(.snappy(duration: 0.22), value: isShowingJournalPromptsSheet)
             .animation(.snappy(duration: 0.22), value: isCompletedEntryViewMode)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3308,21 +3309,24 @@ struct CreateEntryView: View {
 
     private var entryDraftBottomBar: some View {
         VStack(spacing: 0) {
-            if showsComposeFlowControls {
-                bottomToolbarNextButton
+            if isPhotosPanelVisible {
+                photosAndCharactersPanel
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if isShowingCustomizeSheet {
+                customizeOptionsPanel
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if isShowingJournalPromptsSheet {
+                promptsOptionsPanel
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            VStack(spacing: 8) {
-                photosAttachedTab
-                charactersAttachedTab
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 10)
-
-            unifiedEditorToolbar
+            floatingEditorMenu
         }
     }
 
@@ -3575,76 +3579,211 @@ struct CreateEntryView: View {
         }
     }
 
-    private var unifiedEditorToolbar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                toolbarActionButton(title: "Font", systemName: "textformat") {
-                    openFontOptions()
-                }
-
-                toolbarActionButton(title: "Paper", systemName: "doc.text", accessibilityLabel: "Background") {
-                    openPaperOptions()
-                }
-
-                toolbarActionButton(title: "Journal", systemName: "book.closed") {
-                    openAddToJournalPage()
-                }
-
-                toolbarActionButton(title: "Prompts", systemName: "lightbulb") {
-                    openJournalPromptsSheet()
-                }
+    private var floatingEditorMenu: some View {
+        HStack(spacing: 4) {
+            floatingMenuActionButton(
+                title: "Photos",
+                systemName: isPhotosPanelVisible ? "photo.fill" : "photo",
+                foregroundColor: isPhotosPanelVisible ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                badgeCount: photosMenuBadgeCount,
+                accessibilityLabel: isPhotosPanelVisible ? "Close photos panel" : "Open photos panel"
+            ) {
+                togglePhotosPanel()
             }
-            .padding(.trailing, 2)
+
+            floatingMenuActionButton(
+                title: "Customize",
+                systemName: "slider.horizontal.3",
+                foregroundColor: isShowingCustomizeSheet ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                accessibilityLabel: isShowingCustomizeSheet ? "Close customize panel" : "Open customize panel"
+            ) {
+                openCustomizeOptions()
+            }
+
+            floatingMenuActionButton(
+                title: "Prompts",
+                systemName: isShowingJournalPromptsSheet ? "lightbulb.fill" : "lightbulb",
+                foregroundColor: isShowingJournalPromptsSheet ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                accessibilityLabel: isShowingJournalPromptsSheet ? "Close prompts panel" : "Open prompts panel"
+            ) {
+                openJournalPromptsSheet()
+            }
+
+            if showsComposeFlowControls {
+                bottomToolbarNextButton
+                    .padding(.leading, 4)
+                    .layoutPriority(2)
+            }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 0)
+        .padding(.vertical, 7)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.62), lineWidth: 1)
+        )
+        .shadow(color: Color.storyInk.opacity(0.14), radius: 12, y: 5)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .frame(maxWidth: 420)
         .frame(maxWidth: .infinity)
-        .background(Color.white)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(Color.storyBorder.opacity(0.46))
-                .frame(height: 0.5)
-        }
     }
 
-    private func toolbarActionButton(
+    private var photosAndCharactersPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "photo.stack")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.storyInk.opacity(0.84))
+                        .frame(width: 20, height: 20)
+
+                    Text("Photos")
+                        .font(.system(size: 14, weight: .semibold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    closePhotosPanel()
+                } label: {
+                    photoCollapseChevron(systemName: "chevron.down")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close photos panel")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            VStack(alignment: .leading, spacing: 8) {
+                photoStripHeader
+
+                referencePhotoExplainerText
+
+                referencePhotoStripRow
+                    .padding(.horizontal, -16)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+
+            Divider()
+                .background(Color.storyBorder.opacity(0.55))
+                .padding(.horizontal, 16)
+
+            VStack(alignment: .leading, spacing: 8) {
+                characterStripHeader
+
+                characterPhotoExplainerText
+
+                characterPhotoStripRow
+                    .padding(.horizontal, -16)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
+
+    private var customizeOptionsPanel: some View {
+        CreateFormattingSheet(
+            initialTab: .fontStyle,
+            selectedFont: $selectedFontChoice,
+            selectedPaperStyle: $selectedPaperStyleChoice,
+            selectedTextColorIndex: $selectedTextColorIndex,
+            selectedPaperColorIndex: $selectedPaperColorIndex,
+            previewTextSize: $previewTextSize,
+            onClose: closeCustomizePanel
+        )
+        .frame(maxHeight: customizePanelMaxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
+
+    private var promptsOptionsPanel: some View {
+        JournalEntryPromptsSheet(
+            onSelect: { prompt in
+                applyJournalPrompt(prompt)
+            },
+            onClose: closePromptsPanel,
+            showsNavigationChrome: false
+        )
+        .frame(maxHeight: promptsPanelMaxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
+
+    private var customizePanelMaxHeight: CGFloat {
+        min(UIScreen.main.bounds.height * 0.62, 560)
+    }
+
+    private var promptsPanelMaxHeight: CGFloat {
+        min(UIScreen.main.bounds.height * 0.72, 650)
+    }
+
+    private func floatingMenuActionButton(
         title: String,
         systemName: String,
-        isSelected: Bool = false,
         foregroundColor: Color = Color.storyInk.opacity(0.82),
+        badgeCount: Int? = nil,
         accessibilityLabel: String? = nil,
-        showsTitle: Bool = true,
-        action: @escaping () -> Void
+        action: (() -> Void)? = nil
     ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: systemName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(foregroundColor.opacity(0.92))
-                    .frame(width: 17, height: 17)
+        Button {
+            action?()
+        } label: {
+            VStack(spacing: 4) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: systemName)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(foregroundColor.opacity(0.92))
+                        .frame(width: 22, height: 22)
 
-                if showsTitle {
-                    Text(title)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(foregroundColor)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
+                    if let badgeCount, badgeCount > 0 {
+                        Text(badgeCount > 9 ? "9+" : "\(badgeCount)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .minimumScaleFactor(0.75)
+                            .frame(minWidth: 16, minHeight: 16)
+                            .padding(.horizontal, badgeCount > 9 ? 2 : 0)
+                            .background(Color.storyPurple, in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white, lineWidth: 1.5)
+                            )
+                            .offset(x: 9, y: -7)
+                    }
                 }
+                .frame(width: 28, height: 22)
+
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(foregroundColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
-            .padding(.horizontal, showsTitle ? 13 : 10)
-            .frame(width: showsTitle ? nil : 38)
-            .frame(height: 38)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(isSelected ? Color.storyPurple.opacity(0.5) : Color.storyBorder.opacity(0.72), lineWidth: isSelected ? 1.3 : 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .frame(minWidth: 58, maxWidth: .infinity)
+            .frame(height: 50)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel ?? title)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var bottomToolbarNextButton: some View {
@@ -3653,17 +3792,23 @@ struct CreateEntryView: View {
         } label: {
             HStack(spacing: 5) {
                 Text("Next")
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
                 Image(systemName: "arrow.right")
                     .font(.system(size: 12, weight: .bold))
             }
             .font(.system(size: 15, weight: .bold))
-            .foregroundStyle(Color.storyPurple)
-            .frame(minWidth: 66, minHeight: 44, alignment: .trailing)
-            .contentShape(Rectangle())
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 14)
+            .frame(width: 92, height: 44)
+            .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .shadow(color: Color.storyPurple.opacity(0.28), radius: 7, y: 3)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(isToolbarSaveInProgress)
+        .opacity(isToolbarSaveInProgress ? 0.58 : 1)
         .accessibilityLabel("Next")
     }
 
@@ -3692,7 +3837,11 @@ struct CreateEntryView: View {
 
     private func openJournalPromptsSheet() {
         dismissKeyboard()
-        isShowingJournalPromptsSheet = true
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingJournalPromptsSheet.toggle()
+            isShowingCustomizeSheet = false
+            isPhotosPanelVisible = false
+        }
     }
 
     private func applyJournalPrompt(_ prompt: JournalEntryPrompt) {
@@ -3709,7 +3858,7 @@ struct CreateEntryView: View {
         let trimmedEntryText = entryText.trimmingCharacters(in: .whitespacesAndNewlines)
         entryText = trimmedEntryText.isEmpty ? trimmedText : "\(trimmedEntryText)\n\n\(trimmedText)"
         entryRichText = NotebookRichTextDocument(text: entryText)
-        isShowingJournalPromptsSheet = false
+        closePromptsPanel()
     }
 
     private var entryDraftKeyboardAccessory: some View {
@@ -4328,14 +4477,13 @@ struct CreateEntryView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private func openFontOptions() {
+    private func openCustomizeOptions() {
         dismissKeyboard()
-        isShowingFontFormattingSheet = true
-    }
-
-    private func openPaperOptions() {
-        dismissKeyboard()
-        isShowingPaperFormattingSheet = true
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingCustomizeSheet.toggle()
+            isShowingJournalPromptsSheet = false
+            isPhotosPanelVisible = false
+        }
     }
 
     private func openAddToJournalPage() {
@@ -4392,15 +4540,43 @@ struct CreateEntryView: View {
     }
 
     private var selectedEntryJournalTitle: String? {
-        if let directJournalTitle = presentation.directJournalTitle {
-            return directJournalTitle
+        if let selectedJournalTitle = selectedCustomJournalTitle ?? selectedCustomJournalTitles.sorted().first {
+            return selectedJournalTitle
         }
 
-        return selectedCustomJournalTitle ?? selectedCustomJournalTitles.sorted().first
+        if presentation.initialJournalTitle != nil {
+            return nil
+        }
+
+        return presentation.directJournalTitle
+    }
+
+    private func stageSelectedJournalMemberships(for draftID: UUID?) {
+        guard let draftID, !selectedCustomJournalTitles.isEmpty,
+              let entry = currentJournalEntry(id: draftID) else {
+            return
+        }
+
+        selectedCustomJournalTitles.sorted().forEach { journalTitle in
+            StoryEntryStore.upsert(entry, to: journalTitle, syncsToCloud: false)
+            onJournalEntryCreated(journalTitle, entry)
+            EntryJournalLinkStore.save(
+                journalTitle: journalTitle,
+                journalEntryID: entry.id,
+                for: draftID
+            )
+        }
+
+        linkedJournalTitles = selectedCustomJournalTitles
+        linkedJournalTitle = selectedCustomJournalTitles.sorted().first
     }
 
     private var hasStoryboardPhotos: Bool {
         storyboardPhotos.contains { $0 != nil }
+    }
+
+    private var photosMenuBadgeCount: Int {
+        storyboardPhotos.compactMap { $0 }.count + entryCharacters.count
     }
 
     @discardableResult
@@ -5415,6 +5591,32 @@ struct CreateEntryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Add reference photos")
+    }
+
+    private func togglePhotosPanel() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isPhotosPanelVisible.toggle()
+            isShowingCustomizeSheet = false
+            isShowingJournalPromptsSheet = false
+        }
+    }
+
+    private func closePhotosPanel() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isPhotosPanelVisible = false
+        }
+    }
+
+    private func closeCustomizePanel() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingCustomizeSheet = false
+        }
+    }
+
+    private func closePromptsPanel() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingJournalPromptsSheet = false
+        }
     }
 
     private func togglePhotoTabCollapsed() {
@@ -6543,9 +6745,21 @@ private struct StoryboardGenerationShimmerBar: View {
 
 private struct JournalEntryPromptsSheet: View {
     let onSelect: (JournalEntryPrompt) -> Void
+    let onClose: (() -> Void)?
+    let showsNavigationChrome: Bool
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedCategory: JournalPromptCategory = .today
+
+    init(
+        onSelect: @escaping (JournalEntryPrompt) -> Void,
+        onClose: (() -> Void)? = nil,
+        showsNavigationChrome: Bool = true
+    ) {
+        self.onSelect = onSelect
+        self.onClose = onClose
+        self.showsNavigationChrome = showsNavigationChrome
+    }
 
     private var prompts: [JournalEntryPrompt] {
         switch selectedCategory {
@@ -6559,6 +6773,58 @@ private struct JournalEntryPromptsSheet: View {
     }
 
     var body: some View {
+        Group {
+            if showsNavigationChrome {
+                promptContent
+                    .background(Color.homePageBackground)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Cancel") {
+                                dismiss()
+                            }
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Color.storyPurple)
+                        }
+                        .hideSharedBackgroundIfAvailable()
+
+                        ToolbarItem(placement: .principal) {
+                            promptsTitle
+                        }
+                    }
+                    .toolbarBackground(Color.homePageBackground, for: .navigationBar)
+                    .toolbarBackground(.visible, for: .navigationBar)
+            } else {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        promptsTitle
+
+                        Spacer(minLength: 8)
+
+                        Button {
+                            onClose?()
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundStyle(Color.storyInk.opacity(0.62))
+                                .frame(width: 34, height: 34)
+                                .background(Color.homeInputGray.opacity(0.7), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Close prompts panel")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+
+                    promptContent
+                }
+                .background(Color.white)
+            }
+        }
+    }
+
+    private var promptContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 ForEach(JournalPromptCategory.allCases) { category in
@@ -6587,32 +6853,18 @@ private struct JournalEntryPromptsSheet: View {
                 .padding(.bottom, 24)
             }
         }
-        .background(Color.homePageBackground)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .font(.system(size: 16, weight: .bold))
+    }
+
+    private var promptsTitle: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "lightbulb")
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.storyPurple)
-            }
-            .hideSharedBackgroundIfAvailable()
 
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 7) {
-                    Image(systemName: "lightbulb")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.storyPurple)
-
-                    Text("Journal Suggestions")
-                        .font(.system(size: 18, weight: .bold, design: .serif))
-                        .foregroundStyle(Color.storyInk)
-                }
-            }
+            Text("Journal Suggestions")
+                .font(.system(size: 18, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
         }
-        .toolbarBackground(Color.homePageBackground, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
     }
 
     private func promptCategoryTab(_ category: JournalPromptCategory) -> some View {
@@ -7757,14 +8009,33 @@ struct NotebookPaperBackground: View {
 }
 
 private struct CreateFormattingSheet: View {
-    let mode: CreateFormattingTab
+    @State private var selectedTab: CreateFormattingTab
     @Binding var selectedFont: CreateFontChoice
     @Binding var selectedPaperStyle: CreatePaperStyleChoice
     @Binding var selectedTextColorIndex: Int
     @Binding var selectedPaperColorIndex: Int
     @Binding var previewTextSize: Double
+    let onClose: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
+
+    init(
+        initialTab: CreateFormattingTab,
+        selectedFont: Binding<CreateFontChoice>,
+        selectedPaperStyle: Binding<CreatePaperStyleChoice>,
+        selectedTextColorIndex: Binding<Int>,
+        selectedPaperColorIndex: Binding<Int>,
+        previewTextSize: Binding<Double>,
+        onClose: (() -> Void)? = nil
+    ) {
+        _selectedTab = State(initialValue: initialTab)
+        _selectedFont = selectedFont
+        _selectedPaperStyle = selectedPaperStyle
+        _selectedTextColorIndex = selectedTextColorIndex
+        _selectedPaperColorIndex = selectedPaperColorIndex
+        _previewTextSize = previewTextSize
+        self.onClose = onClose
+    }
 
     private var selectedTextColor: Color {
         CreateFormattingPalette.textColors[
@@ -7788,7 +8059,11 @@ private struct CreateFormattingSheet: View {
                 Spacer()
 
                 Button {
-                    dismiss()
+                    if let onClose {
+                        onClose()
+                    } else {
+                        dismiss()
+                    }
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 18, weight: .bold))
@@ -7801,19 +8076,21 @@ private struct CreateFormattingSheet: View {
             }
             .overlay {
                 HStack(spacing: 7) {
-                    Image(systemName: mode.sheetSymbol)
+                    Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Color.storyPurple)
 
-                    Text(mode.sheetTitle)
+                    Text("Customize")
                         .font(.system(size: 19, weight: .bold, design: .serif))
                         .foregroundStyle(Color.storyInk)
                 }
             }
 
+            formattingTabSwitcher
+
             ScrollView(showsIndicators: false) {
                 Group {
-                    switch mode {
+                    switch selectedTab {
                     case .fontStyle:
                         fontStyleContent
                     case .paperStyle:
@@ -7825,7 +8102,7 @@ private struct CreateFormattingSheet: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 18)
-        .background(Color.homePageBackground)
+        .background(Color.white)
     }
 
     private var fontStyleContent: some View {
@@ -7847,6 +8124,44 @@ private struct CreateFormattingSheet: View {
             }
             .padding(.top, 1)
         }
+    }
+
+    private var formattingTabSwitcher: some View {
+        HStack(spacing: 0) {
+            ForEach(CreateFormattingTab.allCases) { tab in
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: tab.sheetSymbol)
+                            .font(.system(size: 13, weight: .semibold))
+
+                        Text(tab.sheetTitle)
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(selectedTab == tab ? Color.storyInk : Color.storyInk.opacity(0.58))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(
+                        Group {
+                            if selectedTab == tab {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Color.white)
+                                    .shadow(color: Color.storyInk.opacity(0.08), radius: 2, y: 1)
+                            }
+                        }
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.sheetTitle)
+                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(Color.homeInputGray.opacity(0.85), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     private var paperStyleContent: some View {

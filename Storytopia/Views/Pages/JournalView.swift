@@ -101,7 +101,7 @@ struct JournalView: View {
 
                 floatingAddButton
                     .padding(.trailing, 20)
-                    .padding(.bottom, 20)
+                    .padding(.bottom, 0)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .zIndex(2)
 
@@ -302,9 +302,9 @@ struct JournalView: View {
             handleCreateButtonTapped()
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 26, weight: .medium))
+                .font(.system(size: 25, weight: .regular))
                 .foregroundStyle(Color.white)
-                .frame(width: 64, height: 64)
+                .frame(width: 60, height: 60)
                 .background(Color.black, in: Circle())
                 .shadow(color: Color.storyInk.opacity(0.18), radius: 12, y: 6)
         }
@@ -769,6 +769,7 @@ struct JournalView: View {
         StoryEntryStore.deleteAll(for: journal.title)
 
         chapters.removeAll { $0.id == journal.id }
+        persistManualJournalOrder()
     }
 
     private func moveChapters(from source: IndexSet, to destination: Int) {
@@ -882,12 +883,14 @@ struct JournalView: View {
     private func openExistingEntryFromJournalDetail(
         _ entry: CreateEntryDraft,
         isCompleted: Bool,
-        storyboardImage: UIImage?
+        storyboardImage: UIImage?,
+        presentation: CreateEntryPresentation
     ) {
         isOpeningEntryFromEntries = true
         isOpeningCompletedEntryFromEntries = isCompleted
         completedEntryOpenedStoryboardImage = storyboardImage
         activeDraftID = entry.id
+        journalCreatePresentation = presentation
         selectedPage = .create
     }
 
@@ -2881,6 +2884,9 @@ struct ClassicJournalView: View {
         StoryEntryStore.deleteAll(for: journal.title)
 
         chapters.removeAll { $0.id == journal.id }
+        let userChapters = chapters.filter { UserChapterStore.contains(title: $0.title) }
+        UserChapterStore.replace(with: userChapters)
+        UserChapterStore.syncOrderToCloud(userChapters)
     }
 
     private func moveChapters(from source: IndexSet, to destination: Int) {
@@ -6934,7 +6940,7 @@ enum DailyJournalData {
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
-        onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)? = nil,
+        onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
         onAddEntry: @escaping (PrototypeEntry) -> Void
     ) -> some View {
         let datedChapter = dateTitledChapter(from: chapter, dayOffset: dayOffset)
@@ -12069,7 +12075,7 @@ private struct PrototypeChapterDetailView: View {
     let onNewEntryPresentationChange: (Bool) -> Void
     let onCreateEntryRequested: ((CreateEntryPresentation) -> Void)?
     let onChapterUpdated: (PrototypeChapter) -> Void
-    let onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)?
+    let onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)?
     let entryDate: Date
     let presentation: Presentation
 
@@ -12229,7 +12235,7 @@ private struct PrototypeChapterDetailView: View {
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
-        onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?) -> Void)? = nil,
+        onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         _chapter = State(initialValue: chapter)
@@ -12404,8 +12410,15 @@ private struct PrototypeChapterDetailView: View {
         .overlay(alignment: .bottomTrailing) {
             journalDetailFloatingWriteButton
                 .padding(.trailing, 20)
-                .padding(.bottom, 36)
+                .padding(.bottom, 0)
+                .opacity(showsJournalDetailWriteButton ? 1 : 0)
+                .allowsHitTesting(showsJournalDetailWriteButton)
+                .accessibilityHidden(!showsJournalDetailWriteButton)
         }
+    }
+
+    private var showsJournalDetailWriteButton: Bool {
+        hasVisibleJournalEntries || !chapter.entries.isEmpty || Self.hasLocalEntries(for: chapter)
     }
 
     private var journalDetailFloatingWriteButton: some View {
@@ -12413,9 +12426,9 @@ private struct PrototypeChapterDetailView: View {
             openFreshEntryFromJournalDetail()
         } label: {
             Image(systemName: "square.and.pencil")
-                .font(.system(size: 23, weight: .medium))
+                .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(.white)
-                .frame(width: 64, height: 64)
+                .frame(width: 60, height: 60)
                 .offset(x: 0, y: -2)
                 .background(Color.black, in: Circle())
                 .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
@@ -12903,7 +12916,12 @@ private struct PrototypeChapterDetailView: View {
             },
             onOpenEntry: { entry, isCompleted, storyboardImage in
                 if let onOpenExistingEntry {
-                    onOpenExistingEntry(entry, isCompleted, storyboardImage)
+                    onOpenExistingEntry(
+                        entry,
+                        isCompleted,
+                        storyboardImage,
+                        .editDraftInJournal(title: chapter.title)
+                    )
                 } else {
                     activeDraftID = entry.id
                     isOpeningCompletedEntryFromEntries = isCompleted
@@ -12918,6 +12936,9 @@ private struct PrototypeChapterDetailView: View {
                 if !entries.isEmpty || !hadKnownEntries {
                     chapter.entries = entries
                     onChapterUpdated(chapter)
+                }
+                if !entries.isEmpty {
+                    hasVisibleJournalEntries = true
                 }
             },
             hasVisibleJournalEntries: $hasVisibleJournalEntries
@@ -15719,7 +15740,7 @@ enum UserChapterStore {
         }
 
         UserDefaults.standard.set(data, forKey: storageKey)
-        syncToCloud(chapter, preservesDisplayOrder: false)
+        syncCreatedJournalToCloud(chapter, orderedChapters: load())
     }
 
     static func contains(title: String) -> Bool {
@@ -15870,6 +15891,38 @@ enum UserChapterStore {
                 displayOrder: preservesDisplayOrder ? nil : displayOrder(for: chapter.title)
             )
             syncEntriesToCloud(chapter.entries, journalID: chapter.id)
+        }
+    }
+
+    private static func syncCreatedJournalToCloud(_ chapter: PrototypeChapter, orderedChapters: [PrototypeChapter]) {
+        guard contains(title: chapter.title) else {
+            return
+        }
+
+        let orderedJournalIDs = orderedChapters
+            .filter { contains(title: $0.title) }
+            .map(\.id)
+
+        Task {
+            do {
+                let repository = SupabaseJournalRepository()
+                try await repository.upsertJournal(
+                    id: chapter.id,
+                    title: chapter.title,
+                    subtitle: chapter.subtitle,
+                    colorHex: colorHex(for: chapter),
+                    symbol: chapter.symbol,
+                    coverImageName: chapter.coverImageName,
+                    remoteCover: chapter.remoteCover,
+                    kind: chapter.kind == .storyboard ? "storyboard" : "journal",
+                    isFavorite: chapter.isFavorite,
+                    displayOrder: displayOrder(for: chapter.title)
+                )
+                syncEntriesToCloud(chapter.entries, journalID: chapter.id)
+                try await repository.updateJournalDisplayOrder(orderedJournalIDs)
+            } catch {
+                print("[Storytopia] Could not sync created journal order to cloud: \(error.localizedDescription)")
+            }
         }
     }
 
