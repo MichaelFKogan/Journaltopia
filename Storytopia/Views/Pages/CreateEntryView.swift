@@ -2333,7 +2333,7 @@ struct CreateEntryView: View {
         Color.homePageBackground.opacity(usesPaperImageBackground ? 0 : 1)
             .contentShape(Rectangle())
             .onTapGesture {
-                dismissKeyboard()
+                handleEditorPageTap()
             }
     }
 
@@ -2491,12 +2491,47 @@ struct CreateEntryView: View {
     }
 
     private var showsToolbarSaveButton: Bool {
-        !isExistingEntryReadOnlyMode
+        (
+            !isExistingEntryReadOnlyMode
+                || (presentation.isEditDraft && hasUnsavedDraftChanges)
+        )
             && (
                 presentation.showsNextButton
                     || presentation.isEditDraft
                     || presentation.savesDirectlyToJournal
             )
+    }
+
+    private func handleEditorPageTap() {
+        if isExistingEntryReadOnlyMode {
+            enterCompletedEntryEditing(focusBody: true)
+        } else {
+            dismissKeyboard()
+        }
+    }
+
+    private func handleBodyEditorTap() {
+        if isExistingEntryReadOnlyMode {
+            enterCompletedEntryEditing(focusBody: true)
+        } else {
+            isTitleFocused = false
+            editorFocusRequestID += 1
+        }
+    }
+
+    private func enterCompletedEntryEditing(focusBody: Bool) {
+        withAnimation(.snappy(duration: 0.22)) {
+            isEditingCompletedEntry = true
+        }
+
+        guard focusBody else {
+            return
+        }
+
+        isTitleFocused = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            editorFocusRequestID += 1
+        }
     }
 
     private func finishCompletedEntryEditing() {
@@ -3170,7 +3205,7 @@ struct CreateEntryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .onTapGesture {
-            dismissKeyboard()
+            handleEditorPageTap()
         }
     }
 
@@ -3211,6 +3246,9 @@ struct CreateEntryView: View {
                             keyboardAccessoryContent: AnyView(entryDraftKeyboardAccessory),
                             keyboardPanelContent: AnyView(keyboardFormattingPanelContent),
                             usesTexturedPaperEffect: selectedPaperStyleChoice.usesTexturedPaperTextEffect,
+                            onBodyTap: {
+                                handleBodyEditorTap()
+                            },
                             onSelectionStateChange: updateEditorSelectionState,
                             onEditingEnded: {
                                 guard !isKeyboardDismissInProgress else {
@@ -3348,9 +3386,7 @@ struct CreateEntryView: View {
                 Spacer()
 
                 completedEntryModeButton(title: "Edit", accessibilityLabel: "Edit entry", systemName: "pencil") {
-                    withAnimation(.snappy(duration: 0.22)) {
-                        isEditingCompletedEntry = true
-                    }
+                    enterCompletedEntryEditing(focusBody: false)
                 }
             }
             .padding(.horizontal, 16)
