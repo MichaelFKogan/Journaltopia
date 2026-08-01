@@ -150,6 +150,12 @@ struct ContentView: View {
             return .editDraft
         }
 
+        if pageBehindCreate == .journal,
+           activeDraftID != nil,
+           let journalCreatePresentation {
+            return journalCreatePresentation
+        }
+
         if pageBehindCreate == .journal, activeDraftID != nil {
             return .editDraft
         }
