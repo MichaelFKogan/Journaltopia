@@ -23,6 +23,9 @@ struct JournalView: View {
     @State private var journalBeingCustomized: PrototypeChapter?
     @State private var pendingCoverSync: PendingJournalCoverSync?
     @State private var isCoverSyncInProgress = false
+    @State private var journalEntryText = ""
+    @State private var journalDraftStoryTitle = ""
+    @State private var journalDraftStoryboardPhotos: [CreateEntryReferencePhoto?] = Array(repeating: nil, count: 5)
     @State private var isCreateJournalAlertPresented = false
     @State private var newJournalTitle = ""
     @State private var openingJournal: JournalOpeningContext?
@@ -117,6 +120,8 @@ struct JournalView: View {
                 switch route {
                 case let .journalDetail(detailRoute):
                     dailyJournalDetail(for: detailRoute.chapter, dayOffset: detailRoute.dayOffset)
+                case .createEntry:
+                    journalCreateEntryPage
                 case .profile:
                     ProfileView(
                         selectedPage: $selectedPage,
@@ -136,6 +141,11 @@ struct JournalView: View {
                 chapters = DailyJournalData.allChapters()
                 loadCloudJournalsIfNeeded()
                 restorePendingCoverSyncIfNeeded()
+            }
+        }
+        .onChange(of: journalNavigationPath) { newPath in
+            if !newPath.contains(.createEntry) {
+                resetJournalCreateEntryState()
             }
         }
         .onChange(of: authStore.userID) { userID in
@@ -891,7 +901,7 @@ struct JournalView: View {
         completedEntryOpenedStoryboardImage = storyboardImage
         activeDraftID = entry.id
         journalCreatePresentation = presentation
-        selectedPage = .create
+        pushJournalCreateEntryRoute()
     }
 
     private func openFreshEntryFromJournalDetail(_ presentation: CreateEntryPresentation) {
@@ -900,7 +910,78 @@ struct JournalView: View {
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil
-        selectedPage = .create
+        journalEntryText = ""
+        journalDraftStoryTitle = ""
+        journalDraftStoryboardPhotos = Array(repeating: nil, count: 5)
+        pushJournalCreateEntryRoute()
+    }
+
+    private var journalCreateEntryPage: some View {
+        CreateEntryView(
+            presentation: journalCreatePresentation ?? .compose,
+            entryText: $journalEntryText,
+            storyTitle: $journalDraftStoryTitle,
+            storyboardPhotos: $journalDraftStoryboardPhotos,
+            isDraftSaved: $isDraftSaved,
+            activeDraftID: $activeDraftID,
+            selectedPage: $selectedPage,
+            generatedStoryboards: $generatedStoryboards,
+            completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
+            isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+            existingEntryStartsReadOnly: isOpeningEntryFromEntries,
+            dismissCreate: {
+                popJournalCreateEntryRoute()
+            },
+            onJournalEntryCreated: { journalTitle, entry in
+                updateJournalEntry(entry, in: journalTitle)
+            }
+        )
+    }
+
+    private func pushJournalCreateEntryRoute() {
+        journalNavigationPath.removeAll { route in
+            if case .createEntry = route {
+                return true
+            }
+
+            return false
+        }
+        journalNavigationPath.append(.createEntry)
+    }
+
+    private func popJournalCreateEntryRoute() {
+        if journalNavigationPath.last == .createEntry {
+            journalNavigationPath.removeLast()
+        } else {
+            journalNavigationPath.removeAll { route in
+                if case .createEntry = route {
+                    return true
+                }
+
+                return false
+            }
+        }
+
+        resetJournalCreateEntryState()
+    }
+
+    private func resetJournalCreateEntryState() {
+        journalCreatePresentation = nil
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
+    }
+
+    private func updateJournalEntry(_ entry: PrototypeEntry, in journalTitle: String) {
+        guard let chapterIndex = chapters.firstIndex(where: { $0.title == journalTitle }) else {
+            return
+        }
+
+        if let entryIndex = chapters[chapterIndex].entries.firstIndex(where: { $0.id == entry.id }) {
+            chapters[chapterIndex].entries[entryIndex] = entry
+        } else {
+            chapters[chapterIndex].entries.insert(entry, at: 0)
+        }
     }
 
     private func updateChapterFromDetail(_ updatedChapter: PrototypeChapter) {
@@ -1100,6 +1181,7 @@ private func journalFallbackCoverImageName(for chapter: PrototypeChapter, at _: 
 
 private enum JournalRoute: Hashable {
     case journalDetail(JournalDetailRoute)
+    case createEntry
     case profile
 }
 
@@ -2304,37 +2386,9 @@ private struct JournalCoverPreview: View {
             .frame(maxWidth: .infinity)
             .clipped()
 
-            LinearGradient(
-                colors: [
-                    Color.clear,
-                    Color.black.opacity(coverImage != nil || remoteCoverURL != nil || fallbackImageName != nil ? 0.72 : 0.18)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
             journalSpine
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.white)
-                    .lineLimit(1)
-
-                Text("\(entryCount) \(entryCount == 1 ? "entry" : "entries")")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.92))
-
-                if let attributionName {
-                    Text("Photo by \(attributionName) on Unsplash")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.86))
-                        .lineLimit(1)
-                }
-            }
-            .padding(.leading, 28)
-            .padding(.trailing, 12)
-            .padding(.bottom, 12)
+            titleScrim
         }
         .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -2343,6 +2397,64 @@ private struct JournalCoverPreview: View {
                 .stroke(Color.homeBorder, lineWidth: 1)
         )
         .shadow(color: Color.storyInk.opacity(0.09), radius: 8, y: 4)
+    }
+
+    private var titleScrim: some View {
+        titleBackdrop
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+
+                    Text("\(entryCount) \(entryCount == 1 ? "entry" : "entries")")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.92))
+
+                    if let attributionName {
+                        Text("Photo by \(attributionName) on Unsplash")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.86))
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.leading, 28)
+                .padding(.trailing, 12)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: attributionName == nil ? 58 : 72)
+            .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var titleBackdrop: some View {
+        if hasImageCover {
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.black.opacity(0.50),
+                    Color.black.opacity(0.74)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        } else {
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.black.opacity(0.18)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private var hasImageCover: Bool {
+        coverImage != nil || remoteCoverURL != nil || fallbackImageName != nil
     }
 
     private var journalSpine: some View {
@@ -5051,21 +5163,10 @@ private struct JournalStoryboardReaderCoverPage: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
+            ZStack(alignment: .bottom) {
                 coverFill
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipped()
-
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.18),
-                        Color.black.opacity(0.04),
-                        Color.black.opacity(0.64)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .allowsHitTesting(false)
 
                 LinearGradient(
                     colors: [
@@ -5077,39 +5178,10 @@ private struct JournalStoryboardReaderCoverPage: View {
                     endPoint: .trailing
                 )
                 .frame(width: max(22, proxy.size.width * 0.13))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .allowsHitTesting(false)
 
-                VStack(spacing: max(8, proxy.size.height * 0.022)) {
-                    if showsDecorativeCopy {
-                        Text("STORYTOPIA JOURNAL")
-                            .font(.system(size: max(8, proxy.size.width * 0.036), weight: .heavy, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.86))
-                            .kerning(1.2)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    Text(title.uppercased())
-                        .font(.system(size: max(16, min(40, proxy.size.width * 0.116)), weight: .heavy, design: .serif))
-                        .foregroundStyle(Color.white)
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.62)
-                        .multilineTextAlignment(.center)
-                        .shadow(color: Color.black.opacity(0.42), radius: 10, y: 3)
-                        .padding(.horizontal, max(18, proxy.size.width * 0.11))
-
-                    if showsDecorativeCopy {
-                        HStack(spacing: 10) {
-                            coverStat(systemName: "book.pages", text: pageCountText)
-                            coverStat(systemName: "photo.on.rectangle", text: storyboardCountText)
-                        }
-                        .padding(.top, 2)
-                    }
-                }
-                .padding(.horizontal, max(10, proxy.size.width * 0.055))
-                .padding(.top, max(12, proxy.size.height * 0.058))
-                .padding(.bottom, max(18, proxy.size.height * 0.082))
+                titleScrim(in: proxy.size)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -5125,6 +5197,58 @@ private struct JournalStoryboardReaderCoverPage: View {
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
         }
+    }
+
+    private func titleScrim(in size: CGSize) -> some View {
+        let bottomPadding = max(18, size.height * 0.082)
+        let horizontalPadding = max(10, size.width * 0.055)
+        let scrimHeight = showsDecorativeCopy
+            ? max(118, size.height * 0.34)
+            : max(72, size.height * 0.28)
+
+        return titleBackdrop
+            .overlay(alignment: .bottom) {
+                VStack(spacing: max(8, size.height * 0.022)) {
+                    Text(title.uppercased())
+                        .font(.system(size: max(16, min(40, size.width * 0.116)), weight: .heavy, design: .serif))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.62)
+                        .multilineTextAlignment(.center)
+                        .shadow(color: Color.black.opacity(0.42), radius: 10, y: 3)
+                        .padding(.horizontal, max(18, size.width * 0.11))
+
+                    if showsDecorativeCopy {
+                        HStack(spacing: 10) {
+                            coverStat(systemName: "book.pages", text: pageCountText)
+                            coverStat(systemName: "photo.on.rectangle", text: storyboardCountText)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                .padding(.horizontal, horizontalPadding)
+                .padding(.bottom, bottomPadding)
+                .frame(maxWidth: .infinity)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: scrimHeight)
+            .allowsHitTesting(false)
+    }
+
+    private var titleBackdrop: some View {
+        LinearGradient(
+            colors: [
+                Color.clear,
+                Color.black.opacity(hasImageCover ? 0.50 : 0.18),
+                Color.black.opacity(hasImageCover ? 0.74 : 0.28)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var hasImageCover: Bool {
+        coverImage != nil || remoteCoverURL != nil || fallbackImageName != nil
     }
 
     @ViewBuilder
@@ -7336,6 +7460,47 @@ private enum EntryDisplayItem: Identifiable {
             return CreateEntryDraft.fromCloud(entry)
         }
     }
+}
+
+private struct JournalDetailThumbnailSignature: Equatable {
+    let title: String
+    let text: String
+    let richText: NotebookRichTextDocument?
+    let fontChoiceRawValue: String?
+    let textColorIndex: Int?
+    let textSize: Double?
+    let paperStyleRawValue: String?
+    let paperColorIndex: Int?
+    let isBold: Bool
+    let isItalic: Bool
+    let isUnderlined: Bool
+    let isStrikethrough: Bool
+    let isHighlighted: Bool
+    let textAlignmentRawValue: String
+    let updatedAt: Date
+
+    init(entry: CreateEntryDraft) {
+        title = entry.title
+        text = entry.text
+        richText = entry.richText
+        fontChoiceRawValue = entry.fontChoiceRawValue
+        textColorIndex = entry.textColorIndex
+        textSize = entry.textSize
+        paperStyleRawValue = entry.paperStyleRawValue
+        paperColorIndex = entry.paperColorIndex
+        isBold = entry.isBold
+        isItalic = entry.isItalic
+        isUnderlined = entry.isUnderlined
+        isStrikethrough = entry.isStrikethrough
+        isHighlighted = entry.isHighlighted
+        textAlignmentRawValue = entry.textAlignmentRawValue
+        updatedAt = entry.updatedAt
+    }
+}
+
+private struct JournalDetailRenderedThumbnail {
+    let signature: JournalDetailThumbnailSignature
+    let thumbnail: UIImage?
 }
 
 private struct EntryDropDelegate: DropDelegate {
@@ -10575,6 +10740,7 @@ private struct EntrySamplePreview: View {
 private struct EntryListRow: View {
     let entry: CreateEntryDraft
     let sortOption: EntrySortOption
+    var pageLabel: String? = nil
     var category: EntriesTab?
     var completedStoryboardImage: CompletedStoryboardImage?
     var isSelecting = false
@@ -10607,11 +10773,16 @@ private struct EntryListRow: View {
             }
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text(entryDateDisplay.label)
-                    .font(.system(size: 10, weight: .bold))
+                if let pageLabel {
+                    Text(pageLabel)
+                        .font(.system(size: 12, weight: .bold))
+                } else {
+                    Text(entryDateDisplay.label)
+                        .font(.system(size: 10, weight: .bold))
 
-                Text(entryDateDisplay.dateText)
-                    .font(.system(size: 12, weight: .regular))
+                    Text(entryDateDisplay.dateText)
+                        .font(.system(size: 12, weight: .regular))
+                }
             }
             .foregroundStyle(Color.homeMutedText)
             .lineLimit(1)
@@ -10621,7 +10792,7 @@ private struct EntryListRow: View {
         }
         .frame(maxWidth: .infinity, minHeight: JournalChapterListMetrics.rowHeight, alignment: .leading)
         .contentShape(Rectangle())
-        .accessibilityLabel("\(entryDisplayTitle(entry)), \(entryDateDisplay.inlineText)")
+        .accessibilityLabel("\(entryDisplayTitle(entry)), \(pageLabel ?? entryDateDisplay.inlineText)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
@@ -10923,9 +11094,10 @@ private struct EntryListLoadingRow: View {
 private struct EntryPreviewDateBlock: View {
     let entry: CreateEntryDraft
     let sortOption: EntrySortOption
+    var pageLabel: String? = nil
 
     var body: some View {
-        Text(entryPreviewDateText(entry, sortOption: sortOption))
+        Text(pageLabel ?? entryPreviewDateText(entry, sortOption: sortOption))
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(Color.homeMutedText)
             .lineLimit(1)
@@ -10938,6 +11110,7 @@ private struct EntryPreviewDateBlock: View {
 private struct EntryGridPreviewCard: View {
     let entry: CreateEntryDraft
     let sortOption: EntrySortOption
+    var pageLabel: String? = nil
     let isEditing: Bool
     let showsActions: Bool
     let title: String
@@ -10991,7 +11164,7 @@ private struct EntryGridPreviewCard: View {
                 }
             }
 
-            EntryPreviewDateBlock(entry: entry, sortOption: sortOption)
+            EntryPreviewDateBlock(entry: entry, sortOption: sortOption, pageLabel: pageLabel)
         }
         .contentShape(Rectangle())
         .scaleEffect(isOpening ? 0.96 : 1)
@@ -11018,7 +11191,7 @@ private struct EntryGridPreviewCard: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title), \(entryPreviewDateText(entry, sortOption: sortOption))")
+        .accessibilityLabel("\(title), \(pageLabel ?? entryPreviewDateText(entry, sortOption: sortOption))")
         .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -11056,6 +11229,7 @@ private struct CompletedEntryGridCard: View {
     let entry: CreateEntryDraft
     let title: String
     let sortOption: EntrySortOption
+    let pageLabel: String?
     let storyboardImage: CompletedStoryboardImage
     let category: EntriesTab?
     let isOpening: Bool
@@ -11068,6 +11242,7 @@ private struct CompletedEntryGridCard: View {
         entry: CreateEntryDraft,
         title: String,
         sortOption: EntrySortOption,
+        pageLabel: String? = nil,
         storyboardImage: CompletedStoryboardImage,
         category: EntriesTab? = nil,
         isOpening: Bool = false,
@@ -11078,6 +11253,7 @@ private struct CompletedEntryGridCard: View {
         self.entry = entry
         self.title = title
         self.sortOption = sortOption
+        self.pageLabel = pageLabel
         self.storyboardImage = storyboardImage
         self.category = category
         self.isOpening = isOpening
@@ -11123,7 +11299,7 @@ private struct CompletedEntryGridCard: View {
                 .frame(maxWidth: .infinity)
                 .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
 
-            EntryPreviewDateBlock(entry: entry, sortOption: sortOption)
+            EntryPreviewDateBlock(entry: entry, sortOption: sortOption, pageLabel: pageLabel)
         }
         .contentShape(Rectangle())
         .scaleEffect(isOpening ? 0.96 : 1)
@@ -11133,7 +11309,7 @@ private struct CompletedEntryGridCard: View {
             onOpen()
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(accessibilityLabel), \(entryPreviewDateText(entry, sortOption: sortOption))")
+        .accessibilityLabel("\(accessibilityLabel), \(pageLabel ?? entryPreviewDateText(entry, sortOption: sortOption))")
         .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -12090,6 +12266,7 @@ private struct PrototypeChapterDetailView: View {
     @State private var generatedStoryboards: [GeneratedStoryboard] = []
     @State private var completedEntryOpenedStoryboardImage: UIImage?
     @State private var isOpeningCompletedEntryFromEntries = false
+    @State private var isOpeningExistingEntryFromJournal = false
     @State private var editMode: EditMode = .inactive
     @State private var draggingEntryID: UUID?
     @State private var isShowingCoverCustomization = false
@@ -12105,6 +12282,9 @@ private struct PrototypeChapterDetailView: View {
     @State private var mediaStoryboards: [GeneratedStoryboard] = []
     @State private var isLoadingMediaStoryboards = false
     @State private var mediaStoryboardErrorMessage: String?
+    @State private var hasLoadedMediaStoryboards = false
+    @State private var lastMediaLoadEntryIDs: Set<UUID> = []
+    @State private var draggingMediaStoryboardID: UUID?
     @State private var hasVisibleJournalEntries: Bool
 
     private var sections: [String] {
@@ -12119,19 +12299,20 @@ private struct PrototypeChapterDetailView: View {
         chapter.entries.flatMap(\.imageNames)
     }
 
-    private var mediaLoadID: String {
-        let entryIDs = chapter.entries.map(\.id.uuidString).sorted().joined(separator: ",")
-        return "\(chapter.id.uuidString)-\(entryIDs)-\(authStore.userID?.uuidString ?? "local")"
+    private var mediaClientEntryIDs: Set<UUID> {
+        Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
+            .union(chapter.entries.map(\.id))
+            .union(EntryJournalLinkStore.draftIDs(linkedTo: chapter.title))
     }
 
     private func storyboardCoverCandidates(for chapter: PrototypeChapter) -> [JournalStoryboardCoverCandidate] {
-        let entryIDs = Set(chapter.entries.map(\.id))
+        let entryIDs = Set(chapter.entries.map(\.id)).union(mediaClientEntryIDs)
         guard !entryIDs.isEmpty else {
             return []
         }
 
         var seen = Set<UUID>()
-        return GeneratedStoryboardStore.load()
+        return GeneratedStoryboardStore.load(clientEntryIDs: entryIDs)
             .filter { storyboard in
                 guard
                     let clientEntryID = storyboard.clientEntryID,
@@ -12273,19 +12454,15 @@ private struct PrototypeChapterDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(Color.homeAccent)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     isShowingCoverCustomization = true
                 } label: {
-                    Label("Change Cover", systemImage: "photo.on.rectangle")
+                    Image(systemName: "photo.on.rectangle")
+                        .font(.system(size: 17, weight: .semibold))
                 }
-                .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(Color.homeAccent)
                 .accessibilityLabel("Change journal cover")
-
-                EditButton()
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.homeAccent)
             }
         }
         .environment(\.editMode, $editMode)
@@ -12304,8 +12481,10 @@ private struct PrototypeChapterDetailView: View {
                 generatedStoryboards: $generatedStoryboards,
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+                existingEntryStartsReadOnly: isOpeningExistingEntryFromJournal,
                 dismissCreate: {
                     isShowingNewStory = false
+                    isOpeningExistingEntryFromJournal = false
                 },
                 onJournalEntryCreated: { _, entry in
                     if let existingIndex = chapter.entries.firstIndex(where: { $0.id == entry.id }) {
@@ -12328,16 +12507,29 @@ private struct PrototypeChapterDetailView: View {
         }
         .onChange(of: isShowingNewStory) { isShowing in
             onNewEntryPresentationChange(isShowing)
-            if !isShowing {
+            if !isShowing, selectedSection == "Media" {
                 Task {
-                    await loadMediaStoryboards()
+                    await loadMediaStoryboards(force: true)
                 }
             }
+        }
+        .onChange(of: chapter.entries.map(\.id)) { _ in
+            resortMediaStoryboardsToEntryOrder()
         }
         .onChange(of: selectedSection) { newSection in
             if newSection != "Pages" {
                 editMode = .inactive
                 draggingEntryID = nil
+            }
+            if newSection != "Media" {
+                draggingMediaStoryboardID = nil
+            }
+
+            if newSection == "Media" {
+                resortMediaStoryboardsToEntryOrder()
+                Task {
+                    await loadMediaStoryboardsIfNeeded()
+                }
             }
         }
         .onChange(of: authStore.userID) { userID in
@@ -12347,15 +12539,19 @@ private struct PrototypeChapterDetailView: View {
 
             restorePendingCoverSyncIfNeeded()
             retryPendingCoverSync()
+            hasLoadedMediaStoryboards = false
+            lastMediaLoadEntryIDs = []
+            if selectedSection == "Media" {
+                Task {
+                    await loadMediaStoryboardsIfNeeded(force: true)
+                }
+            }
         }
         .onChange(of: isComicReaderPresented) { isPresented in
             if !isPresented {
                 bookNavigationOpenProgress = 0
                 isOpeningJournalComicReader = false
             }
-        }
-        .task(id: mediaLoadID) {
-            await loadMediaStoryboards()
         }
         .navigationDestination(isPresented: $isComicReaderPresented) {
             JournalStoryboardComicReaderView(
@@ -12489,7 +12685,7 @@ private struct PrototypeChapterDetailView: View {
         )
 
         return ScrollView(showsIndicators: false) {
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 journalHeroSpacerTapTargets(height: sheetTopOffset, proxy: proxy)
 
                 VStack(alignment: .leading, spacing: 16) {
@@ -12510,15 +12706,10 @@ private struct PrototypeChapterDetailView: View {
 
                     sectionPicker
 
-                    ZStack(alignment: .top) {
+                    if selectedSection == "Pages" {
                         entriesList
-                            .opacity(selectedSection == "Pages" ? 1 : 0)
-                            .allowsHitTesting(selectedSection == "Pages")
-                            .accessibilityHidden(selectedSection != "Pages")
-
-                        if selectedSection == "Media" {
-                            mediaGrid
-                        }
+                    } else {
+                        mediaGrid
                     }
                 }
                 .padding(.horizontal, 16)
@@ -12639,6 +12830,11 @@ private struct PrototypeChapterDetailView: View {
         bookOpenHintProgress = 0
         bookNavigationOpenProgress = 0
         comicPageIndex = 0
+        resortMediaStoryboardsToEntryOrder()
+
+        Task {
+            await loadMediaStoryboardsIfNeeded()
+        }
 
         guard !reduceMotion else {
             bookOpenHintTask = nil
@@ -12779,6 +12975,7 @@ private struct PrototypeChapterDetailView: View {
     private func openFreshEntryFromJournalDetail() {
         activeDraftID = nil
         isOpeningCompletedEntryFromEntries = false
+        isOpeningExistingEntryFromJournal = false
         completedEntryOpenedStoryboardImage = nil
 
         if let onCreateEntryRequested {
@@ -12925,6 +13122,7 @@ private struct PrototypeChapterDetailView: View {
                 } else {
                     activeDraftID = entry.id
                     isOpeningCompletedEntryFromEntries = isCompleted
+                    isOpeningExistingEntryFromJournal = true
                     completedEntryOpenedStoryboardImage = storyboardImage
                     isShowingNewStory = true
                 }
@@ -12933,7 +13131,15 @@ private struct PrototypeChapterDetailView: View {
                 let hadKnownEntries = Self.hasLocalEntries(for: chapter)
                 // Avoid wiping known memberships while the browser is still loading
                 // cloud-backed entries into `filteredItems`.
+                let previousIDs = chapter.entries.map(\.id)
+                let nextIDs = entries.map(\.id)
                 if !entries.isEmpty || !hadKnownEntries {
+                    guard previousIDs != nextIDs || chapter.entries.count != entries.count else {
+                        if !entries.isEmpty {
+                            hasVisibleJournalEntries = true
+                        }
+                        return
+                    }
                     chapter.entries = entries
                     onChapterUpdated(chapter)
                 }
@@ -13045,12 +13251,21 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private var pageCountText: String {
-        let pageCount = max(mediaStoryboards.count, chapter.entries.count)
+        let pageCount = max(displayedMediaStoryboardCount, chapter.entries.count)
         return "\(pageCount) \(pageCount == 1 ? "page" : "pages")"
     }
 
     private var mediaCountText: String {
-        "\(mediaStoryboards.count) \(mediaStoryboards.count == 1 ? "storyboard" : "storyboards")"
+        let count = displayedMediaStoryboardCount
+        return "\(count) \(count == 1 ? "storyboard" : "storyboards")"
+    }
+
+    private var displayedMediaStoryboardCount: Int {
+        if !mediaStoryboards.isEmpty {
+            return mediaStoryboards.count
+        }
+
+        return GeneratedStoryboardStore.count(clientEntryIDs: mediaClientEntryIDs)
     }
 
     private var mediaGrid: some View {
@@ -13093,22 +13308,47 @@ private struct PrototypeChapterDetailView: View {
                     spacing: 8
                 ) {
                     ForEach(Array(mediaStoryboards.enumerated()), id: \.element.id) { index, storyboard in
+                        let pageLabel = mediaPageLabel(for: storyboard, fallbackIndex: index)
+
                         Button {
                             selectedMediaIndex = index
                         } label: {
-                            Image(uiImage: storyboard.image)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(maxWidth: .infinity)
-                                .aspectRatio(1, contentMode: .fit)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(Color.white.opacity(0.9), lineWidth: 2)
-                                )
+                            VStack(spacing: 8) {
+                                Image(uiImage: storyboard.image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(maxWidth: .infinity)
+                                    .aspectRatio(1, contentMode: .fit)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(Color.white.opacity(0.9), lineWidth: 2)
+                                    )
+
+                                Text(pageLabel)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.homeMutedText)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.82)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                            }
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Open storyboard \(index + 1) of \(mediaStoryboards.count)")
+                        .modifier(MediaStoryboardDragModifier(
+                            storyboardID: storyboard.id,
+                            draggingStoryboardID: $draggingMediaStoryboardID
+                        ))
+                        .onDrop(
+                            of: [UTType.text],
+                            delegate: MediaStoryboardDropDelegate(
+                                storyboard: storyboard,
+                                storyboards: mediaStoryboards,
+                                draggingStoryboardID: $draggingMediaStoryboardID,
+                                onReorder: moveMediaStoryboard
+                            )
+                        )
+                        .accessibilityLabel("Open \(pageLabel), storyboard \(index + 1) of \(mediaStoryboards.count)")
                     }
                 }
             }
@@ -13116,11 +13356,30 @@ private struct PrototypeChapterDetailView: View {
     }
 
     @MainActor
-    private func loadMediaStoryboards() async {
-        let localClientEntryIDs = mediaClientEntryIDsFromLocalEntries()
-        let localStoryboards = storyboardsForMedia(clientEntryIDs: localClientEntryIDs, in: GeneratedStoryboardStore.load())
+    private func loadMediaStoryboardsIfNeeded(force: Bool = false) async {
+        let clientEntryIDs = mediaClientEntryIDs
+        guard force || !hasLoadedMediaStoryboards || clientEntryIDs != lastMediaLoadEntryIDs else {
+            return
+        }
+
+        await loadMediaStoryboards(clientEntryIDs: clientEntryIDs)
+    }
+
+    @MainActor
+    private func loadMediaStoryboards(force: Bool = false) async {
+        await loadMediaStoryboardsIfNeeded(force: force)
+    }
+
+    @MainActor
+    private func loadMediaStoryboards(clientEntryIDs: Set<UUID>) async {
+        let localStoryboards = storyboardsForMedia(
+            clientEntryIDs: clientEntryIDs,
+            in: GeneratedStoryboardStore.load(clientEntryIDs: clientEntryIDs)
+        )
         mediaStoryboards = localStoryboards
         mediaStoryboardErrorMessage = nil
+        lastMediaLoadEntryIDs = clientEntryIDs
+        hasLoadedMediaStoryboards = true
 
         guard authStore.userID != nil else {
             isLoadingMediaStoryboards = false
@@ -13132,23 +13391,13 @@ private struct PrototypeChapterDetailView: View {
 
         do {
             let cloudClientEntryIDs = try await mediaClientEntryIDsFromCloudEntries()
-            let allClientEntryIDs = localClientEntryIDs.union(cloudClientEntryIDs)
+            let allClientEntryIDs = clientEntryIDs.union(cloudClientEntryIDs)
             let cloudStoryboards = try await SupabaseStoryboardService().loadStoryboardImages(for: allClientEntryIDs)
             mediaStoryboards = mergedMediaStoryboards(localStoryboards + cloudStoryboards)
+            lastMediaLoadEntryIDs = allClientEntryIDs
         } catch {
             mediaStoryboardErrorMessage = "Could not load cloud storyboards."
         }
-    }
-
-    private func mediaClientEntryIDsFromLocalEntries() -> Set<UUID> {
-        let localEntries = CreateEntryDraftStore.loadAll()
-        let storedMemberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
-        let linkedLocalIDs = localEntries
-            .filter { EntryJournalLinkStore.loadJournalTitles(for: $0.id).contains(chapter.title) }
-            .map(\.id)
-        return storedMemberIDs
-            .union(chapter.entries.map(\.id))
-            .union(linkedLocalIDs)
     }
 
     private func mediaClientEntryIDsFromCloudEntries() async throws -> Set<UUID> {
@@ -13163,9 +13412,7 @@ private struct PrototypeChapterDetailView: View {
     private static func hasLocalEntries(for chapter: PrototypeChapter) -> Bool {
         !chapter.entries.isEmpty
             || !StoryEntryStore.clientEntryIDs(for: chapter.title).isEmpty
-            || CreateEntryDraftStore.loadAll().contains { entry in
-                EntryJournalLinkStore.loadJournalTitles(for: entry.id).contains(chapter.title)
-            }
+            || !EntryJournalLinkStore.draftIDs(linkedTo: chapter.title).isEmpty
     }
 
     private func storyboardsForMedia(
@@ -13183,11 +13430,177 @@ private struct PrototypeChapterDetailView: View {
         )
     }
 
+    /// Matches Pages-tab order (Page 1 / Page 2 / …) via journal membership order.
+    private func mediaEntryOrderPositions() -> [UUID: Int] {
+        var positions = StoryEntryStore.clientEntryIDPositions(for: chapter.title)
+        for (offset, entry) in chapter.entries.enumerated() where positions[entry.id] == nil {
+            positions[entry.id] = offset
+        }
+        for storyboard in mediaStoryboards {
+            guard let clientEntryID = storyboard.clientEntryID, positions[clientEntryID] == nil else {
+                continue
+            }
+
+            positions[clientEntryID] = positions.count
+        }
+        return positions
+    }
+
+    private func mediaPageLabel(for storyboard: GeneratedStoryboard, fallbackIndex: Int) -> String {
+        let positions = mediaEntryOrderPositions()
+        if let entryID = storyboard.clientEntryID, let position = positions[entryID] {
+            return "Page \(position + 1)"
+        }
+
+        return "Page \(fallbackIndex + 1)"
+    }
+
+    private func moveMediaStoryboard(draggingStoryboardID: UUID, targetStoryboardID: UUID) {
+        guard draggingStoryboardID != targetStoryboardID else {
+            return
+        }
+
+        var reorderedStoryboards = mediaStoryboards
+        guard
+            let fromIndex = reorderedStoryboards.firstIndex(where: { $0.id == draggingStoryboardID }),
+            let toIndex = reorderedStoryboards.firstIndex(where: { $0.id == targetStoryboardID }),
+            let sourceEntryID = reorderedStoryboards[fromIndex].clientEntryID,
+            let targetEntryID = reorderedStoryboards[toIndex].clientEntryID
+        else {
+            return
+        }
+
+        let movedStoryboard = reorderedStoryboards.remove(at: fromIndex)
+        reorderedStoryboards.insert(movedStoryboard, at: toIndex)
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            mediaStoryboards = reorderedStoryboards
+        }
+
+        guard sourceEntryID != targetEntryID else {
+            return
+        }
+
+        let orderedEntryIDs = reorderedMediaEntryIDs(
+            moving: sourceEntryID,
+            to: targetEntryID,
+            placesAfterTarget: fromIndex < toIndex
+        )
+        applyMediaEntryOrder(orderedEntryIDs)
+    }
+
+    private func reorderedMediaEntryIDs(
+        moving sourceEntryID: UUID,
+        to targetEntryID: UUID,
+        placesAfterTarget: Bool
+    ) -> [UUID] {
+        var seenEntryIDs = Set<UUID>()
+        var orderedEntryIDs = StoryEntryStore.clientEntryIDs(for: chapter.title).filter {
+            seenEntryIDs.insert($0).inserted
+        }
+
+        for entry in chapter.entries where seenEntryIDs.insert(entry.id).inserted {
+            orderedEntryIDs.append(entry.id)
+        }
+
+        for storyboard in mediaStoryboards {
+            guard let clientEntryID = storyboard.clientEntryID, seenEntryIDs.insert(clientEntryID).inserted else {
+                continue
+            }
+
+            orderedEntryIDs.append(clientEntryID)
+        }
+
+        guard
+            let fromIndex = orderedEntryIDs.firstIndex(of: sourceEntryID),
+            let toIndex = orderedEntryIDs.firstIndex(of: targetEntryID)
+        else {
+            return orderedEntryIDs
+        }
+
+        let movedEntryID = orderedEntryIDs.remove(at: fromIndex)
+        let targetIndexAfterRemoval = orderedEntryIDs.firstIndex(of: targetEntryID) ?? toIndex
+        let insertionIndex = placesAfterTarget ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval
+        orderedEntryIDs.insert(movedEntryID, at: min(insertionIndex, orderedEntryIDs.count))
+        return orderedEntryIDs
+    }
+
+    private func applyMediaEntryOrder(_ orderedEntryIDs: [UUID]) {
+        guard !orderedEntryIDs.isEmpty else {
+            return
+        }
+
+        StoryEntryStore.saveStoredOrder(
+            clientEntryIDs: orderedEntryIDs,
+            for: chapter.title,
+            syncsToCloud: false
+        )
+
+        let positions = Dictionary(uniqueKeysWithValues: orderedEntryIDs.enumerated().map { ($0.element, $0.offset) })
+        let previousEntryIDs = chapter.entries.map(\.id)
+        chapter.entries.sort {
+            let lhsPosition = positions[$0.id] ?? Int.max
+            let rhsPosition = positions[$1.id] ?? Int.max
+            if lhsPosition != rhsPosition {
+                return lhsPosition < rhsPosition
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+
+        if chapter.entries.map(\.id) != previousEntryIDs {
+            onChapterUpdated(chapter)
+        }
+
+        Task {
+            guard authStore.userID != nil else {
+                return
+            }
+
+            do {
+                try await SupabaseJournalRepository().replaceJournalEntries(
+                    journalID: chapter.id,
+                    clientEntryIDs: orderedEntryIDs
+                )
+            } catch {
+                await MainActor.run {
+                    mediaStoryboardErrorMessage = "Could not save media order to Storytopia cloud."
+                }
+            }
+        }
+    }
+
+    private func resortMediaStoryboardsToEntryOrder() {
+        guard !mediaStoryboards.isEmpty else {
+            return
+        }
+
+        mediaStoryboards = mergedMediaStoryboards(mediaStoryboards)
+    }
+
     private func mergedMediaStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
+        let positions = mediaEntryOrderPositions()
         var seen = Set<UUID>()
         return storyboards
             .filter { seen.insert($0.id).inserted }
-            .sorted { $0.createdAt > $1.createdAt }
+            .sorted { lhs, rhs in
+                let lhsPosition = lhs.clientEntryID.flatMap { positions[$0] }
+                let rhsPosition = rhs.clientEntryID.flatMap { positions[$0] }
+
+                switch (lhsPosition, rhsPosition) {
+                case let (lhsPosition?, rhsPosition?) where lhsPosition != rhsPosition:
+                    return lhsPosition < rhsPosition
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    // Same page (or both unordered): older storyboard first within a page.
+                    if lhs.createdAt != rhs.createdAt {
+                        return lhs.createdAt < rhs.createdAt
+                    }
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+            }
     }
 }
 
@@ -13226,17 +13639,15 @@ private struct JournalDetailEntryBrowser: View {
     @State private var selectedEntriesJournalTitles: Set<String> = []
     @State private var draggingEntryID: UUID?
     @State private var manualEntryOrderOverrides: [UUID: Int] = [:]
+    @State private var chapterMemberIDs: Set<UUID> = []
+    @State private var chapterMemberPositions: [UUID: Int] = [:]
+    @State private var linkedJournalTitlesByEntryID: [UUID: Set<String>] = [:]
+    @State private var renderedThumbnails: [UUID: JournalDetailRenderedThumbnail] = [:]
     @AppStorage("StorytopiaSelectedJournalDetailEntryLayout") private var selectedLayoutRawValue = JournalEntryLayout.grid.rawValue
-    @AppStorage("StorytopiaSelectedJournalDetailEntrySort") private var selectedSortRawValue = EntrySortOption.entryDate.rawValue
 
     private var selectedLayout: JournalEntryLayout {
         get { JournalEntryLayout(rawValue: selectedLayoutRawValue) ?? .grid }
         nonmutating set { selectedLayoutRawValue = newValue.rawValue }
-    }
-
-    private var selectedSort: EntrySortOption {
-        get { EntrySortOption(rawValue: selectedSortRawValue) ?? .entryDate }
-        nonmutating set { selectedSortRawValue = newValue.rawValue }
     }
 
     private var entryGridColumns: [GridItem] {
@@ -13263,10 +13674,12 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private var isEntryReorderingEnabled: Bool {
-        selectedSort == .manual
+        true
     }
 
     var body: some View {
+        let items = filteredItems
+
         VStack(alignment: .leading, spacing: 14) {
             controlsRow
             selectedEntriesToolbar
@@ -13275,14 +13688,14 @@ private struct JournalDetailEntryBrowser: View {
                 cloudErrorNotice(errorMessage)
             }
 
-            if isLoading && filteredItems.isEmpty {
+            if isLoading && items.isEmpty {
                 loadingGrid
-            } else if filteredItems.isEmpty {
+            } else if items.isEmpty {
                 emptyState
             } else if selectedLayout == .list {
-                entryList
+                entryList(items)
             } else {
-                entryGrid
+                entryGrid(items)
             }
         }
         .onAppear(perform: refreshEntries)
@@ -13293,14 +13706,13 @@ private struct JournalDetailEntryBrowser: View {
         .onChange(of: filteredItems.map(\.id)) { _ in
             notifyVisibleEntriesAvailability()
         }
+        .onChange(of: chapter.entries.map(\.id)) { _ in
+            refreshEntries()
+        }
         .onChange(of: editMode) { mode in
             if mode != .active {
                 selectedEntryIDs = []
             }
-        }
-        .onChange(of: selectedSortRawValue) { _ in
-            draggingEntryID = nil
-            manualEntryOrderOverrides = [:]
         }
         .sheet(isPresented: $isShowingAddSelectedEntriesToJournalSheet) {
             NavigationStack {
@@ -13343,42 +13755,27 @@ private struct JournalDetailEntryBrowser: View {
 
     private var controlsRow: some View {
         HStack(spacing: 10) {
-            sortMenu
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if editMode == .active {
+                        editMode = .inactive
+                        selectedEntryIDs = []
+                    } else {
+                        editMode = .active
+                    }
+                }
+            } label: {
+                Text(editMode == .active ? "Done" : "Select")
+            }
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(Color.homeAccent)
+            .buttonStyle(.plain)
+            .accessibilityLabel(editMode == .active ? "Done selecting entries" : "Select entries")
+
             Spacer()
+
             layoutSwitcher
         }
-    }
-
-    private var sortMenu: some View {
-        Menu {
-            ForEach(EntrySortOption.menuOptions) { option in
-                Button {
-                    selectedSort = selectedSort.selection(afterChoosing: option)
-                } label: {
-                    Label(option.menuTitle, systemImage: selectedSort.menuSystemImage(for: option))
-                }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: selectedSort.displaySystemImage)
-                    .font(.system(size: 12, weight: .bold))
-                Text(selectedSort.shortTitle)
-                    .font(.system(size: 12, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .foregroundStyle(Color.homeMutedText)
-            .padding(.horizontal, 10)
-            .frame(height: 34)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(Color.homeBorder, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
     }
 
     private var layoutSwitcher: some View {
@@ -13464,85 +13861,118 @@ private struct JournalDetailEntryBrowser: View {
         }
     }
 
-    private var entryGrid: some View {
-        LazyVGrid(columns: entryGridColumns, spacing: 14) {
-            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
-                let displayEntry = entryForDisplay(item)
-                if isCompleted(item) {
-                    CompletedEntryGridCard(
-                        entry: displayEntry,
-                        title: entryDisplayTitle(displayEntry),
-                        sortOption: selectedSort,
-                        storyboardImage: storyboardImage(for: item, fallbackIndex: index),
-                        category: nil,
-                        isSelecting: editMode == .active,
-                        isSelected: selectedEntryIDs.contains(item.id),
-                        onOpen: {
-                            handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
-                        }
-                    )
-                    .modifier(JournalDetailEntryDragModifier(
-                        entryID: item.id,
-                        isEnabled: isEntryReorderingEnabled,
-                        draggingEntryID: $draggingEntryID
-                    ))
-                    .onDrop(
-                        of: [UTType.text],
-                        delegate: EntryDropDelegate(
-                            item: item,
-                            items: filteredItems,
-                            draggingEntryID: $draggingEntryID,
-                            isEnabled: isEntryReorderingEnabled,
-                            onReorder: moveEntryItem
+    private func entryGrid(_ items: [EntryDisplayItem]) -> some View {
+        GeometryReader { proxy in
+            let gridHeight = entryGridContentHeight(
+                itemCount: items.count,
+                availableWidth: proxy.size.width
+            )
+
+            LazyVGrid(columns: entryGridColumns, spacing: 14) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    let displayEntry = entryForDisplay(item)
+                    if isCompleted(item) {
+                        CompletedEntryGridCard(
+                            entry: displayEntry,
+                            title: entryDisplayTitle(displayEntry),
+                            sortOption: .manual,
+                            pageLabel: pageLabel(for: index),
+                            storyboardImage: storyboardImage(for: item, fallbackIndex: index),
+                            category: nil,
+                            isSelecting: editMode == .active,
+                            isSelected: selectedEntryIDs.contains(item.id),
+                            onOpen: {
+                                handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
+                            }
                         )
-                    )
-                } else {
-                    EntryGridPreviewCard(
-                        entry: displayEntry,
-                        sortOption: selectedSort,
-                        isEditing: false,
-                        showsActions: false,
-                        title: entryDisplayTitle(displayEntry),
-                        category: nil,
-                        isOpening: false,
-                        isSelecting: editMode == .active,
-                        isSelected: selectedEntryIDs.contains(item.id),
-                        onOpen: {
-                            handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
-                        },
-                        onDelete: {},
-                        onRename: nil
-                    )
-                    .modifier(JournalDetailEntryDragModifier(
-                        entryID: item.id,
-                        isEnabled: isEntryReorderingEnabled,
-                        draggingEntryID: $draggingEntryID
-                    ))
-                    .onDrop(
-                        of: [UTType.text],
-                        delegate: EntryDropDelegate(
-                            item: item,
-                            items: filteredItems,
-                            draggingEntryID: $draggingEntryID,
+                        .modifier(JournalDetailEntryDragModifier(
+                            entryID: item.id,
                             isEnabled: isEntryReorderingEnabled,
-                            onReorder: moveEntryItem
+                            draggingEntryID: $draggingEntryID
+                        ))
+                        .onDrop(
+                            of: [UTType.text],
+                            delegate: EntryDropDelegate(
+                                item: item,
+                                items: items,
+                                draggingEntryID: $draggingEntryID,
+                                isEnabled: isEntryReorderingEnabled,
+                                onReorder: moveEntryItem
+                            )
                         )
-                    )
+                    } else {
+                        EntryGridPreviewCard(
+                            entry: displayEntry,
+                            sortOption: .manual,
+                            pageLabel: pageLabel(for: index),
+                            isEditing: false,
+                            showsActions: false,
+                            title: entryDisplayTitle(displayEntry),
+                            category: nil,
+                            isOpening: false,
+                            isSelecting: editMode == .active,
+                            isSelected: selectedEntryIDs.contains(item.id),
+                            onOpen: {
+                                handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
+                            },
+                            onDelete: {},
+                            onRename: nil
+                        )
+                        .modifier(JournalDetailEntryDragModifier(
+                            entryID: item.id,
+                            isEnabled: isEntryReorderingEnabled,
+                            draggingEntryID: $draggingEntryID
+                        ))
+                        .onDrop(
+                            of: [UTType.text],
+                            delegate: EntryDropDelegate(
+                                item: item,
+                                items: items,
+                                draggingEntryID: $draggingEntryID,
+                                isEnabled: isEntryReorderingEnabled,
+                                onReorder: moveEntryItem
+                            )
+                        )
+                    }
                 }
             }
+            .frame(width: proxy.size.width, height: gridHeight, alignment: .top)
         }
+        .frame(height: entryGridContentHeight(itemCount: items.count, availableWidth: entryGridAvailableWidth))
     }
 
-    private var entryList: some View {
-        LazyVStack(spacing: 0) {
-            ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+    private var entryGridAvailableWidth: CGFloat {
+        max(1, UIScreen.main.bounds.width - 32)
+    }
+
+    private func entryGridContentHeight(itemCount: Int, availableWidth: CGFloat) -> CGFloat {
+        guard itemCount > 0 else {
+            return 0
+        }
+
+        let columns = max(1, selectedLayout.gridColumnCount)
+        let spacing: CGFloat = 14
+        let rowCount = Int(ceil(Double(itemCount) / Double(columns)))
+        let cellWidth = (availableWidth - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+        let imageHeight = cellWidth * (340.0 / 260.0)
+        let rowHeight = imageHeight + 8 + 34
+        return CGFloat(rowCount) * rowHeight + CGFloat(max(0, rowCount - 1)) * spacing
+    }
+
+    private func entryList(_ items: [EntryDisplayItem]) -> some View {
+        let rowHeight = JournalChapterListMetrics.rowHeight
+        let listHeight = CGFloat(items.count) * rowHeight
+
+        return LazyVStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let displayEntry = entryForDisplay(item)
                 Button {
                     handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
                 } label: {
                     EntryListRow(
                         entry: displayEntry,
-                        sortOption: selectedSort,
+                        sortOption: .manual,
+                        pageLabel: pageLabel(for: index),
                         category: isCompleted(item) ? .completed : .drafts,
                         completedStoryboardImage: isCompleted(item) ? storyboardImage(for: item, fallbackIndex: index) : nil
                     )
@@ -13554,7 +13984,7 @@ private struct JournalDetailEntryBrowser: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .padding(.vertical, 4)
+                .frame(height: rowHeight)
                 .modifier(JournalDetailEntryDragModifier(
                     entryID: item.id,
                     isEnabled: isEntryReorderingEnabled,
@@ -13564,7 +13994,7 @@ private struct JournalDetailEntryBrowser: View {
                     of: [UTType.text],
                     delegate: EntryDropDelegate(
                         item: item,
-                        items: filteredItems,
+                        items: items,
                         draggingEntryID: $draggingEntryID,
                         isEnabled: isEntryReorderingEnabled,
                         onReorder: moveEntryItem
@@ -13572,6 +14002,7 @@ private struct JournalDetailEntryBrowser: View {
                 )
             }
         }
+        .frame(height: listHeight, alignment: .top)
     }
 
     private var loadingGrid: some View {
@@ -13632,12 +14063,19 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func refreshEntries() {
-        localEntries = CreateEntryDraftStore.loadAll()
-        completedStoryboards = GeneratedStoryboardStore.load()
-        onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
-        notifyVisibleEntriesAvailability()
+        refreshMembershipCaches()
 
-        guard authStore.userID != nil else {
+        let memberIDs = Array(chapterMemberIDs)
+        let loadedLocalEntries = CreateEntryDraftStore.load(ids: memberIDs, includeMedia: false)
+        localEntries = loadedLocalEntries
+        completedStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: chapterMemberIDs)
+
+        let currentItems = filteredItems
+        renderMissingThumbnails(for: currentItems)
+        onEntriesChanged(currentItems.map { entryForDisplay($0).prototypeEntry() })
+        notifyVisibleEntriesAvailability(items: currentItems)
+
+        guard let userID = authStore.userID else {
             cloudEntries = []
             cloudStoryboardClientIDs = []
             failedCloudStoryboardClientIDs = []
@@ -13646,25 +14084,72 @@ private struct JournalDetailEntryBrowser: View {
             return
         }
 
-        isLoading = true
+        let queryKey = EntriesCloudFetchCache.EntryQueryKey(
+            userID: userID,
+            sort: .createdAt,
+            statusFilter: .all
+        )
+
+        if let cachedEntries = EntriesCloudFetchCache.entrySummaries(for: queryKey)
+            ?? completeStaleEntrySummaries(for: queryKey) {
+            cloudEntries = cachedEntries.entries
+            errorMessage = nil
+            isLoading = false
+            let cachedItems = filteredItems
+            renderMissingThumbnails(for: cachedItems)
+            onEntriesChanged(cachedItems.map { entryForDisplay($0).prototypeEntry() })
+            notifyVisibleEntriesAvailability(items: cachedItems)
+            loadMissingCompletedStoryboards()
+
+            if EntriesCloudFetchCache.entrySummaries(for: queryKey) != nil {
+                return
+            }
+        } else {
+            isLoading = true
+        }
+
         Task {
             do {
                 let entries = try await SupabaseEntryRepository().getEntrySummaries()
+                EntriesCloudFetchCache.storeEntrySummaries(
+                    entries,
+                    counts: nil,
+                    hasMore: false,
+                    nextOffset: entries.count,
+                    for: queryKey
+                )
                 await MainActor.run {
                     cloudEntries = entries
                     errorMessage = nil
                     isLoading = false
-                    onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
-                    notifyVisibleEntriesAvailability()
+                    let currentItems = filteredItems
+                    renderMissingThumbnails(for: currentItems)
+                    onEntriesChanged(currentItems.map { entryForDisplay($0).prototypeEntry() })
+                    notifyVisibleEntriesAvailability(items: currentItems)
                     loadMissingCompletedStoryboards()
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = "Could not load cloud entries."
+                    if cloudEntries.isEmpty {
+                        errorMessage = "Could not load cloud entries."
+                    }
                     isLoading = false
                 }
             }
         }
+    }
+
+    private func completeStaleEntrySummaries(
+        for queryKey: EntriesCloudFetchCache.EntryQueryKey
+    ) -> EntriesCloudFetchCache.CachedEntrySummaries? {
+        guard
+            let cached = EntriesCloudFetchCache.staleEntrySummaries(for: queryKey),
+            !cached.hasMore
+        else {
+            return nil
+        }
+
+        return cached
     }
 
     private func loadMissingCompletedStoryboards() {
@@ -13674,7 +14159,8 @@ private struct JournalDetailEntryBrowser: View {
             return
         }
 
-        let completedClientEntryIDs = Set(filteredItems.filter { isCompleted($0) }.map(\.id))
+        let currentItems = filteredItems
+        let completedClientEntryIDs = Set(currentItems.filter { isCompleted($0) }.map(\.id))
         let cachedClientEntryIDs = Set(completedStoryboards.compactMap(\.clientEntryID))
         let missingClientEntryIDs = completedClientEntryIDs.subtracting(cachedClientEntryIDs)
 
@@ -13728,11 +14214,18 @@ private struct JournalDetailEntryBrowser: View {
                     }
 
                     completedStoryboards = mergedStoryboards
-                    GeneratedStoryboardStore.save(mergedStoryboards)
+                    // Persist only the newly downloaded rows into the existing full store
+                    // without rewriting unrelated storyboards we didn't load.
+                    var persisted = GeneratedStoryboardStore.load()
+                    for storyboard in downloadedStoryboards {
+                        persisted = GeneratedStoryboardStore.merging(storyboard, into: persisted)
+                    }
+                    GeneratedStoryboardStore.save(persisted)
                     cloudStoryboardClientIDs.subtract(failedClientEntryIDs)
                     failedCloudStoryboardClientIDs.formUnion(failedClientEntryIDs)
-                    onEntriesChanged(filteredItems.map { entryForDisplay($0).prototypeEntry() })
-                    notifyVisibleEntriesAvailability()
+                    let currentItems = filteredItems
+                    onEntriesChanged(currentItems.map { entryForDisplay($0).prototypeEntry() })
+                    notifyVisibleEntriesAvailability(items: currentItems)
                 }
             } catch {
                 await MainActor.run {
@@ -13743,13 +14236,27 @@ private struct JournalDetailEntryBrowser: View {
         }
     }
 
+    private func refreshMembershipCaches() {
+        let memberIDsInOrder = StoryEntryStore.clientEntryIDs(for: chapter.title)
+        let linkedDraftIDs = EntryJournalLinkStore.draftIDs(linkedTo: chapter.title)
+        let knownChapterEntryIDs = Set(chapter.entries.map(\.id))
+        let allMemberIDs = Set(memberIDsInOrder).union(linkedDraftIDs).union(knownChapterEntryIDs)
+        chapterMemberIDs = allMemberIDs
+
+        var positions: [UUID: Int] = [:]
+        for (offset, id) in memberIDsInOrder.enumerated() where positions[id] == nil {
+            positions[id] = offset
+        }
+        chapterMemberPositions = positions
+        linkedJournalTitlesByEntryID = EntryJournalLinkStore.loadJournalTitles(for: Array(allMemberIDs))
+    }
+
     private func matchesChapterFilter(_ entry: CreateEntryDraft) -> Bool {
-        let memberIDs = Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
-        return memberIDs.contains(entry.id) || EntryJournalLinkStore.loadJournalTitles(for: entry.id).contains(chapter.title)
+        chapterMemberIDs.contains(entry.id) || linkedJournalTitlesByEntryID[entry.id, default: []].contains(chapter.title)
     }
 
     private func matchesChapterFilter(_ entry: JournalEntry) -> Bool {
-        Set(StoryEntryStore.clientEntryIDs(for: chapter.title)).contains(entry.clientEntryID)
+        chapterMemberIDs.contains(entry.clientEntryID)
     }
 
     private func matchesChapterFilter(_ item: EntryDisplayItem) -> Bool {
@@ -13757,44 +14264,23 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func sortEntryItems(_ lhs: EntryDisplayItem, _ rhs: EntryDisplayItem) -> Bool {
-        if selectedSort == .manual {
-            let positions = StoryEntryStore.clientEntryIDPositions(for: chapter.title)
+        let lhsPosition = manualEntryOrderOverrides[lhs.id] ?? chapterMemberPositions[lhs.id]
+        let rhsPosition = manualEntryOrderOverrides[rhs.id] ?? chapterMemberPositions[rhs.id]
 
-            let lhsPosition = manualEntryOrderOverrides[lhs.id] ?? positions[lhs.id]
-            let rhsPosition = manualEntryOrderOverrides[rhs.id] ?? positions[rhs.id]
-
-            switch (lhsPosition, rhsPosition) {
-            case let (lhsPosition?, rhsPosition?) where lhsPosition != rhsPosition:
-                return lhsPosition < rhsPosition
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            default:
-                return lhs.createdAt > rhs.createdAt
-            }
+        switch (lhsPosition, rhsPosition) {
+        case let (lhsPosition?, rhsPosition?) where lhsPosition != rhsPosition:
+            return lhsPosition < rhsPosition
+        case (nil, _?):
+            return true
+        case (_?, nil):
+            return false
+        default:
+            return lhs.createdAt > rhs.createdAt
         }
-
-        let lhsDate = sortDate(for: lhs)
-        let rhsDate = sortDate(for: rhs)
-
-        if lhsDate != rhsDate {
-            return selectedSort.sortsAscending ? lhsDate < rhsDate : lhsDate > rhsDate
-        }
-
-        return selectedSort.sortsAscending ? lhs.createdAt < rhs.createdAt : lhs.createdAt > rhs.createdAt
     }
 
-    private func sortDate(for item: EntryDisplayItem) -> Date {
-        switch selectedSort {
-        case .manual, .cloudCreated, .cloudCreatedOldest:
-            return item.createdAt
-        case .entryDate, .entryDateOldest:
-            let entry = item.entry
-            return entry.datePrecision == .noDate ? item.createdAt : entry.date
-        case .updated, .updatedOldest:
-            return item.updatedAt
-        }
+    private func pageLabel(for index: Int) -> String {
+        "Page \(index + 1)"
     }
 
     private func entryForDisplay(_ item: EntryDisplayItem) -> CreateEntryDraft {
@@ -13803,7 +14289,13 @@ private struct JournalDetailEntryBrowser: View {
             return entry
         }
 
-        return entry.replacingThumbnail(renderThumbnail(for: entry))
+        guard let cachedThumbnail = renderedThumbnails[entry.id],
+              cachedThumbnail.signature == JournalDetailThumbnailSignature(entry: entry)
+        else {
+            return entry
+        }
+
+        return entry.replacingThumbnail(cachedThumbnail.thumbnail)
     }
 
     private func renderThumbnail(for entry: CreateEntryDraft) -> UIImage? {
@@ -13824,6 +14316,27 @@ private struct JournalDetailEntryBrowser: View {
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue
         )
+    }
+
+    private func renderMissingThumbnails(for items: [EntryDisplayItem]) {
+        let entriesNeedingThumbnails = items
+            .map(\.entry)
+            .filter { $0.thumbnail == nil }
+
+        let currentIDs = Set(entriesNeedingThumbnails.map(\.id))
+        renderedThumbnails = renderedThumbnails.filter { currentIDs.contains($0.key) }
+
+        for entry in entriesNeedingThumbnails {
+            let signature = JournalDetailThumbnailSignature(entry: entry)
+            if renderedThumbnails[entry.id]?.signature == signature {
+                continue
+            }
+
+            renderedThumbnails[entry.id] = JournalDetailRenderedThumbnail(
+                signature: signature,
+                thumbnail: renderThumbnail(for: entry)
+            )
+        }
     }
 
     private func isCompleted(_ item: EntryDisplayItem) -> Bool {
@@ -13921,7 +14434,11 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func notifyVisibleEntriesAvailability() {
-        if !filteredItems.isEmpty {
+        notifyVisibleEntriesAvailability(items: filteredItems)
+    }
+
+    private func notifyVisibleEntriesAvailability(items: [EntryDisplayItem]) {
+        if !items.isEmpty {
             hasVisibleJournalEntries = true
             return
         }
@@ -14063,7 +14580,7 @@ private struct JournalDetailEntryBrowser: View {
     private func otherJournalTitles(for item: EntryDisplayItem) -> Set<String> {
         let entry = entryForDisplay(item).prototypeEntry()
         return StoryEntryStore.journalTitles(containing: entry)
-            .union(EntryJournalLinkStore.loadJournalTitles(for: item.id))
+            .union(linkedJournalTitlesByEntryID[item.id, default: []])
             .subtracting([chapter.title])
     }
 
@@ -14155,7 +14672,8 @@ private struct JournalDetailEntryBrowser: View {
     private func openItem(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
         let isCompleted = isCompleted(item)
         let storyboardImage = isCompleted ? storyboardUIImage(for: item, fallbackIndex: fallbackIndex) : nil
-        let entryToOpen = materializedEntry(for: item, displayEntry: displayEntry)
+        let hydratedDisplayEntry = CreateEntryDraftStore.load(id: displayEntry.id) ?? displayEntry
+        let entryToOpen = materializedEntry(for: item, displayEntry: hydratedDisplayEntry)
         onOpenEntry(entryToOpen, isCompleted, storyboardImage)
     }
 
@@ -14247,6 +14765,47 @@ private struct JournalDetailEntryDragModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+private struct MediaStoryboardDragModifier: ViewModifier {
+    let storyboardID: UUID
+    @Binding var draggingStoryboardID: UUID?
+
+    func body(content: Content) -> some View {
+        content
+            .onDrag {
+                draggingStoryboardID = storyboardID
+                return NSItemProvider(object: storyboardID.uuidString as NSString)
+            }
+    }
+}
+
+private struct MediaStoryboardDropDelegate: DropDelegate {
+    let storyboard: GeneratedStoryboard
+    let storyboards: [GeneratedStoryboard]
+    @Binding var draggingStoryboardID: UUID?
+    let onReorder: (UUID, UUID) -> Void
+
+    func dropEntered(info _: DropInfo) {
+        guard
+            let draggingStoryboardID,
+            draggingStoryboardID != storyboard.id,
+            storyboards.contains(where: { $0.id == draggingStoryboardID })
+        else {
+            return
+        }
+
+        onReorder(draggingStoryboardID, storyboard.id)
+    }
+
+    func dropUpdated(info _: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info _: DropInfo) -> Bool {
+        draggingStoryboardID = nil
+        return true
     }
 }
 
@@ -16591,6 +17150,37 @@ enum StoryEntryStore {
 
         UserDefaults.standard.set(data, forKey: storageKey)
         syncToCloud(chapterTitle: chapterTitle)
+    }
+
+    static func saveStoredOrder(
+        clientEntryIDs: [UUID],
+        for chapterTitle: String,
+        syncsToCloud: Bool = true
+    ) {
+        let allRecords = records
+        let chapterRecords = allRecords.filter { $0.chapterTitle == chapterTitle }
+        guard !chapterRecords.isEmpty else {
+            return
+        }
+
+        var remainingChapterRecords = chapterRecords
+        let reorderedChapterRecords = clientEntryIDs.compactMap { clientEntryID -> Record? in
+            guard let recordIndex = remainingChapterRecords.firstIndex(where: { $0.id == clientEntryID }) else {
+                return nil
+            }
+
+            return remainingChapterRecords.remove(at: recordIndex)
+        } + remainingChapterRecords
+
+        let otherRecords = allRecords.filter { $0.chapterTitle != chapterTitle }
+        guard let data = try? JSONEncoder().encode(reorderedChapterRecords + otherRecords) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: storageKey)
+        if syncsToCloud {
+            syncToCloud(chapterTitle: chapterTitle)
+        }
     }
 
     static func deleteAll(for chapterTitle: String) {

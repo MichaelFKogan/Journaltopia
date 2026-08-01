@@ -218,9 +218,69 @@ private struct InteractivePopGestureEnabler: UIViewControllerRepresentable {
     }
 }
 
+private struct GuardedInteractivePopGestureEnabler: UIViewControllerRepresentable {
+    let shouldAllowPop: () -> Bool
+    let onBlockedPop: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(shouldAllowPop: shouldAllowPop, onBlockedPop: onBlockedPop)
+    }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        context.coordinator.shouldAllowPop = shouldAllowPop
+        context.coordinator.onBlockedPop = onBlockedPop
+
+        DispatchQueue.main.async {
+            guard let navigationController = uiViewController.navigationController else {
+                return
+            }
+
+            navigationController.interactivePopGestureRecognizer?.isEnabled = true
+            navigationController.interactivePopGestureRecognizer?.delegate = context.coordinator
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var shouldAllowPop: () -> Bool
+        var onBlockedPop: () -> Void
+
+        init(shouldAllowPop: @escaping () -> Bool, onBlockedPop: @escaping () -> Void) {
+            self.shouldAllowPop = shouldAllowPop
+            self.onBlockedPop = onBlockedPop
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard !shouldAllowPop() else {
+                return true
+            }
+
+            DispatchQueue.main.async {
+                self.onBlockedPop()
+            }
+            return false
+        }
+    }
+}
+
 extension View {
     func enableInteractivePopGesture() -> some View {
         background(InteractivePopGestureEnabler())
+    }
+
+    func guardedInteractivePopGesture(
+        shouldAllowPop: @escaping () -> Bool,
+        onBlockedPop: @escaping () -> Void
+    ) -> some View {
+        background(
+            GuardedInteractivePopGestureEnabler(
+                shouldAllowPop: shouldAllowPop,
+                onBlockedPop: onBlockedPop
+            )
+        )
     }
 }
 

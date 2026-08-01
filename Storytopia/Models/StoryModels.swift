@@ -442,7 +442,18 @@ enum CreateEntryDraftStore {
         }
 
         return draftURLs
-            .compactMap(loadDraft(at:))
+            .compactMap { loadDraft(at: $0, includeMedia: true) }
+            .sorted(by: sortDrafts)
+    }
+
+    /// Loads only the requested drafts. Pass `includeMedia: false` to skip reference
+    /// photos and character images (thumbnail + metadata only) for list/grid surfaces.
+    static func load(ids: [UUID], includeMedia: Bool = true) -> [CreateEntryDraft] {
+        migrateLegacyDraftIfNeeded()
+
+        let uniqueIDs = Array(Set(ids))
+        return uniqueIDs
+            .compactMap { loadDraft(at: directory(for: $0), includeMedia: includeMedia) }
             .sorted(by: sortDrafts)
     }
 
@@ -478,7 +489,7 @@ enum CreateEntryDraftStore {
 
     static func load(id: UUID) -> CreateEntryDraft? {
         migrateLegacyDraftIfNeeded()
-        return loadDraft(at: directory(for: id))
+        return loadDraft(at: directory(for: id), includeMedia: true)
     }
 
     @discardableResult
@@ -568,7 +579,7 @@ enum CreateEntryDraftStore {
     ) -> UUID? {
         let draftID = id ?? UUID()
         let draftDirectory = directory(for: draftID)
-        let existingDraft = id.flatMap { loadDraft(at: directory(for: $0)) }
+        let existingDraft = id.flatMap { loadDraft(at: directory(for: $0), includeMedia: true) }
 
         try? FileManager.default.removeItem(at: draftDirectory)
 
@@ -709,7 +720,7 @@ enum CreateEntryDraftStore {
         }
     }
 
-    private static func loadDraft(at draftDirectory: URL) -> CreateEntryDraft? {
+    private static func loadDraft(at draftDirectory: URL, includeMedia: Bool = true) -> CreateEntryDraft? {
         let metadataURL = draftDirectory.appendingPathComponent(metadataFileName)
         guard
             let data = try? Data(contentsOf: metadataURL),
@@ -726,38 +737,46 @@ enum CreateEntryDraftStore {
             }
         }
 
-        let photos = photoMetadata.compactMap { item -> CreateEntryReferencePhoto? in
-            let fileName = item.fileName
-            let photoURL = draftDirectory.appendingPathComponent(fileName)
-            guard let data = try? Data(contentsOf: photoURL) else {
-                return nil
+        let photos: [CreateEntryReferencePhoto]
+        let characters: [EntryCharacter]
+        if includeMedia {
+            photos = photoMetadata.compactMap { item -> CreateEntryReferencePhoto? in
+                let fileName = item.fileName
+                let photoURL = draftDirectory.appendingPathComponent(fileName)
+                guard let data = try? Data(contentsOf: photoURL) else {
+                    return nil
+                }
+                return UIImage(data: data).map {
+                    CreateEntryReferencePhoto(id: item.id, image: $0)
+                }
             }
-            return UIImage(data: data).map {
-                CreateEntryReferencePhoto(id: item.id, image: $0)
+
+            characters = (metadata.characters ?? []).compactMap { item -> EntryCharacter? in
+                let imageURL = draftDirectory.appendingPathComponent(item.fileName)
+                guard
+                    let imageData = try? Data(contentsOf: imageURL),
+                    let image = UIImage(data: imageData)
+                else {
+                    return nil
+                }
+
+                return EntryCharacter(
+                    id: item.id,
+                    name: item.name,
+                    role: item.role,
+                    sourcePhotoID: item.sourcePhotoID,
+                    image: image,
+                    createdAt: item.createdAt,
+                    updatedAt: item.updatedAt
+                )
             }
+        } else {
+            photos = []
+            characters = []
         }
 
         let thumbnailURL = draftDirectory.appendingPathComponent(thumbnailFileName)
         let thumbnail = (try? Data(contentsOf: thumbnailURL)).flatMap(UIImage.init(data:))
-        let characters = (metadata.characters ?? []).compactMap { item -> EntryCharacter? in
-            let imageURL = draftDirectory.appendingPathComponent(item.fileName)
-            guard
-                let imageData = try? Data(contentsOf: imageURL),
-                let image = UIImage(data: imageData)
-            else {
-                return nil
-            }
-
-            return EntryCharacter(
-                id: item.id,
-                name: item.name,
-                role: item.role,
-                sourcePhotoID: item.sourcePhotoID,
-                image: image,
-                createdAt: item.createdAt,
-                updatedAt: item.updatedAt
-            )
-        }
 
         return CreateEntryDraft(
             id: metadata.id ?? UUID(),
@@ -815,7 +834,7 @@ enum CreateEntryDraftStore {
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
            ) {
-            mergeLegacyDrafts(anonymousDraftURLs.compactMap(loadDraft(at:)))
+            mergeLegacyDrafts(anonymousDraftURLs.compactMap { loadDraft(at: $0, includeMedia: true) })
         }
 
         if let legacyDraftURLs = try? FileManager.default.contentsOfDirectory(
@@ -823,7 +842,7 @@ enum CreateEntryDraftStore {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) {
-            let legacyDrafts = legacyDraftURLs.compactMap(loadDraft(at:))
+            let legacyDrafts = legacyDraftURLs.compactMap { loadDraft(at: $0, includeMedia: true) }
             if !legacyDrafts.isEmpty {
                 mergeLegacyDrafts(legacyDrafts)
             }
@@ -834,7 +853,7 @@ enum CreateEntryDraftStore {
         }
 
         guard
-            let legacyDraft = loadDraft(at: legacyDraftDirectory)
+            let legacyDraft = loadDraft(at: legacyDraftDirectory, includeMedia: true)
         else {
             return
         }
@@ -1002,6 +1021,42 @@ enum GeneratedStoryboardStore {
     private static let metadataKey = "StorytopiaGeneratedStoryboardMetadata"
 
     static func load() -> [GeneratedStoryboard] {
+        loadStoryboards(matching: nil)
+    }
+
+    /// Loads only storyboards whose `clientEntryID` is in `clientEntryIDs`.
+    static func load(clientEntryIDs: Set<UUID>) -> [GeneratedStoryboard] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        return loadStoryboards(matching: clientEntryIDs)
+    }
+
+    /// Counts matching storyboards from metadata without decoding images.
+    static func count(clientEntryIDs: Set<UUID>) -> Int {
+        guard !clientEntryIDs.isEmpty else {
+            return 0
+        }
+
+        migrateLegacyStoryboardsIfNeeded()
+
+        guard
+            let metadataData = UserDefaults.standard.data(forKey: scopedMetadataKey),
+            let metadata = try? JSONDecoder().decode([GeneratedStoryboardMetadata].self, from: metadataData)
+        else {
+            return 0
+        }
+
+        return metadata.reduce(into: 0) { count, item in
+            guard let clientEntryID = item.clientEntryID, clientEntryIDs.contains(clientEntryID) else {
+                return
+            }
+            count += 1
+        }
+    }
+
+    private static func loadStoryboards(matching clientEntryIDs: Set<UUID>?) -> [GeneratedStoryboard] {
         migrateLegacyStoryboardsIfNeeded()
 
         guard
@@ -1011,7 +1066,19 @@ enum GeneratedStoryboardStore {
             return []
         }
 
-        return metadata.compactMap { item in
+        let filteredMetadata: [GeneratedStoryboardMetadata]
+        if let clientEntryIDs {
+            filteredMetadata = metadata.filter { item in
+                guard let clientEntryID = item.clientEntryID else {
+                    return false
+                }
+                return clientEntryIDs.contains(clientEntryID)
+            }
+        } else {
+            filteredMetadata = metadata
+        }
+
+        return filteredMetadata.compactMap { item in
             let imageURL = imagesDirectory.appendingPathComponent(item.imageFileName)
             guard
                 let imageData = try? Data(contentsOf: imageURL),

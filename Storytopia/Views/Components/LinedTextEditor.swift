@@ -1533,13 +1533,21 @@ struct LinedTextEditor: UIViewRepresentable {
             textView.usesTexturedPaperEffect = usesTexturedPaperEffect
         }
 
-        if !coordinator.isUpdatingFromTextView {
+        if text == textView.text {
+            coordinator.isWaitingForTextBindingSync = false
+        }
+
+        let canApplyBindingText = !coordinator.isUpdatingFromTextView
+            && !(textView.isFirstResponder && coordinator.isWaitingForTextBindingSync)
+
+        if canApplyBindingText {
             if textView.text != text {
                 textView.setNotebookText(text, richText: richText?.wrappedValue)
                 coordinator.currentRichTextDocument = textView.richTextDocument()
             } else if !didChangeTextStyle,
                       !didChangeTexturedPaperEffect,
                       let richText = richText?.wrappedValue,
+                      !textView.isFirstResponder,
                       !coordinator.isWaitingForRichTextBindingSync,
                       richText.normalized(for: text) != textView.richTextDocument() {
                 textView.setNotebookText(text, richText: richText)
@@ -1617,6 +1625,7 @@ struct LinedTextEditor: UIViewRepresentable {
         var handledBlurRequestID = 0
         var handledFormattingRequestID = 0
         var currentRichTextDocument: NotebookRichTextDocument?
+        var isWaitingForTextBindingSync = false
         var isWaitingForRichTextBindingSync = false
         var onTextChange: ((String) -> Void)?
         var onRichTextChange: ((NotebookRichTextDocument) -> Void)?
@@ -1670,6 +1679,7 @@ struct LinedTextEditor: UIViewRepresentable {
 
         func textViewDidChange(_ textView: UITextView) {
             isUpdatingFromTextView = true
+            isWaitingForTextBindingSync = true
             onTextChange?(textView.text)
             if let linedTextView = textView as? LinedTextView {
                 linedTextView.refreshStoredRichTextDocumentFromTextStorage()

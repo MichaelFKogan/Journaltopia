@@ -79,7 +79,7 @@ enum CreateEntryPresentation {
     var closeButtonSystemName: String {
         switch self {
         case .compose, .composeInJournal:
-            return "xmark"
+            return "chevron.left"
         case .editDraft, .editDraftInJournal:
             return "chevron.left"
         }
@@ -464,6 +464,41 @@ enum EntryJournalLinkStore {
             titles.insert(legacyTitle)
         }
         return titles
+    }
+
+    static func loadJournalTitles(for draftIDs: [UUID]) -> [UUID: Set<String>] {
+        let links = links
+        let multiLinks = multiLinks
+
+        return draftIDs.reduce(into: [:]) { titlesByDraftID, draftID in
+            let draftKey = draftID.uuidString
+            var titles = Set(multiLinks[draftKey] ?? [])
+            if let legacyTitle = links[draftKey] {
+                titles.insert(legacyTitle)
+            }
+            titlesByDraftID[draftID] = titles
+        }
+    }
+
+    /// Returns draft IDs linked to `journalTitle` without loading draft payloads.
+    static func draftIDs(linkedTo journalTitle: String) -> Set<UUID> {
+        let links = links
+        let multiLinks = multiLinks
+        var draftIDs = Set<UUID>()
+
+        for (draftKey, titles) in multiLinks where titles.contains(journalTitle) {
+            if let draftID = UUID(uuidString: draftKey) {
+                draftIDs.insert(draftID)
+            }
+        }
+
+        for (draftKey, title) in links where title == journalTitle {
+            if let draftID = UUID(uuidString: draftKey) {
+                draftIDs.insert(draftID)
+            }
+        }
+
+        return draftIDs
     }
 
     static func loadJournalEntryID(for draftID: UUID) -> UUID? {
@@ -1345,6 +1380,7 @@ struct CreateEntryView: View {
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningCompletedEntryFromEntries: Bool
+    var existingEntryStartsReadOnly = false
     let dismissCreate: () -> Void
     var onJournalEntryCreated: (String, PrototypeEntry) -> Void = { _, _ in }
     @EnvironmentObject private var authStore: SupabaseAuthStore
@@ -1525,8 +1561,16 @@ struct CreateEntryView: View {
         selectedPaperStyleChoice.backgroundImageName != nil
     }
 
-    private var isCompletedEntryViewMode: Bool {
-        isOpeningCompletedEntryFromEntries && !isEditingCompletedEntry
+    private var opensExistingEntryReadMode: Bool {
+        isOpeningCompletedEntryFromEntries || existingEntryStartsReadOnly
+    }
+
+    private var isExistingEntryReadOnlyMode: Bool {
+        opensExistingEntryReadMode && !isEditingCompletedEntry
+    }
+
+    private var isExistingEntryEditingMode: Bool {
+        opensExistingEntryReadMode && isEditingCompletedEntry
     }
 
     private var showsComposeFlowControls: Bool {
@@ -1534,11 +1578,11 @@ struct CreateEntryView: View {
     }
 
     private var canShowEntryOptionsPage: Bool {
-        presentation.showsEntryOptionsFlow && !isCompletedEntryViewMode
+        presentation.showsEntryOptionsFlow && !isExistingEntryReadOnlyMode
     }
 
     private var editorToolbarTitle: String {
-        if isCompletedEntryViewMode {
+        if isExistingEntryReadOnlyMode {
             return "Entry"
         }
 
@@ -1549,16 +1593,15 @@ struct CreateEntryView: View {
         editorWithLifecycle
     }
 
+    @ViewBuilder
     private var editorCore: some View {
-        NavigationStack {
-            if presentation.showsEntryOptionsFlow {
-                editorNavigationRoot
-                    .navigationDestination(isPresented: $isShowingEntryOptionsPage) {
-                        entryOptionsPage
-                    }
-            } else {
-                editorNavigationRoot
-            }
+        if presentation.showsEntryOptionsFlow {
+            editorNavigationRoot
+                .navigationDestination(isPresented: $isShowingEntryOptionsPage) {
+                    entryOptionsPage
+                }
+        } else {
+            editorNavigationRoot
         }
     }
 
@@ -1849,7 +1892,7 @@ struct CreateEntryView: View {
         }
         .onAppear {
             configureDirectJournalEntryIfNeeded()
-            if isOpeningCompletedEntryFromEntries {
+            if opensExistingEntryReadMode {
                 isEditingCompletedEntry = false
             }
             if !canShowEntryOptionsPage {
@@ -1862,8 +1905,8 @@ struct CreateEntryView: View {
         .onChange(of: activeDraftID) { newDraftID in
             handleActiveDraftChange(newDraftID)
         }
-        .onChange(of: isOpeningCompletedEntryFromEntries) { isCompleted in
-            if isCompleted {
+        .onChange(of: opensExistingEntryReadMode) { opensReadMode in
+            if opensReadMode {
                 isEditingCompletedEntry = false
             }
         }
@@ -2151,6 +2194,7 @@ struct CreateEntryView: View {
         }
         .background(selectedPaperSurfaceColor)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbar {
             if !isFullScreenEditorVisible {
                 createToolbarItems(
@@ -2162,6 +2206,10 @@ struct CreateEntryView: View {
         .toolbar(isFullScreenEditorVisible ? .hidden : .visible, for: .navigationBar)
         .toolbarBackground(usesPaperImageBackground ? .hidden : .visible, for: .navigationBar)
         .toolbarBackground(selectedPageBackgroundColor, for: .navigationBar)
+        .guardedInteractivePopGesture(
+            shouldAllowPop: { canExitWithoutConfirmation },
+            onBlockedPop: { requestExit() }
+        )
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
             KeyboardCornerRadiusRemover.removeKeyboardCornerRadius()
             if let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
@@ -2193,30 +2241,7 @@ struct CreateEntryView: View {
         .background(pageTapBackground)
         .background(Color.homePageBackground)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    isShowingEntryOptionsPage = false
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.storyInk.opacity(0.72))
-                        .frame(width: 40, height: 38)
-                        .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
-                        )
-                        .frame(width: 48, height: 48)
-                        .contentShape(Rectangle())
-                }
-                .frame(width: showsToolbarSaveButton ? 94 : 48, alignment: .leading)
-                .buttonStyle(.plain)
-                .accessibilityLabel("Back")
-            }
-            .hideSharedBackgroundIfAvailable()
-
             createToolbarItems(title: "Entry Details", showsCloseButton: false)
         }
         .toolbarBackground(Color.homePageBackground, for: .navigationBar)
@@ -2390,35 +2415,7 @@ struct CreateEntryView: View {
             }
         }
 
-        if isCompletedEntryViewMode {
-            ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 6) {
-                    if hasUnsavedDraftChanges {
-                        toolbarSaveActionButton
-                    }
-
-                    completedEntryModeButton(title: "Edit", accessibilityLabel: "Edit entry") {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            isEditingCompletedEntry = true
-                        }
-                    }
-                }
-            }
-            .hideSharedBackgroundIfAvailable()
-        } else if isOpeningCompletedEntryFromEntries && isEditingCompletedEntry {
-            ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 6) {
-                    if showsToolbarSaveButton {
-                        toolbarSaveActionButton
-                    }
-
-                    completedEntryModeButton(title: "Done", accessibilityLabel: "Done editing") {
-                        finishCompletedEntryEditing()
-                    }
-                }
-            }
-            .hideSharedBackgroundIfAvailable()
-        } else if showsToolbarSaveButton {
+        if showsToolbarSaveButton {
             ToolbarItem(placement: .topBarTrailing) {
                 toolbarSaveActionButton
             }
@@ -2429,21 +2426,29 @@ struct CreateEntryView: View {
     private func completedEntryModeButton(
         title: String,
         accessibilityLabel: String,
+        systemName: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: .bold))
-                .lineLimit(1)
-                .frame(width: 82, height: 38)
-                .foregroundStyle(Color.storyPurple)
-                .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
-                )
-                .frame(width: 94, height: 48)
-                .contentShape(Rectangle())
+            HStack(spacing: 5) {
+                if let systemName {
+                    Image(systemName: systemName)
+                        .font(.system(size: 13, weight: .bold))
+                }
+
+                Text(title)
+                    .font(.system(size: 13, weight: .bold))
+                    .lineLimit(1)
+            }
+            .frame(width: 82, height: 38)
+            .foregroundStyle(Color.storyPurple)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
+            )
+            .frame(width: 94, height: 48)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
@@ -2482,11 +2487,11 @@ struct CreateEntryView: View {
     }
 
     private var showsTrailingToolbarAction: Bool {
-        isOpeningCompletedEntryFromEntries || showsToolbarSaveButton
+        showsToolbarSaveButton
     }
 
     private var showsToolbarSaveButton: Bool {
-        !isCompletedEntryViewMode
+        !isExistingEntryReadOnlyMode
             && (
                 presentation.showsNextButton
                     || presentation.isEditDraft
@@ -2655,6 +2660,12 @@ struct CreateEntryView: View {
 
     private var hasUnsavedEntryMediaChanges: Bool {
         hasUnsavedReferencePhotoChanges || hasUnsavedCharacterChanges
+    }
+
+    private var canExitWithoutConfirmation: Bool {
+        !isBlockingSaveInProgress
+            && !hasUnsavedDraftChanges
+            && !hasUnconfirmedCloudSave
     }
 
     private var currentReferencePhotoIDs: [UUID] {
@@ -3216,7 +3227,7 @@ struct CreateEntryView: View {
                                 editorFocusRequestID += 1
                             }
                         )
-                        .allowsHitTesting(!isCompletedEntryViewMode)
+                        .allowsHitTesting(!isExistingEntryReadOnlyMode)
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
@@ -3227,11 +3238,10 @@ struct CreateEntryView: View {
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !isCompletedEntryViewMode
-                    && !isKeyboardVisible
+                if !isKeyboardVisible
                     && !isBodyEditorEditing
                     && activeKeyboardFormattingMode == nil {
-                    entryDraftBottomBar
+                    existingEntryModeBottomControls
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -3241,7 +3251,8 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: isPhotosPanelVisible)
             .animation(.snappy(duration: 0.22), value: isShowingCustomizeSheet)
             .animation(.snappy(duration: 0.22), value: isShowingJournalPromptsSheet)
-            .animation(.snappy(duration: 0.22), value: isCompletedEntryViewMode)
+            .animation(.snappy(duration: 0.22), value: isExistingEntryReadOnlyMode)
+            .animation(.snappy(duration: 0.22), value: isExistingEntryEditingMode)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -3327,6 +3338,35 @@ struct CreateEntryView: View {
             }
 
             floatingEditorMenu
+        }
+    }
+
+    @ViewBuilder
+    private var existingEntryModeBottomControls: some View {
+        if isExistingEntryReadOnlyMode {
+            HStack {
+                Spacer()
+
+                completedEntryModeButton(title: "Edit", accessibilityLabel: "Edit entry", systemName: "pencil") {
+                    withAnimation(.snappy(duration: 0.22)) {
+                        isEditingCompletedEntry = true
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        } else {
+            VStack(alignment: .trailing, spacing: 0) {
+                if isExistingEntryEditingMode {
+                    completedEntryModeButton(title: "Done", accessibilityLabel: "Done editing") {
+                        finishCompletedEntryEditing()
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 8)
+                }
+
+                entryDraftBottomBar
+            }
         }
     }
 
@@ -5136,7 +5176,7 @@ struct CreateEntryView: View {
                 journalDestinationButton(
                     title: selectedCustomJournalTitle ?? "Add to Journal",
                     subtitle: selectedCustomJournalTitle == nil ? "Choose an existing journal or create a new one" : "Tap to change journal",
-                    icon: "book"
+                    journal: selectedCustomJournal
                 ) {
                     isShowingJournalDestinationSheet = true
                     dismissKeyboard()
@@ -5202,17 +5242,21 @@ struct CreateEntryView: View {
     private func journalDestinationButton(
         title: String,
         subtitle: String,
-        icon: String,
+        journal: PrototypeChapter?,
         action: @escaping () -> Void
     ) -> some View {
         let hasSelectedJournal = selectedCustomJournalTitle != nil
 
         return Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 21, weight: .medium))
-                    .foregroundStyle(Color.storyPurple)
-                    .frame(width: 28)
+                if let journal {
+                    SelectedJournalCoverThumbnail(journal: journal)
+                } else {
+                    Image(systemName: "book")
+                        .font(.system(size: 21, weight: .medium))
+                        .foregroundStyle(Color.storyPurple)
+                        .frame(width: 34, height: 42)
+                }
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
@@ -5250,6 +5294,16 @@ struct CreateEntryView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private var selectedCustomJournal: PrototypeChapter? {
+        guard let selectedCustomJournalTitle else {
+            return nil
+        }
+
+        return DailyJournalData.allChapters().first {
+            $0.title == selectedCustomJournalTitle
+        }
     }
 
     private var photoStripHeader: some View {
@@ -7760,6 +7814,116 @@ private struct AddToJournalCoverIcon: View {
                     .offset(x: -1, y: -1)
             }
         }
+    }
+}
+
+private struct SelectedJournalCoverThumbnail: View {
+    let journal: PrototypeChapter
+
+    private var storedCoverImage: UIImage? {
+        guard journal.remoteCover == nil else {
+            return nil
+        }
+
+        return CreateJournalCoverImageStore.image(for: journal.coverStorageKey)
+    }
+
+    private var remoteCoverURL: URL? {
+        journal.remoteCover?.thumbnailNSURL ?? journal.remoteCover?.imageNSURL
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            coverContent
+                .frame(width: 34, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            Rectangle()
+                .fill(Color.white.opacity(hasImageCover ? 0.28 : 0.36))
+                .frame(width: 3, height: 38)
+                .padding(.leading, 4)
+        }
+        .frame(width: 34, height: 42)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.storyInk.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: Color.storyInk.opacity(0.12), radius: 4, y: 2)
+    }
+
+    @ViewBuilder
+    private var coverContent: some View {
+        if let storedCoverImage {
+            Image(uiImage: storedCoverImage)
+                .resizable()
+                .scaledToFill()
+        } else if let remoteCoverURL {
+            AsyncImage(url: remoteCoverURL) { phase in
+                if let image = phase.image {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    fallbackCover
+                }
+            }
+        } else if let coverImageName = journal.coverImageName {
+            Image(coverImageName)
+                .resizable()
+                .scaledToFill()
+        } else {
+            fallbackCover
+        }
+    }
+
+    private var fallbackCover: some View {
+        ZStack {
+            LinearGradient(
+                colors: [journal.color.opacity(0.92), journal.color.opacity(0.72)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Image(systemName: journal.symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.92))
+        }
+    }
+
+    private var hasImageCover: Bool {
+        storedCoverImage != nil || remoteCoverURL != nil || journal.coverImageName != nil
+    }
+}
+
+private enum CreateJournalCoverImageStore {
+    private static let folderName = "JournalCovers"
+
+    static func image(for title: String) -> UIImage? {
+        guard
+            let data = try? Data(contentsOf: fileURL(for: title)),
+            let image = UIImage(data: data)
+        else {
+            return nil
+        }
+
+        return image
+    }
+
+    private static var directoryURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    private static func fileURL(for title: String) -> URL {
+        directoryURL.appendingPathComponent(fileName(for: title))
+    }
+
+    private static func fileName(for title: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let sanitized = title.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? String(scalar) : "-"
+        }.joined()
+        return "\(sanitized.isEmpty ? "journal" : sanitized).jpg"
     }
 }
 

@@ -38,14 +38,11 @@ struct ContentView: View {
     }
 
     var body: some View {
-        ZStack {
+        NavigationStack {
             basePage
-
-            if selectedPage == .create {
-                createPage
-                    .transition(.move(edge: .trailing))
-                    .zIndex(1)
-            }
+                .navigationDestination(isPresented: isCreatePagePresented) {
+                    createPage
+                }
         }
         .animation(.snappy(duration: 0.32), value: selectedPage)
         .task {
@@ -58,6 +55,19 @@ struct ContentView: View {
         .onChange(of: selectedPage) { _ in
             endWindowEditing()
         }
+    }
+
+    private var isCreatePagePresented: Binding<Bool> {
+        Binding(
+            get: { selectedPage == .create },
+            set: { isPresented in
+                guard !isPresented, selectedPage == .create else {
+                    return
+                }
+
+                dismissCreatePage()
+            }
+        )
     }
 
     private var pageSelection: Binding<StoryPage> {
@@ -180,14 +190,18 @@ struct ContentView: View {
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
             dismissCreate: {
-                endWindowEditing()
-                selectedPage = pageBehindCreate
-                journalCreatePresentation = nil
-                isOpeningEntryFromEntries = false
-                isOpeningCompletedEntryFromEntries = false
-                completedEntryOpenedStoryboardImage = nil
+                dismissCreatePage()
             }
         )
+    }
+
+    private func dismissCreatePage() {
+        endWindowEditing()
+        selectedPage = pageBehindCreate
+        journalCreatePresentation = nil
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
     }
 
     private func endWindowEditing() {
