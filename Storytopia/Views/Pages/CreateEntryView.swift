@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import Combine
 import MapKit
 import PhotosUI
@@ -195,6 +196,7 @@ private final class EntrySpeechTranscriber: ObservableObject {
         onTranscriptChanged = nil
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default, options: [])
 
         if state.isListening {
             state = .idle
@@ -230,7 +232,7 @@ private final class EntrySpeechTranscriber: ObservableObject {
 
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers])
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             state = .unavailable("Could not start the microphone. Please try again.")
@@ -351,36 +353,99 @@ private struct EntrySpeechMicButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: isListening ? "mic.fill" : "mic")
-                .font(.system(size: 23, weight: .bold))
-                .foregroundStyle(isListening ? Color.storyPurple : Color.white)
-                .frame(width: 58, height: 58)
-                .background(
-                    Circle()
-                        .fill(isListening ? Color.white : Color.storyPurple)
-                )
-                .overlay(
-                    Circle()
-                        .stroke(isListening ? Color.storyPurple.opacity(0.22) : Color.white.opacity(0.86), lineWidth: 1.4)
-                )
-                .shadow(color: Color.storyInk.opacity(isListening ? 0.22 : 0.16), radius: 14, y: 7)
-                .overlay(alignment: .topTrailing) {
-                    if isListening {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 13, height: 13)
-                            .overlay(
-                                Circle()
-                                    .stroke(Color.white, lineWidth: 2)
-                            )
-                            .offset(x: -5, y: 5)
-                    }
+        Button(action: handleTap) {
+            ZStack {
+                if isListening {
+                    EntrySpeechMicPulse()
                 }
+
+                Image(systemName: isListening ? "mic.fill" : "mic")
+                    .font(.system(size: 23, weight: .bold))
+                    .foregroundStyle(isListening ? Color.storyPurple : Color.white)
+                    .frame(width: 58, height: 58)
+                    .background(
+                        Circle()
+                            .fill(isListening ? Color.white : Color.storyPurple)
+                    )
+                    .overlay(
+                        Circle()
+                            .stroke(isListening ? Color.storyPurple.opacity(0.22) : Color.white.opacity(0.86), lineWidth: 1.4)
+                    )
+                    .shadow(color: Color.storyInk.opacity(isListening ? 0.22 : 0.16), radius: 14, y: 7)
+                    .overlay(alignment: .topTrailing) {
+                        if isListening {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 13, height: 13)
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.white, lineWidth: 2)
+                                )
+                                .offset(x: -5, y: 5)
+                        }
+                    }
+                    .scaleEffect(isListening ? 1.04 : 1)
+                    .animation(.easeInOut(duration: 0.45), value: isListening)
+            }
+            .frame(width: 86, height: 86)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isListening ? "Stop dictation" : "Start dictation")
         .accessibilityHint("Adds spoken words to the journal entry")
+    }
+
+    private func handleTap() {
+        let startAction = action
+
+        if isListening {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.7)
+            AudioServicesPlaySystemSound(1114)
+            startAction()
+            return
+        }
+
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.86)
+        prepareMicStartFeedbackAudioSession()
+        // Wait for the begin-record sound to finish before starting capture,
+        // otherwise playAndRecord session setup cuts it off.
+        AudioServicesPlaySystemSoundWithCompletion(1113) {
+            DispatchQueue.main.async {
+                startAction()
+            }
+        }
+    }
+
+    private func prepareMicStartFeedbackAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+        try? audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+}
+
+private struct EntrySpeechMicPulse: View {
+    private let cycleDuration: TimeInterval = 1.2
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let progress = context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: cycleDuration) / cycleDuration
+            let delayedProgress = (progress + 0.5).truncatingRemainder(dividingBy: 1)
+
+            ZStack {
+                pulseRing(progress: progress)
+                pulseRing(progress: delayedProgress)
+            }
+        }
+        .frame(width: 86, height: 86)
+        .allowsHitTesting(false)
+    }
+
+    private func pulseRing(progress: Double) -> some View {
+        Circle()
+            .stroke(Color.storyPurple.opacity(0.34), lineWidth: 2.5)
+            .frame(width: 58, height: 58)
+            .scaleEffect(1 + (0.48 * progress))
+            .opacity(0.58 * (1 - progress))
     }
 }
 
@@ -1640,6 +1705,7 @@ struct CreateEntryView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     @State private var selectedArtStyle = CreateEntryView.defaultArtStyle
+    @AppStorage("StorytopiaImageGenerationQuality") private var selectedImageGenerationQualityRawValue = OpenAIImageGenerationQuality.standard.rawValue
 
     @State private var selectedPhotoSlot: Int?
     @State private var isShowingPhotoSourceSheet = false
@@ -1695,6 +1761,7 @@ struct CreateEntryView: View {
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
+    @State private var dictationFollowRequestID = 0
     @State private var speechRecognitionAlertMessage: String?
     @StateObject private var speechTranscriber = EntrySpeechTranscriber()
     @State private var editorBlurRequestID = 0
@@ -2278,6 +2345,7 @@ struct CreateEntryView: View {
 
         let photos = storyboardPhotos.compactMap { $0 }
         let photoImages = photos.map(\.image)
+        let generationQuality = selectedImageGenerationQuality
         let requiresEntrySave = activeDraftID == nil || hasUnsavedDraftChanges
         let requiresReferencePhotoSync = requiresEntrySave && hasUnsavedEntryMediaChanges
         isGeneratingStoryboard = true
@@ -2316,6 +2384,7 @@ struct CreateEntryView: View {
                     text: entryText,
                     richText: currentEntryRichText(),
                     artStyle: selectedArtStyle,
+                    quality: generationQuality,
                     images: photoImages,
                     characters: entryCharacters
                 )
@@ -2555,6 +2624,7 @@ struct CreateEntryView: View {
                         editorFocusRequestID: editorFocusRequestID,
                         editorBlurRequestID: editorBlurRequestID,
                         formattingRequest: textFormattingRequest,
+                        followTextEndRequestID: dictationFollowRequestID,
                         bodyPlaceholder: "Start writing...",
                         scrollsInternally: false,
                         pageHeight: scrollContentHeight,
@@ -3464,6 +3534,7 @@ struct CreateEntryView: View {
                             editorFocusRequestID: editorFocusRequestID,
                             editorBlurRequestID: editorBlurRequestID,
                             formattingRequest: textFormattingRequest,
+                            followTextEndRequestID: dictationFollowRequestID,
                             bodyPlaceholder: "Start writing...",
                             scrollsInternally: false,
                             pageHeight: scrollContentHeight,
@@ -3642,10 +3713,16 @@ struct CreateEntryView: View {
     }
 
     private func toggleSpeechTranscription() {
-        dismissKeyboard()
+        if !speechTranscriber.state.isListening {
+            isTitleFocused = false
+            isBodyEditorEditing = true
+            editorFocusRequestID += 1
+        }
+
         speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
             entryText = dictatedText
             entryRichText = NotebookRichTextDocument(text: dictatedText)
+            dictationFollowRequestID += 1
         }
     }
 
@@ -4885,6 +4962,7 @@ struct CreateEntryView: View {
             artStylePickerSection
             journalDestinationCard
             storyDetailsCard
+            imageGenerationQualityCard
             // entryPrivacyCard — Save Entry / Private Entry toggles (kept for later reuse)
             generateStoryboardButton
         }
@@ -4901,6 +4979,10 @@ struct CreateEntryView: View {
         }
 
         return presentation.directJournalTitle
+    }
+
+    private var selectedImageGenerationQuality: OpenAIImageGenerationQuality {
+        OpenAIImageGenerationQuality(rawValue: selectedImageGenerationQualityRawValue) ?? .standard
     }
 
     private func stageSelectedJournalMemberships(for draftID: UUID?) {
@@ -5558,6 +5640,43 @@ struct CreateEntryView: View {
                     action: openEntryLocationSheet
                 )
             }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.68), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 9, y: 3)
+    }
+
+    private var imageGenerationQualityCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Image Quality")
+                        .font(.system(size: 15, weight: .bold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
+
+                    Text(selectedImageGenerationQuality.subtitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText)
+                }
+
+                Spacer()
+            }
+
+            Picker("Image Quality", selection: $selectedImageGenerationQualityRawValue) {
+                ForEach(OpenAIImageGenerationQuality.allCases) { quality in
+                    Text(quality.title)
+                        .tag(quality.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
         }
         .padding(12)
         .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -8525,6 +8644,7 @@ struct ExpandedEntryEditor: View {
 
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
+    @State private var dictationFollowRequestID = 0
     @State private var speechRecognitionAlertMessage: String?
     @StateObject private var speechTranscriber = EntrySpeechTranscriber()
 
@@ -8582,6 +8702,7 @@ struct ExpandedEntryEditor: View {
                         entryRichText: entryRichText,
                         isTitleFocused: $isTitleFocused,
                         editorFocusRequestID: editorFocusRequestID,
+                        followTextEndRequestID: dictationFollowRequestID,
                         bodyPlaceholder: "Start writing...",
                         scrollsInternally: false,
                         pageHeight: proxy.size.height,
@@ -8666,9 +8787,15 @@ struct ExpandedEntryEditor: View {
     }
 
     private func toggleSpeechTranscription() {
+        if !speechTranscriber.state.isListening {
+            isTitleFocused = false
+            editorFocusRequestID += 1
+        }
+
         speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
             entryText = dictatedText
             entryRichText?.wrappedValue = NotebookRichTextDocument(text: dictatedText)
+            dictationFollowRequestID += 1
         }
     }
 }

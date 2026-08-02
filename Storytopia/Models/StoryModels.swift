@@ -347,6 +347,31 @@ enum OpenAITestConfig {
     static let imageModel = "gpt-image-2"
 }
 
+enum OpenAIImageGenerationQuality: String, CaseIterable, Identifiable {
+    case standard = "low"
+    case highDefinition = "medium"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard:
+            return "Standard"
+        case .highDefinition:
+            return "HD"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .standard:
+            return "Faster image generation"
+        case .highDefinition:
+            return "Sharper image generation"
+        }
+    }
+}
+
 struct CreateEntryDraft: Identifiable {
     let id: UUID
     let title: String

@@ -769,6 +769,67 @@ final class LinedTextView: UITextView {
         invalidateIntrinsicContentSize()
     }
 
+    func moveCaretToEndAndReveal() {
+        let endLocation = (text as NSString?)?.length ?? 0
+        let endRange = NSRange(location: endLocation, length: 0)
+        selectedRange = endRange
+
+        if scrollsInternally {
+            scrollRangeToVisible(endRange)
+            return
+        }
+
+        scrollCaretIntoEnclosingScrollViewIfNeeded()
+    }
+
+    private func scrollCaretIntoEnclosingScrollViewIfNeeded() {
+        guard let selectedTextRange else {
+            return
+        }
+
+        let caret = caretRect(for: selectedTextRange.start)
+        var ancestor: UIView? = superview
+
+        while let view = ancestor {
+            defer { ancestor = view.superview }
+
+            guard let scrollView = view as? UIScrollView, scrollView !== self else {
+                continue
+            }
+
+            let caretInScroll = convert(caret, to: scrollView)
+            let visibleMinY = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+            let visibleMaxY = scrollView.contentOffset.y + scrollView.bounds.height - scrollView.adjustedContentInset.bottom
+            let padding: CGFloat = 36
+
+            var targetOffsetY = scrollView.contentOffset.y
+            if caretInScroll.maxY > visibleMaxY - padding {
+                targetOffsetY = caretInScroll.maxY - scrollView.bounds.height + scrollView.adjustedContentInset.bottom + padding
+            } else if caretInScroll.minY < visibleMinY + padding {
+                targetOffsetY = caretInScroll.minY - scrollView.adjustedContentInset.top - padding
+            } else {
+                return
+            }
+
+            let minOffsetY = -scrollView.adjustedContentInset.top
+            let maxOffsetY = max(
+                minOffsetY,
+                scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
+            )
+            targetOffsetY = min(max(targetOffsetY, minOffsetY), maxOffsetY)
+
+            guard abs(targetOffsetY - scrollView.contentOffset.y) > 0.5 else {
+                return
+            }
+
+            scrollView.setContentOffset(
+                CGPoint(x: scrollView.contentOffset.x, y: targetOffsetY),
+                animated: true
+            )
+            return
+        }
+    }
+
     func setNotebookText(_ string: String, richText: NotebookRichTextDocument? = nil) {
         let document = richText?.normalized(for: string) ?? NotebookRichTextDocument(text: string)
         storedRichTextDocument = document
@@ -1418,6 +1479,7 @@ struct LinedTextEditor: UIViewRepresentable {
     var focusRequestID: Int = 0
     var blurRequestID: Int = 0
     var formattingRequest: NotebookTextFormattingRequest? = nil
+    var followTextEndRequestID: Int = 0
     var scrollsInternally: Bool = true
     var drawsRuledLines: Bool? = nil
     var minimumHeight: CGFloat = NotebookMetrics.minimumBodyHeight
@@ -1584,6 +1646,14 @@ struct LinedTextEditor: UIViewRepresentable {
             }
         }
 
+        if followTextEndRequestID != coordinator.handledFollowTextEndRequestID {
+            coordinator.handledFollowTextEndRequestID = followTextEndRequestID
+            DispatchQueue.main.async {
+                textView.layoutIfNeeded()
+                textView.moveCaretToEndAndReveal()
+            }
+        }
+
         if let formattingRequest,
            formattingRequest.id != coordinator.handledFormattingRequestID {
             coordinator.handledFormattingRequestID = formattingRequest.id
@@ -1624,6 +1694,7 @@ struct LinedTextEditor: UIViewRepresentable {
         var handledFocusRequestID = 0
         var handledBlurRequestID = 0
         var handledFormattingRequestID = 0
+        var handledFollowTextEndRequestID = 0
         var currentRichTextDocument: NotebookRichTextDocument?
         var isWaitingForTextBindingSync = false
         var isWaitingForRichTextBindingSync = false
@@ -2173,6 +2244,7 @@ struct NotebookEditorContent: View {
     var editorFocusRequestID: Int
     var editorBlurRequestID: Int = 0
     var formattingRequest: NotebookTextFormattingRequest? = nil
+    var followTextEndRequestID: Int = 0
     var bodyPlaceholder: String
     var scrollsInternally: Bool = true
     var pageHeight: CGFloat?
@@ -2268,6 +2340,7 @@ struct NotebookEditorContent: View {
                 focusRequestID: editorFocusRequestID,
                 blurRequestID: editorBlurRequestID,
                 formattingRequest: formattingRequest,
+                followTextEndRequestID: followTextEndRequestID,
                 scrollsInternally: scrollsInternally,
                 drawsRuledLines: false,
                 minimumHeight: bodyMinHeight,

@@ -21,6 +21,7 @@ struct OpenAIImageGenerationService {
         text: String,
         richText: NotebookRichTextDocument?,
         artStyle: String,
+        quality: OpenAIImageGenerationQuality,
         images: [UIImage],
         characters: [EntryCharacter] = []
     ) async throws -> UIImage {
@@ -40,8 +41,8 @@ struct OpenAIImageGenerationService {
             omittedOriginalPhotoCount: max(0, images.count - references.filter { $0.characterName == nil }.count)
         )
         let data = try await references.isEmpty
-            ? generateStoryboardWithoutReferences(apiKey: apiKey, prompt: prompt)
-            : generateStoryboardWithReferences(apiKey: apiKey, prompt: prompt, references: references)
+            ? generateStoryboardWithoutReferences(apiKey: apiKey, prompt: prompt, quality: quality)
+            : generateStoryboardWithReferences(apiKey: apiKey, prompt: prompt, quality: quality, references: references)
 
         guard
             let imageData = Data(base64Encoded: data),
@@ -56,6 +57,7 @@ struct OpenAIImageGenerationService {
     private func generateStoryboardWithReferences(
         apiKey: String,
         prompt: String,
+        quality: OpenAIImageGenerationQuality,
         references: [StoryboardReferenceImage]
     ) async throws -> String {
         var request = URLRequest(url: editsEndpoint)
@@ -69,7 +71,7 @@ struct OpenAIImageGenerationService {
         body.appendMultipartField(name: "model", value: OpenAITestConfig.imageModel, boundary: boundary)
         body.appendMultipartField(name: "prompt", value: prompt, boundary: boundary)
         body.appendMultipartField(name: "size", value: "1024x1536", boundary: boundary)
-        body.appendMultipartField(name: "quality", value: "low", boundary: boundary)
+        body.appendMultipartField(name: "quality", value: quality.rawValue, boundary: boundary)
 
         for (index, reference) in references.prefix(maxInputImageCount).enumerated() {
             guard let imageData = reference.image.storytopiaPreparedJPEGData(maxDimension: 1536, compressionQuality: 0.76) else {
@@ -93,7 +95,8 @@ struct OpenAIImageGenerationService {
 
     private func generateStoryboardWithoutReferences(
         apiKey: String,
-        prompt: String
+        prompt: String,
+        quality: OpenAIImageGenerationQuality
     ) async throws -> String {
         var request = URLRequest(url: generationsEndpoint)
         request.httpMethod = "POST"
@@ -105,7 +108,7 @@ struct OpenAIImageGenerationService {
             "model": OpenAITestConfig.imageModel,
             "prompt": prompt,
             "size": "1024x1536",
-            "quality": "medium"
+            "quality": quality.rawValue
         ]
 
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)

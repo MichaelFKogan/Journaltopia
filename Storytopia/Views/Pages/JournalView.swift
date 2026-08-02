@@ -3,6 +3,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
+private func playJournalFloatingButtonHaptic() {
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.82)
+}
+
 struct JournalView: View {
     @Binding var selectedPage: StoryPage
     @Binding var isDraftSaved: Bool
@@ -309,6 +313,7 @@ struct JournalView: View {
 
     private var floatingAddButton: some View {
         Button {
+            playJournalFloatingButtonHaptic()
             handleCreateButtonTapped()
         } label: {
             Image(systemName: "plus")
@@ -12698,6 +12703,7 @@ private struct PrototypeChapterDetailView: View {
 
     private var journalDetailFloatingWriteButton: some View {
         Button {
+            playJournalFloatingButtonHaptic()
             openFreshEntryFromJournalDetail()
         } label: {
             Image(systemName: "square.and.pencil")
