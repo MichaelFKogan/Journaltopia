@@ -16,6 +16,7 @@ struct JournalView: View {
     @Binding var isOpeningEntryFromEntries: Bool
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var generatedStoryboards: [GeneratedStoryboard]
+    @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     @State private var showsPrototypeData = false
@@ -65,7 +66,8 @@ struct JournalView: View {
         completedEntryOpenedStoryboardImage: Binding<UIImage?> = .constant(nil),
         isOpeningEntryFromEntries: Binding<Bool> = .constant(false),
         isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false),
-        generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([])
+        generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([]),
+        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil)
     ) {
         _selectedPage = selectedPage
         _isDraftSaved = isDraftSaved
@@ -75,6 +77,7 @@ struct JournalView: View {
         _isOpeningEntryFromEntries = isOpeningEntryFromEntries
         _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
         _generatedStoryboards = generatedStoryboards
+        _storyboardGenerationStatus = storyboardGenerationStatus
         _chapters = State(initialValue: DailyJournalData.allChapters())
     }
 
@@ -879,6 +882,7 @@ struct JournalView: View {
         DailyJournalData.detailView(
             for: chapter,
             dayOffset: dayOffset,
+            storyboardGenerationStatus: $storyboardGenerationStatus,
             onCreateEntryRequested: openFreshEntryFromJournalDetail,
             onChapterUpdated: updateChapterFromDetail,
             onOpenExistingEntry: openExistingEntryFromJournalDetail
@@ -935,6 +939,7 @@ struct JournalView: View {
             generatedStoryboards: $generatedStoryboards,
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+            storyboardGenerationStatus: $storyboardGenerationStatus,
             existingEntryStartsReadOnly: isOpeningEntryFromEntries,
             dismissCreate: {
                 popJournalCreateEntryRoute()
@@ -7084,6 +7089,7 @@ enum DailyJournalData {
     static func detailView(
         for chapter: PrototypeChapter,
         dayOffset: Int,
+        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil),
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
@@ -7096,6 +7102,7 @@ enum DailyJournalData {
             chapter: datedChapter.copy(title: chapter.title),
             entryDate: journalDate(dayOffset: dayOffset),
             presentation: .dailyJournal,
+            storyboardGenerationStatus: storyboardGenerationStatus,
             onNewEntryPresentationChange: onNewEntryPresentationChange,
             onCreateEntryRequested: onCreateEntryRequested,
             onChapterUpdated: onChapterUpdated,
@@ -12315,6 +12322,7 @@ private struct PrototypeChapterDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var chapter: PrototypeChapter
+    @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     let onCreateStory: (PrototypeEntry) -> Void
     let onNewEntryPresentationChange: (Bool) -> Void
     let onCreateEntryRequested: ((CreateEntryPresentation) -> Void)?
@@ -12481,6 +12489,7 @@ private struct PrototypeChapterDetailView: View {
         chapter: PrototypeChapter,
         entryDate: Date = Date(),
         presentation: Presentation = .story,
+        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil),
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
@@ -12488,6 +12497,7 @@ private struct PrototypeChapterDetailView: View {
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         _chapter = State(initialValue: chapter)
+        _storyboardGenerationStatus = storyboardGenerationStatus
         _selectedSection = State(initialValue: Self.initialSection(for: chapter, presentation: presentation))
         _hasVisibleJournalEntries = State(initialValue: Self.hasLocalEntries(for: chapter))
         self.entryDate = entryDate
@@ -12557,6 +12567,7 @@ private struct PrototypeChapterDetailView: View {
                 generatedStoryboards: $generatedStoryboards,
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+                storyboardGenerationStatus: $storyboardGenerationStatus,
                 existingEntryStartsReadOnly: isOpeningExistingEntryFromJournal,
                 dismissCreate: {
                     isShowingNewStory = false
@@ -12593,6 +12604,9 @@ private struct PrototypeChapterDetailView: View {
             resortMediaStoryboardsToEntryOrder()
         }
         .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardPrimaryChanged)) { _ in
+            refreshMediaStoryboardsFromLocalStore()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
             refreshMediaStoryboardsFromLocalStore()
         }
         .onChange(of: selectedSection) { newSection in
@@ -13920,6 +13934,9 @@ private struct JournalDetailEntryBrowser: View {
             notifyVisibleEntriesAvailability()
         }
         .onChange(of: chapter.entries.map(\.id)) { _ in
+            refreshEntries()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
             refreshEntries()
         }
         .onChange(of: editMode) { mode in

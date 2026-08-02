@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Binding var selectedPage: StoryPage
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedArtStyle = "Anime"
@@ -15,6 +16,8 @@ struct SettingsView: View {
         List {
             Section("Account") {
                 accountStatusRow
+
+                generationCreditsRow
 
                 accountActionRow
 
@@ -128,6 +131,7 @@ struct SettingsView: View {
         .enableInteractivePopGesture()
         .task {
             await authStore.refreshCurrentUser()
+            await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
     }
 
@@ -137,6 +141,22 @@ struct SettingsView: View {
             title: accountStatusTitle,
             subtitle: accountStatusSubtitle,
             showsChevron: false
+        )
+        .padding(.vertical, 4)
+    }
+
+    private var generationCreditsRow: some View {
+        SettingsRowContent(
+            systemName: "sparkle",
+            title: "Generation Credits",
+            subtitle: generationCreditsSubtitle,
+            showsChevron: false,
+            trailingContent: {
+                CreditBalanceBadge(
+                    balance: generationCreditStore.balance,
+                    isRefreshing: generationCreditStore.isRefreshing
+                )
+            }
         )
         .padding(.vertical, 4)
     }
@@ -241,6 +261,19 @@ struct SettingsView: View {
             return authStore.email ?? authStore.displayName
         }
     }
+
+    private var generationCreditsSubtitle: String {
+        switch authStore.status {
+        case .signedIn:
+            return "Standard and HD storyboards cost 1 credit"
+        case .loading:
+            return "Checking your account"
+        case .misconfigured:
+            return "Credits require Supabase"
+        case .signedOut:
+            return "Sign in to use credits"
+        }
+    }
 }
 
 private struct SettingsNavigationRow<Destination: View>: View {
@@ -292,6 +325,23 @@ private struct SettingsRowContent: View {
     let subtitle: String
     var showsChevron = true
     var iconColor = Color.homeAccent
+    var trailingContent: (() -> AnyView)?
+
+    init(
+        systemName: String,
+        title: String,
+        subtitle: String,
+        showsChevron: Bool = true,
+        iconColor: Color = Color.homeAccent,
+        @ViewBuilder trailingContent: @escaping () -> some View = { EmptyView() }
+    ) {
+        self.systemName = systemName
+        self.title = title
+        self.subtitle = subtitle
+        self.showsChevron = showsChevron
+        self.iconColor = iconColor
+        self.trailingContent = { AnyView(trailingContent()) }
+    }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -314,6 +364,10 @@ private struct SettingsRowContent: View {
             }
 
             Spacer(minLength: 8)
+
+            if let trailingContent {
+                trailingContent()
+            }
 
             if showsChevron {
                 Image(systemName: "chevron.right")

@@ -69,6 +69,43 @@ struct ProfilePlaceholder: View {
     }
 }
 
+struct CreditBalanceBadge: View {
+    let balance: Int?
+    var isRefreshing = false
+    var foregroundColor = Color.storyInk
+    var accentColor = Color.storyPurple
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(accentColor)
+                .frame(width: 19, height: 19)
+                .background(accentColor.opacity(0.12), in: Circle())
+
+            if isRefreshing && balance == nil {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(accentColor)
+            } else {
+                Text(balance.map(String.init) ?? "-")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(foregroundColor)
+                    .monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 30)
+        .background(Color.white.opacity(0.86), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
+        .accessibilityLabel("Generation credits")
+        .accessibilityValue(balance.map { "\($0) credits" } ?? "Loading")
+    }
+}
+
 struct BottomNavigationBar: View {
     @Binding var selectedPage: StoryPage
 
