@@ -12530,16 +12530,9 @@ private struct PrototypeChapterDetailView: View {
                             .font(.system(size: 13, weight: .semibold))
                     }
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.white.opacity(0.16), in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.white.opacity(0.28), lineWidth: 1)
-                    )
+                    .padding(.horizontal, 10)
                     .fixedSize()
                 }
-                .buttonStyle(.plain)
                 .accessibilityLabel("Change journal cover")
             }
         }

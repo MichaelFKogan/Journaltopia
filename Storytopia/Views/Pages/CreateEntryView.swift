@@ -1,6 +1,8 @@
+import AVFoundation
 import Combine
 import MapKit
 import PhotosUI
+import Speech
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -128,6 +130,257 @@ enum CreateEntryPresentation {
         case .editDraft, .editDraftInJournal:
             return "Discard Changes"
         }
+    }
+}
+
+@MainActor
+private final class EntrySpeechTranscriber: ObservableObject {
+    enum RecordingState: Equatable {
+        case idle
+        case listening
+        case unavailable(String)
+
+        var isListening: Bool {
+            if case .listening = self {
+                return true
+            }
+
+            return false
+        }
+    }
+
+    @Published private(set) var state: RecordingState = .idle
+
+    private let audioEngine = AVAudioEngine()
+    private let speechRecognizer = SFSpeechRecognizer()
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private var baselineText = ""
+    private var lastRenderedText = ""
+    private var lastTranscript = ""
+    private var didInstallAudioTap = false
+    private var currentTextProvider: (() -> String)?
+    private var onTranscriptChanged: ((String) -> Void)?
+
+    func toggle(currentText: @escaping () -> String, onTranscriptChanged: @escaping (String) -> Void) {
+        if state.isListening {
+            stop()
+            return
+        }
+
+        Task {
+            await start(currentText: currentText, onTranscriptChanged: onTranscriptChanged)
+        }
+    }
+
+    func stop() {
+        guard state.isListening || audioEngine.isRunning || recognitionTask != nil else {
+            return
+        }
+
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+
+        if didInstallAudioTap {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            didInstallAudioTap = false
+        }
+
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionRequest = nil
+        recognitionTask = nil
+        currentTextProvider = nil
+        onTranscriptChanged = nil
+
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+
+        if state.isListening {
+            state = .idle
+        }
+    }
+
+    private func start(currentText: @escaping () -> String, onTranscriptChanged: @escaping (String) -> Void) async {
+        state = .idle
+
+        guard let speechRecognizer else {
+            state = .unavailable("Speech recognition is not available on this device.")
+            return
+        }
+
+        guard speechRecognizer.isAvailable else {
+            state = .unavailable("Speech recognition is temporarily unavailable.")
+            return
+        }
+
+        let speechStatus = await requestSpeechAuthorization()
+        guard speechStatus == .authorized else {
+            state = .unavailable("Allow speech recognition in Settings to dictate journal entries.")
+            return
+        }
+
+        let canRecord = await requestMicrophoneAuthorization()
+        guard canRecord else {
+            state = .unavailable("Allow microphone access in Settings to dictate journal entries.")
+            return
+        }
+
+        stop()
+
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            state = .unavailable("Could not start the microphone. Please try again.")
+            return
+        }
+
+        baselineText = currentText()
+        lastRenderedText = baselineText
+        lastTranscript = ""
+        currentTextProvider = currentText
+        self.onTranscriptChanged = onTranscriptChanged
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        recognitionRequest = request
+
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak request] buffer, _ in
+            request?.append(buffer)
+        }
+        didInstallAudioTap = true
+
+        recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
+            Task { @MainActor in
+                self?.handleRecognitionResult(result, error: error)
+            }
+        }
+
+        do {
+            audioEngine.prepare()
+            try audioEngine.start()
+            state = .listening
+        } catch {
+            stop()
+            state = .unavailable("Could not start the microphone. Please try again.")
+        }
+    }
+
+    private func handleRecognitionResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
+        if let result {
+            appendTranscript(result.bestTranscription.formattedString)
+            if result.isFinal {
+                stop()
+            }
+        }
+
+        if error != nil, state.isListening {
+            stop()
+            state = .unavailable("Dictation stopped. Please try again.")
+        }
+    }
+
+    private func appendTranscript(_ transcript: String) {
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else {
+            return
+        }
+
+        let currentText = currentTextProvider?() ?? lastRenderedText
+        let updatedText: String
+
+        if lastTranscript.isEmpty {
+            updatedText = appendingDictation(trimmedTranscript, to: currentText)
+        } else if trimmedTranscript.hasPrefix(lastTranscript) {
+            let delta = String(trimmedTranscript.dropFirst(lastTranscript.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !delta.isEmpty else {
+                return
+            }
+
+            updatedText = appendingDictation(delta, to: currentText)
+        } else if currentText == lastRenderedText {
+            updatedText = appendingDictation(trimmedTranscript, to: baselineText)
+        } else if let previousTranscriptRange = currentText.range(of: lastTranscript, options: .backwards) {
+            updatedText = currentText.replacingCharacters(in: previousTranscriptRange, with: trimmedTranscript)
+        } else {
+            updatedText = appendingDictation(trimmedTranscript, to: currentText)
+        }
+
+        lastTranscript = trimmedTranscript
+        lastRenderedText = updatedText
+        onTranscriptChanged?(updatedText)
+    }
+
+    private func appendingDictation(_ dictatedText: String, to currentText: String) -> String {
+        let separator: String
+        if currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            separator = ""
+        } else if currentText.last?.isWhitespace == true {
+            separator = ""
+        } else {
+            separator = " "
+        }
+
+        return currentText + separator + dictatedText
+    }
+
+    private func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status)
+            }
+        }
+    }
+
+    private func requestMicrophoneAuthorization() async -> Bool {
+        await withCheckedContinuation { continuation in
+            AVAudioSession.sharedInstance().requestRecordPermission { isGranted in
+                continuation.resume(returning: isGranted)
+            }
+        }
+    }
+}
+
+private struct EntrySpeechMicButton: View {
+    let isListening: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isListening ? "mic.fill" : "mic")
+                .font(.system(size: 23, weight: .bold))
+                .foregroundStyle(isListening ? Color.storyPurple : Color.white)
+                .frame(width: 58, height: 58)
+                .background(
+                    Circle()
+                        .fill(isListening ? Color.white : Color.storyPurple)
+                )
+                .overlay(
+                    Circle()
+                        .stroke(isListening ? Color.storyPurple.opacity(0.22) : Color.white.opacity(0.86), lineWidth: 1.4)
+                )
+                .shadow(color: Color.storyInk.opacity(isListening ? 0.22 : 0.16), radius: 14, y: 7)
+                .overlay(alignment: .topTrailing) {
+                    if isListening {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 13, height: 13)
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white, lineWidth: 2)
+                            )
+                            .offset(x: -5, y: 5)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isListening ? "Stop dictation" : "Start dictation")
+        .accessibilityHint("Adds spoken words to the journal entry")
     }
 }
 
@@ -1368,6 +1621,7 @@ private struct DraftPageThumbnail: View {
 }
 
 struct CreateEntryView: View {
+    private static let defaultArtStyle = "Anime"
     private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Cozy Storybook", "Pop Art", "Colored Journal"]
     let presentation: CreateEntryPresentation
 
@@ -1385,7 +1639,7 @@ struct CreateEntryView: View {
     var onJournalEntryCreated: (String, PrototypeEntry) -> Void = { _, _ in }
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
-    @State private var selectedArtStyle = "Anime"
+    @State private var selectedArtStyle = CreateEntryView.defaultArtStyle
 
     @State private var selectedPhotoSlot: Int?
     @State private var isShowingPhotoSourceSheet = false
@@ -1441,6 +1695,8 @@ struct CreateEntryView: View {
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
+    @State private var speechRecognitionAlertMessage: String?
+    @StateObject private var speechTranscriber = EntrySpeechTranscriber()
     @State private var editorBlurRequestID = 0
     @State private var isKeyboardVisible = false
     @State private var isBodyEditorEditing = false
@@ -1631,6 +1887,14 @@ struct CreateEntryView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if showsSpeechMicButton {
+                speechMicButton
+                    .padding(.trailing, 18)
+                    .padding(.bottom, speechMicBottomPadding)
+                    .transition(.scale(scale: 0.86).combined(with: .opacity))
+            }
+        }
         .overlay {
             if showsSavedConfirmationCard {
                 savedConfirmationCard
@@ -1642,12 +1906,45 @@ struct CreateEntryView: View {
     private var editorWithPrimarySheets: some View {
         editorWithOverlays
         .onDisappear {
+            speechTranscriber.stop()
             dismissKeyboard()
             UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
                 .flatMap(\.windows)
                 .first(where: \.isKeyWindow)?
                 .endEditing(true)
+        }
+        .onChange(of: isShowingEntryOptionsPage) { isShowing in
+            if isShowing {
+                speechTranscriber.stop()
+            }
+        }
+        .onChange(of: opensExistingEntryReadMode) { isReadOnly in
+            if isReadOnly {
+                speechTranscriber.stop()
+            }
+        }
+        .onChange(of: speechTranscriber.state) { state in
+            if case .unavailable(let message) = state {
+                speechRecognitionAlertMessage = message
+            }
+        }
+        .alert(
+            "Dictation Unavailable",
+            isPresented: Binding(
+                get: { speechRecognitionAlertMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        speechRecognitionAlertMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                speechRecognitionAlertMessage = nil
+            }
+        } message: {
+            Text(speechRecognitionAlertMessage ?? "")
         }
         .sheet(isPresented: $isShowingCamera) {
             CameraPhotoPicker { image in
@@ -2580,11 +2877,23 @@ struct CreateEntryView: View {
             || storyboardPhotos.contains { $0 != nil }
             || !entryCharacters.isEmpty
             || hasUnsavedEntryMetadata
+            || hasUnsavedEntryOptions
     }
 
     private var hasUnsavedEntryMetadata: Bool {
         didEditEntryDate
             || !storyLocation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasUnsavedEntryOptions: Bool {
+        selectedArtStyle != Self.defaultArtStyle
+            || savesDraft != true
+            || isPrivateEntry
+            || selectedFontChoice != .sans
+            || selectedTextColorIndex != 0
+            || previewTextSize != CreateEntryTextSize.defaultSliderValue
+            || selectedPaperStyleChoice != .defaultChoice
+            || selectedPaperColorIndex != 0
     }
 
     private var hasUnsavedDraftChanges: Bool {
@@ -3001,7 +3310,7 @@ struct CreateEntryView: View {
         showsToolbarSavedFeedback = false
         isToolbarSaveInProgress = false
         toolbarSaveFeedbackVersion += 1
-        selectedArtStyle = "Anime"
+        selectedArtStyle = Self.defaultArtStyle
         storyLocation = ""
         storyDate = Date()
         storyDatePrecision = .noDate
@@ -3050,6 +3359,10 @@ struct CreateEntryView: View {
 
     private func loadSavedDraftIfNeeded() {
         guard let activeDraftID else {
+            return
+        }
+
+        if loadedDraftSnapshot?.id == activeDraftID {
             return
         }
 
@@ -3299,6 +3612,41 @@ struct CreateEntryView: View {
 
     private func editorScrollContentHeight(for visibleHeight: CGFloat) -> CGFloat {
         max(visibleHeight, UIScreen.main.bounds.height) * 2
+    }
+
+    private var showsSpeechMicButton: Bool {
+        !opensExistingEntryReadMode
+            && !isShowingEntryOptionsPage
+            && !isBlockingSaveInProgress
+            && !isPhotosPanelVisible
+            && !isShowingCustomizeSheet
+            && !isShowingJournalPromptsSheet
+    }
+
+    private var speechMicBottomPadding: CGFloat {
+        if isFullScreenEditorVisible {
+            return isKeyboardVisible ? 82 : 24
+        }
+
+        if isKeyboardVisible || isBodyEditorEditing || activeKeyboardFormattingMode != nil {
+            return 22
+        }
+
+        return 92
+    }
+
+    private var speechMicButton: some View {
+        EntrySpeechMicButton(isListening: speechTranscriber.state.isListening) {
+            toggleSpeechTranscription()
+        }
+    }
+
+    private func toggleSpeechTranscription() {
+        dismissKeyboard()
+        speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
+            entryText = dictatedText
+            entryRichText = NotebookRichTextDocument(text: dictatedText)
+        }
     }
 
     private var entryDraftBottomBar: some View {
@@ -8177,6 +8525,8 @@ struct ExpandedEntryEditor: View {
 
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
+    @State private var speechRecognitionAlertMessage: String?
+    @StateObject private var speechTranscriber = EntrySpeechTranscriber()
 
     init(
         entryText: Binding<String>,
@@ -8255,6 +8605,11 @@ struct ExpandedEntryEditor: View {
             .scrollDismissesKeyboard(.interactively)
             .background(paperColor)
             .notebookPageChrome()
+            .overlay(alignment: .bottomTrailing) {
+                expandedEditorSpeechMicButton
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 24)
+            }
         }
         .background(paperColor)
         .navigationTitle("Write")
@@ -8276,6 +8631,44 @@ struct ExpandedEntryEditor: View {
                 }
                 .font(.system(size: 14, weight: .bold))
             }
+        }
+        .onDisappear {
+            speechTranscriber.stop()
+        }
+        .onChange(of: speechTranscriber.state) { state in
+            if case .unavailable(let message) = state {
+                speechRecognitionAlertMessage = message
+            }
+        }
+        .alert(
+            "Dictation Unavailable",
+            isPresented: Binding(
+                get: { speechRecognitionAlertMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        speechRecognitionAlertMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                speechRecognitionAlertMessage = nil
+            }
+        } message: {
+            Text(speechRecognitionAlertMessage ?? "")
+        }
+    }
+
+    private var expandedEditorSpeechMicButton: some View {
+        EntrySpeechMicButton(isListening: speechTranscriber.state.isListening) {
+            toggleSpeechTranscription()
+        }
+    }
+
+    private func toggleSpeechTranscription() {
+        speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
+            entryText = dictatedText
+            entryRichText?.wrappedValue = NotebookRichTextDocument(text: dictatedText)
         }
     }
 }

@@ -15,6 +15,10 @@
 	</array>
 	<key>OPENAI_API_KEY</key>
 	<string>$(OPENAI_API_KEY)</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Storytopia uses the microphone so you can dictate text into your journal entries.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Storytopia uses speech recognition to turn your spoken words into journal entry text.</string>
 	<key>STORYTOPIA_AUTH_REDIRECT_SCHEME</key>
 	<string>$(STORYTOPIA_AUTH_REDIRECT_SCHEME)</string>
 	<key>SUPABASE_ANON_KEY</key>
