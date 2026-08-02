@@ -1432,7 +1432,7 @@ struct CreateEntryView: View {
     @State private var entryCharacters: [EntryCharacter] = []
     @State private var characterEditorSession: CharacterEditorSession?
     @State private var isPreviewingCompletedStoryboard = false
-    @State private var isEditingCompletedEntry = false
+    @State private var selectedEntryStoryboardIndex: Int?
     @State private var isPhotosPanelVisible = false
     @State private var isPhotoTabCollapsed = true
     @State private var isCharacterTabCollapsed = true
@@ -1565,24 +1565,16 @@ struct CreateEntryView: View {
         isOpeningCompletedEntryFromEntries || existingEntryStartsReadOnly
     }
 
-    private var isExistingEntryReadOnlyMode: Bool {
-        opensExistingEntryReadMode && !isEditingCompletedEntry
-    }
-
-    private var isExistingEntryEditingMode: Bool {
-        opensExistingEntryReadMode && isEditingCompletedEntry
-    }
-
     private var showsComposeFlowControls: Bool {
         canShowEntryOptionsPage
     }
 
     private var canShowEntryOptionsPage: Bool {
-        presentation.showsEntryOptionsFlow && !isExistingEntryReadOnlyMode
+        presentation.showsEntryOptionsFlow
     }
 
     private var editorToolbarTitle: String {
-        if isExistingEntryReadOnlyMode {
+        if opensExistingEntryReadMode {
             return "Entry"
         }
 
@@ -1680,14 +1672,13 @@ struct CreateEntryView: View {
                 .presentationBackground(.clear)
             }
         }
-        .sheet(isPresented: $isPreviewingCompletedStoryboard) {
-            if let completedEntryOpenedStoryboardImage {
-                ReferencePhotoViewer(image: completedEntryOpenedStoryboardImage) {
-                    isPreviewingCompletedStoryboard = false
-                }
-                .presentationBackground(.clear)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+        .fullScreenCover(isPresented: $isPreviewingCompletedStoryboard) {
+            let storyboards = currentEntryStoryboards
+            if !storyboards.isEmpty {
+                StoryboardImageViewer(
+                    storyboards: storyboards,
+                    initialIndex: min(selectedEntryStoryboardIndex ?? 0, storyboards.count - 1)
+                )
             }
         }
     }
@@ -1892,9 +1883,6 @@ struct CreateEntryView: View {
         }
         .onAppear {
             configureDirectJournalEntryIfNeeded()
-            if opensExistingEntryReadMode {
-                isEditingCompletedEntry = false
-            }
             if !canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = false
             }
@@ -1904,11 +1892,6 @@ struct CreateEntryView: View {
         }
         .onChange(of: activeDraftID) { newDraftID in
             handleActiveDraftChange(newDraftID)
-        }
-        .onChange(of: opensExistingEntryReadMode) { opensReadMode in
-            if opensReadMode {
-                isEditingCompletedEntry = false
-            }
         }
         .onChange(of: canShowEntryOptionsPage) { canShowOptions in
             if !canShowOptions {
@@ -1952,7 +1935,6 @@ struct CreateEntryView: View {
         dismissKeyboard()
         isFullScreenEditorVisible = false
         isShowingEntryOptionsPage = false
-        isEditingCompletedEntry = false
 
         guard draftID != nil else {
             clearEditor()
@@ -2057,7 +2039,7 @@ struct CreateEntryView: View {
                 )
                 print("[Storytopia] Storyboard saved.")
 
-                var storyboardsAfterLocalSave = GeneratedStoryboardStore.merging(storyboard, into: generatedStoryboards)
+                var storyboardsAfterLocalSave = GeneratedStoryboardStore.merging(storyboard, into: GeneratedStoryboardStore.load())
                 GeneratedStoryboardStore.save(storyboardsAfterLocalSave)
 
                 let storyboardForCompletion: GeneratedStoryboard
@@ -2155,11 +2137,11 @@ struct CreateEntryView: View {
                     isGeneratingStoryboard = false
                     isShowingStoryboardGenerationProgress = false
                     addedJournalTitle = journalTitle
-                    UserDefaults.standard.set("completed", forKey: "StorytopiaSelectedEntriesTab")
                     isOpeningCompletedEntryFromEntries = true
-                    completedEntryOpenedStoryboardImage = image
-                    print("[Storytopia] Entries list refresh requested.")
-                    selectedPage = .entries
+                    completedEntryOpenedStoryboardImage = storyboardForCompletion.image
+                    selectedEntryStoryboardIndex = 0
+                    isShowingEntryOptionsPage = true
+                    print("[Storytopia] Storyboard completion refreshed on Create page.")
                 }
             } catch {
                 await MainActor.run {
@@ -2227,6 +2209,9 @@ struct CreateEntryView: View {
                 isKeyboardVisible = false
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
+            refreshCurrentEntryStoryboardsFromStore()
+        }
     }
 
     private var entryOptionsPage: some View {
@@ -2246,6 +2231,7 @@ struct CreateEntryView: View {
         }
         .toolbarBackground(Color.homePageBackground, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
+        .enableInteractivePopGesture()
     }
 
     private var fullScreenEditorContent: some View {
@@ -2423,37 +2409,6 @@ struct CreateEntryView: View {
         }
     }
 
-    private func completedEntryModeButton(
-        title: String,
-        accessibilityLabel: String,
-        systemName: String? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if let systemName {
-                    Image(systemName: systemName)
-                        .font(.system(size: 13, weight: .bold))
-                }
-
-                Text(title)
-                    .font(.system(size: 13, weight: .bold))
-                    .lineLimit(1)
-            }
-            .frame(width: 82, height: 38)
-            .foregroundStyle(Color.storyPurple)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
-            )
-            .frame(width: 94, height: 48)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
     private var toolbarSaveActionButton: some View {
         Button {
             performToolbarSave()
@@ -2491,55 +2446,18 @@ struct CreateEntryView: View {
     }
 
     private var showsToolbarSaveButton: Bool {
-        (
-            !isExistingEntryReadOnlyMode
-                || (presentation.isEditDraft && hasUnsavedDraftChanges)
-        )
-            && (
-                presentation.showsNextButton
-                    || presentation.isEditDraft
-                    || presentation.savesDirectlyToJournal
-            )
+        presentation.showsNextButton
+            || presentation.isEditDraft
+            || presentation.savesDirectlyToJournal
     }
 
     private func handleEditorPageTap() {
-        if isExistingEntryReadOnlyMode {
-            enterCompletedEntryEditing(focusBody: true)
-        } else {
-            dismissKeyboard()
-        }
+        dismissKeyboard()
     }
 
     private func handleBodyEditorTap() {
-        if isExistingEntryReadOnlyMode {
-            enterCompletedEntryEditing(focusBody: true)
-        } else {
-            isTitleFocused = false
-            editorFocusRequestID += 1
-        }
-    }
-
-    private func enterCompletedEntryEditing(focusBody: Bool) {
-        withAnimation(.snappy(duration: 0.22)) {
-            isEditingCompletedEntry = true
-        }
-
-        guard focusBody else {
-            return
-        }
-
         isTitleFocused = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            editorFocusRequestID += 1
-        }
-    }
-
-    private func finishCompletedEntryEditing() {
-        dismissKeyboard()
-        isShowingEntryOptionsPage = false
-        withAnimation(.snappy(duration: 0.22)) {
-            isEditingCompletedEntry = false
-        }
+        editorFocusRequestID += 1
     }
 
     private var canUseToolbarSaveButton: Bool {
@@ -3104,7 +3022,6 @@ struct CreateEntryView: View {
         loadedDraftSnapshot = nil
         linkedJournalTitle = nil
         linkedJournalTitles = []
-        isEditingCompletedEntry = false
         resetKeyboardFormattingState()
         isBodyEditorEditing = false
         isKeyboardVisible = false
@@ -3199,7 +3116,7 @@ struct CreateEntryView: View {
     }
 
     private var createEntryContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: 14) {
             entryDraftStepContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3265,7 +3182,6 @@ struct CreateEntryView: View {
                                 editorFocusRequestID += 1
                             }
                         )
-                        .allowsHitTesting(!isExistingEntryReadOnlyMode)
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
@@ -3289,8 +3205,6 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: isPhotosPanelVisible)
             .animation(.snappy(duration: 0.22), value: isShowingCustomizeSheet)
             .animation(.snappy(duration: 0.22), value: isShowingJournalPromptsSheet)
-            .animation(.snappy(duration: 0.22), value: isExistingEntryReadOnlyMode)
-            .animation(.snappy(duration: 0.22), value: isExistingEntryEditingMode)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -3305,12 +3219,27 @@ struct CreateEntryView: View {
     @ViewBuilder
     private func completedEntryStoryboardHeader(containerWidth: CGFloat) -> some View {
         if let completedEntryOpenedStoryboardImage {
+            let storyboards = currentEntryStoryboards
+            let primaryImage = storyboards.first(where: \.isPrimary)?.image ?? storyboards.first?.image ?? completedEntryOpenedStoryboardImage
+            let storyboardCount = max(storyboards.count, 1)
             let imageWidth = min(containerWidth * 0.34, 180)
-            let aspectRatio = max(completedEntryOpenedStoryboardImage.size.width / completedEntryOpenedStoryboardImage.size.height, 0.1)
+            let aspectRatio = max(primaryImage.size.width / primaryImage.size.height, 0.1)
             let imageHeight = imageWidth / aspectRatio
 
             ZStack(alignment: .topTrailing) {
-                Image(uiImage: completedEntryOpenedStoryboardImage)
+                if storyboardCount > 1 {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.white.opacity(0.9))
+                        .frame(width: imageWidth, height: imageHeight)
+                        .offset(x: -8, y: 8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(Color.storyInk.opacity(0.08), lineWidth: 1)
+                                .offset(x: -8, y: 8)
+                        )
+                }
+
+                Image(uiImage: primaryImage)
                     .resizable()
                     .scaledToFit()
                     .frame(width: imageWidth, height: imageHeight)
@@ -3331,10 +3260,26 @@ struct CreateEntryView: View {
                     .shadow(color: Color.storyInk.opacity(0.12), radius: 1, y: 1)
                     .offset(x: 1, y: -13)
                     .zIndex(2)
+
+                if storyboardCount > 1 {
+                    Text("\(storyboardCount)")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .frame(width: 26, height: 26)
+                        .background(Color.storyPurple, in: Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white, lineWidth: 2)
+                        )
+                        .shadow(color: Color.storyInk.opacity(0.18), radius: 5, y: 2)
+                        .offset(x: 12, y: imageHeight - 16)
+                        .zIndex(3)
+                }
             }
             .frame(width: imageWidth, height: imageHeight)
             .contentShape(Rectangle())
             .onTapGesture {
+                selectedEntryStoryboardIndex = 0
                 isPreviewingCompletedStoryboard = true
             }
             .rotationEffect(.degrees(2))
@@ -3381,29 +3326,7 @@ struct CreateEntryView: View {
 
     @ViewBuilder
     private var existingEntryModeBottomControls: some View {
-        if isExistingEntryReadOnlyMode {
-            HStack {
-                Spacer()
-
-                completedEntryModeButton(title: "Edit", accessibilityLabel: "Edit entry", systemName: "pencil") {
-                    enterCompletedEntryEditing(focusBody: false)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 10)
-        } else {
-            VStack(alignment: .trailing, spacing: 0) {
-                if isExistingEntryEditingMode {
-                    completedEntryModeButton(title: "Done", accessibilityLabel: "Done editing") {
-                        finishCompletedEntryEditing()
-                    }
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 8)
-                }
-
-                entryDraftBottomBar
-            }
-        }
+        entryDraftBottomBar
     }
 
     private var storyDetailsTab: some View {
@@ -4603,8 +4526,13 @@ struct CreateEntryView: View {
     }
 
     private var entryOptionsStepContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            entryDetailsInfoBanner
+        return VStack(alignment: .leading, spacing: 14) {
+            if let completedEntryOpenedStoryboardImage {
+                currentStoryboardVersionPrompt
+                currentStoryboardsCard(fallbackImage: completedEntryOpenedStoryboardImage)
+            } else {
+                entryDetailsInfoBanner
+            }
 
             artStylePickerSection
             journalDestinationCard
@@ -4649,6 +4577,23 @@ struct CreateEntryView: View {
 
     private var hasStoryboardPhotos: Bool {
         storyboardPhotos.contains { $0 != nil }
+    }
+
+    private var storyboardGenerationButtonTitle: String {
+        if completedEntryOpenedStoryboardImage != nil {
+            switch storyboardGenerationPhase {
+            case .ready, .failed:
+                return "Generate New Version"
+            case .preparingEntry, .uploadingReferencePhotos, .generating, .savingResult, .completed:
+                return storyboardGenerationPhase.buttonTitle
+            }
+        }
+
+        return storyboardGenerationPhase.buttonTitle
+    }
+
+    private var isStoryboardGenerationButtonDisabled: Bool {
+        isGeneratingStoryboard || storyboardGenerationPhase == .completed
     }
 
     private var photosMenuBadgeCount: Int {
@@ -5792,6 +5737,211 @@ struct CreateEntryView: View {
         )
     }
 
+    private var currentEntryStoryboards: [GeneratedStoryboard] {
+        let entryID = activeDraftID
+        var seen = Set<UUID>()
+        var storyboards: [GeneratedStoryboard] = []
+
+        for storyboard in generatedStoryboards + GeneratedStoryboardStore.load(clientEntryIDs: Set([entryID].compactMap { $0 })) {
+            guard
+                let clientEntryID = storyboard.clientEntryID,
+                clientEntryID == entryID,
+                seen.insert(storyboard.id).inserted
+            else {
+                continue
+            }
+
+            storyboards.append(storyboard)
+        }
+
+        if storyboards.isEmpty,
+           let entryID,
+           let completedEntryOpenedStoryboardImage {
+            storyboards.append(
+                GeneratedStoryboard(
+                    clientEntryID: entryID,
+                    image: completedEntryOpenedStoryboardImage,
+                    promptText: entryText,
+                    artStyle: selectedArtStyle,
+                    sourcePhotoCount: 0,
+                    isPrimary: true
+                )
+            )
+        }
+
+        return storyboards.sorted { left, right in
+            if left.isPrimary != right.isPrimary {
+                return left.isPrimary
+            }
+
+            return left.createdAt > right.createdAt
+        }
+    }
+
+    private func refreshCurrentEntryStoryboardsFromStore() {
+        guard let activeDraftID else {
+            return
+        }
+
+        generatedStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: [activeDraftID])
+    }
+
+    private func currentStoryboardsCard(fallbackImage: UIImage) -> some View {
+        let storyboards = currentEntryStoryboards
+        let displayStoryboards = storyboards.isEmpty
+            ? [
+                GeneratedStoryboard(
+                    clientEntryID: activeDraftID,
+                    image: fallbackImage,
+                    promptText: entryText,
+                    artStyle: selectedArtStyle,
+                    sourcePhotoCount: 0,
+                    isPrimary: true
+                )
+            ]
+            : storyboards
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 7) {
+                Text("Current Storyboards")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Text("\(displayStoryboards.count)")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Color.storyPurple.opacity(0.72), in: Circle())
+
+                Spacer(minLength: 0)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(Array(displayStoryboards.enumerated()), id: \.element.id) { index, storyboard in
+                        currentStoryboardThumbnail(image: storyboard.image, isPrimary: storyboard.isPrimary)
+                            .onTapGesture {
+                                setPrimaryStoryboard(storyboard)
+                            }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel(storyboard.isPrimary ? "Primary storyboard" : "Set storyboard version \(index + 1) as primary")
+                    }
+                }
+                .padding(.horizontal, 1)
+                .padding(.vertical, 1)
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.54), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
+    }
+
+    private func setPrimaryStoryboard(_ storyboard: GeneratedStoryboard) {
+        guard let clientEntryID = storyboard.clientEntryID else {
+            return
+        }
+
+        selectedEntryStoryboardIndex = nil
+        let updatedStore = GeneratedStoryboardStore.markPrimary(
+            storyboardID: storyboard.id,
+            clientEntryID: clientEntryID
+        )
+        generatedStoryboards = updatedStore
+        completedEntryOpenedStoryboardImage = storyboard.image
+
+        guard authStore.userID != nil else {
+            return
+        }
+
+        Task {
+            do {
+                try await SupabaseStoryboardService().setPrimaryStoryboard(storyboard)
+                await MainActor.run {
+                    setCloudSaveState(.saved)
+                }
+            } catch {
+                await MainActor.run {
+                    setCloudSaveState(.failed("Could not save the primary storyboard. Check your connection and try again."))
+                }
+            }
+        }
+    }
+
+    private func currentStoryboardThumbnail(image: UIImage, isPrimary: Bool) -> some View {
+        let aspectRatio = max(image.size.width, 1) / max(image.size.height, 1)
+        let thumbnailHeight: CGFloat = 200
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: min(max(thumbnailHeight * aspectRatio, 150), 318), height: thumbnailHeight)
+                .background(Color.storyInk.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(isPrimary ? Color.storyPurple : Color.storyBorder.opacity(0.58), lineWidth: isPrimary ? 2 : 1)
+                )
+                .overlay(alignment: .bottomLeading) {
+                    if isPrimary {
+                        HStack(spacing: 4) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 8, weight: .black))
+
+                            Text("Primary")
+                                .font(.system(size: 10, weight: .heavy))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .frame(height: 22)
+                        .background(Color.storyPurple, in: UnevenRoundedRectangle(
+                            topLeadingRadius: 0,
+                            bottomLeadingRadius: 7,
+                            bottomTrailingRadius: 6,
+                            topTrailingRadius: 6,
+                            style: .continuous
+                        ))
+                    }
+                }
+        }
+        .accessibilityLabel(isPrimary ? "Primary storyboard" : "Storyboard")
+    }
+
+    private var currentStoryboardVersionPrompt: some View {
+        HStack(alignment: .center, spacing: 11) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Create another version")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+
+                Text("Try a different art style or settings without replacing your current storyboard.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.storyInk.opacity(0.64))
+                    .lineSpacing(1)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.storyPurple.opacity(0.54), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
+    }
+
     private var nextAvailablePhotoSlot: Int? {
         storyboardPhotos.firstIndex(where: { $0 == nil })
     }
@@ -6594,9 +6744,9 @@ struct CreateEntryView: View {
                         ProgressView()
                             .tint(.white)
 
-                        Text(storyboardGenerationPhase.buttonTitle)
+                        Text(storyboardGenerationButtonTitle)
                     } else {
-                        Text(storyboardGenerationPhase.buttonTitle)
+                        Text(storyboardGenerationButtonTitle)
                         if storyboardGenerationPhase != .completed {
                             Image(systemName: "sparkles")
                                 .font(.system(size: 14, weight: .semibold))
@@ -6617,10 +6767,10 @@ struct CreateEntryView: View {
                 )
                 .shadow(color: Color.storyPurple.opacity(0.18), radius: 10, y: 5)
             }
-            .disabled(isGeneratingStoryboard)
-            .opacity(isGeneratingStoryboard ? 0.76 : 1)
+            .disabled(isStoryboardGenerationButtonDisabled)
+            .opacity(isStoryboardGenerationButtonDisabled ? 0.76 : 1)
 
-            Text("Estimated time: around 2 minutes")
+            Text(completedEntryOpenedStoryboardImage == nil ? "Estimated time: around 2 minutes" : "This will be saved as a new version.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.storyInk.opacity(0.46))
 

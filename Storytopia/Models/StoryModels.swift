@@ -166,6 +166,28 @@ struct GeneratedStoryboard: Identifiable {
         self.cloudSyncState = cloudSyncState
         self.isPrimary = isPrimary
     }
+
+    func withPrimaryStatus(_ isPrimary: Bool) -> GeneratedStoryboard {
+        GeneratedStoryboard(
+            id: id,
+            clientEntryID: clientEntryID,
+            image: image,
+            promptText: promptText,
+            artStyle: artStyle,
+            panelLayout: panelLayout,
+            sourcePhotoCount: sourcePhotoCount,
+            createdAt: createdAt,
+            imageFileName: imageFileName,
+            storagePath: storagePath,
+            cloudSyncState: cloudSyncState,
+            isPrimary: isPrimary
+        )
+    }
+}
+
+extension Notification.Name {
+    static let storytopiaGeneratedStoryboardsChanged = Notification.Name("StorytopiaGeneratedStoryboardsChanged")
+    static let storytopiaGeneratedStoryboardPrimaryChanged = Notification.Name("StorytopiaGeneratedStoryboardPrimaryChanged")
 }
 
 struct CreateEntryReferencePhoto: Identifiable {
@@ -1132,6 +1154,7 @@ enum GeneratedStoryboardStore {
         }
 
         UserDefaults.standard.set(metadataData, forKey: scopedMetadataKey)
+        NotificationCenter.default.post(name: .storytopiaGeneratedStoryboardsChanged, object: nil)
     }
 
     static func delete(_ storyboards: [GeneratedStoryboard]) {
@@ -1186,6 +1209,39 @@ enum GeneratedStoryboardStore {
         )
     }
 
+    static func cachedStoryboard(_ storyboard: GeneratedStoryboard) throws -> GeneratedStoryboard {
+        guard storyboard.imageFileName == nil else {
+            return storyboard
+        }
+
+        guard let clientEntryID = storyboard.clientEntryID else {
+            return storyboard
+        }
+
+        return try persistedStoryboard(
+            image: storyboard.image,
+            clientEntryID: clientEntryID,
+            promptText: storyboard.promptText,
+            artStyle: storyboard.artStyle,
+            panelLayout: storyboard.panelLayout,
+            sourcePhotoCount: storyboard.sourcePhotoCount,
+            id: storyboard.id,
+            storagePath: storyboard.storagePath,
+            cloudSyncState: storyboard.cloudSyncState,
+            isPrimary: storyboard.isPrimary
+        )
+    }
+
+    static func cachedStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
+        storyboards.compactMap { storyboard in
+            do {
+                return try cachedStoryboard(storyboard)
+            } catch {
+                return nil
+            }
+        }
+    }
+
     static func merging(_ storyboard: GeneratedStoryboard, into storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
         var merged = storyboards.map { existing in
             guard
@@ -1217,6 +1273,28 @@ enum GeneratedStoryboardStore {
             merged.insert(storyboard, at: 0)
         }
         return merged
+    }
+
+    @discardableResult
+    static func markPrimary(storyboardID: UUID, clientEntryID: UUID) -> [GeneratedStoryboard] {
+        let updatedStoryboards = load().map { storyboard in
+            guard storyboard.clientEntryID == clientEntryID else {
+                return storyboard
+            }
+
+            return storyboard.withPrimaryStatus(storyboard.id == storyboardID)
+        }
+
+        save(updatedStoryboards)
+        NotificationCenter.default.post(
+            name: .storytopiaGeneratedStoryboardPrimaryChanged,
+            object: nil,
+            userInfo: [
+                "storyboardID": storyboardID,
+                "clientEntryID": clientEntryID
+            ]
+        )
+        return updatedStoryboards
     }
 
     private static var imagesDirectory: URL {

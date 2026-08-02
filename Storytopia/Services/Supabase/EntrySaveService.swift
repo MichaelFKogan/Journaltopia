@@ -364,6 +364,36 @@ struct SupabaseStoryboardService {
         }
     }
 
+    func setPrimaryStoryboard(_ storyboard: GeneratedStoryboard) async throws {
+        guard let clientEntryID = storyboard.clientEntryID else {
+            throw SupabaseStoryboardError.syncFailed
+        }
+
+        let userID = try await authenticatedUserID()
+
+        do {
+            try await markPriorStoryboardsNonPrimary(
+                userID: userID,
+                clientEntryID: clientEntryID,
+                excluding: storyboard.id
+            )
+
+            try await client
+                .from("entry_storyboards")
+                .update(EntryStoryboardPrimaryUpdate(isPrimary: true))
+                .eq("user_id", value: userID)
+                .eq("client_entry_id", value: clientEntryID)
+                .eq("id", value: storyboard.id)
+                .execute()
+            print("[Storytopia] Primary storyboard selection updated.")
+        } catch let error as SupabaseStoryboardError {
+            throw error
+        } catch {
+            print("[Storytopia] Primary storyboard update failed: \(error.localizedDescription)")
+            throw SupabaseStoryboardError.syncFailed
+        }
+    }
+
     func loadStoryboards() async throws -> [EntryStoryboard] {
         do {
             return try await client
@@ -408,11 +438,15 @@ struct SupabaseStoryboardService {
                 return []
             }
 
-            let rows = try await loadPrimaryCompletedStoryboards()
+            let rows = try await loadStoryboards()
 
             return Array(
                 rows
-                    .filter { completedClientEntryIDs.contains($0.clientEntryID) }
+                    .filter {
+                        completedClientEntryIDs.contains($0.clientEntryID)
+                            && $0.generationStatus == "completed"
+                    }
+                    .sorted { $0.createdAt > $1.createdAt }
                     .dropFirst(offset)
                     .prefix(limit)
             )
