@@ -131,6 +131,18 @@ extension UIImage {
         return flattened.jpegData(compressionQuality: compressionQuality)
     }
 
+    /// Returns a smaller image for grid/list cells. Preserves the original when already within bounds.
+    func storytopiaDownsampled(maxDimension: CGFloat) -> UIImage {
+        let longestSide = max(size.width * scale, size.height * scale)
+        guard longestSide > maxDimension, maxDimension > 0 else {
+            return self
+        }
+
+        let resizeScale = maxDimension / longestSide
+        let targetSize = CGSize(width: size.width * scale * resizeScale, height: size.height * scale * resizeScale)
+        return storytopiaOpaqueImage(size: targetSize, scale: 1)
+    }
+
     private func storytopiaOpaqueImage(size targetSize: CGSize, scale rendererScale: CGFloat) -> UIImage {
         let format = UIGraphicsImageRendererFormat.default()
         format.opaque = true
