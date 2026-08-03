@@ -3,6 +3,7 @@ import UIKit
 
 struct ProfileView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
@@ -59,6 +60,7 @@ struct ProfileView: View {
         }
         .task(id: authStore.userID) {
             await loadProfileStoryboards()
+            await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
     }
 
@@ -128,6 +130,11 @@ struct ProfileView: View {
 
             Spacer()
 
+            CreditBalanceBadge(
+                balance: generationCreditStore.balance,
+                isRefreshing: generationCreditStore.isRefreshing
+            )
+
             settingsButton
         }
         .padding(.top, 2)
@@ -177,11 +184,15 @@ struct ProfileView: View {
             HStack(spacing: 0) {
                 ProfileStat(value: "\(generatedStoryboards.count)", title: "Storyboards")
                 ProfileStat(value: "\(thisMonthStoryboardCount)", title: "This Month")
+                ProfileStat(value: generationCreditBalanceText, title: "Credits")
                 ProfileStat(value: "0", title: "Day Streak")
-                ProfileStat(value: "0", title: "Favorites")
             }
         }
         .padding(.top, 2)
+    }
+
+    private var generationCreditBalanceText: String {
+        generationCreditStore.balance.map(String.init) ?? "-"
     }
 
     private var thisMonthStoryboardCount: Int {

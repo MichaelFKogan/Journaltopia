@@ -466,14 +466,124 @@ struct SupabaseStoryboardService {
             return []
         }
 
-        let rows = (try await loadStoryboards())
-            .filter {
-                clientEntryIDs.contains($0.clientEntryID)
-                    && $0.generationStatus == JournalEntryStatus.completed.rawValue
-            }
+        let rows = try await loadStoryboardRows(for: clientEntryIDs)
+            .filter { $0.generationStatus == JournalEntryStatus.completed.rawValue }
             .sorted { $0.createdAt > $1.createdAt }
 
         return await downloadStoryboardImages(from: rows)
+    }
+
+    /// Loads journal-detail card assets: metadata for all matching storyboards, full images
+    /// persisted for primaries, and downsampled card images for UI cells.
+    func loadJournalDetailStoryboardCards(
+        for clientEntryIDs: Set<UUID>,
+        cardMaxDimension: CGFloat = 640
+    ) async throws -> (cardImages: [GeneratedStoryboard], countsByClientEntryID: [UUID: Int]) {
+        guard !clientEntryIDs.isEmpty else {
+            return ([], [:])
+        }
+
+        let rows = try await loadStoryboardRows(for: clientEntryIDs)
+            .filter { $0.generationStatus == JournalEntryStatus.completed.rawValue }
+            .sorted { $0.createdAt > $1.createdAt }
+
+        var countsByClientEntryID: [UUID: Int] = [:]
+        for row in rows {
+            countsByClientEntryID[row.clientEntryID, default: 0] += 1
+        }
+
+        var primaryRowsByClientEntryID: [UUID: EntryStoryboard] = [:]
+        for row in rows {
+            if row.isPrimary {
+                primaryRowsByClientEntryID[row.clientEntryID] = row
+            } else if primaryRowsByClientEntryID[row.clientEntryID] == nil {
+                primaryRowsByClientEntryID[row.clientEntryID] = row
+            }
+        }
+
+        let primaryRows = Array(primaryRowsByClientEntryID.values).sorted { $0.createdAt > $1.createdAt }
+        var cardImages: [GeneratedStoryboard] = []
+        var persistedBatch: [GeneratedStoryboard] = []
+
+        for row in primaryRows {
+            do {
+                let fullImage = try await downloadStoryboardImage(storagePath: row.storagePath)
+                let fullStoryboard = GeneratedStoryboard(
+                    id: row.id,
+                    clientEntryID: row.clientEntryID,
+                    image: fullImage,
+                    promptText: row.prompt ?? "",
+                    artStyle: row.artStyle ?? "Anime",
+                    panelLayout: row.panelLayout,
+                    sourcePhotoCount: 0,
+                    createdAt: row.createdAt,
+                    storagePath: row.storagePath,
+                    cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                    isPrimary: row.isPrimary
+                )
+                persistedBatch.append(fullStoryboard)
+
+                let cardImage = fullImage.storytopiaDownsampled(maxDimension: cardMaxDimension)
+                cardImages.append(
+                    GeneratedStoryboard(
+                        id: row.id,
+                        clientEntryID: row.clientEntryID,
+                        image: cardImage,
+                        promptText: row.prompt ?? "",
+                        artStyle: row.artStyle ?? "Anime",
+                        panelLayout: row.panelLayout,
+                        sourcePhotoCount: 0,
+                        createdAt: row.createdAt,
+                        storagePath: row.storagePath,
+                        cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                        isPrimary: row.isPrimary
+                    )
+                )
+            } catch {
+                print("[Storytopia] Journal detail storyboard card download skipped: \(row.id) \(error.localizedDescription)")
+            }
+        }
+
+        if !persistedBatch.isEmpty {
+            let cached = GeneratedStoryboardStore.cachedStoryboards(persistedBatch)
+            var persisted = GeneratedStoryboardStore.load()
+            for storyboard in cached {
+                persisted = GeneratedStoryboardStore.merging(storyboard, into: persisted)
+            }
+            GeneratedStoryboardStore.save(persisted)
+        }
+
+        return (cardImages, countsByClientEntryID)
+    }
+
+    private func loadStoryboardRows(for clientEntryIDs: Set<UUID>) async throws -> [EntryStoryboard] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        let userID = try await authenticatedUserID()
+        var aggregated: [EntryStoryboard] = []
+        var seen = Set<UUID>()
+        let orderedIDs = Array(clientEntryIDs)
+
+        for start in stride(from: 0, to: orderedIDs.count, by: 80) {
+            let chunk = Array(orderedIDs[start..<min(start + 80, orderedIDs.count)])
+            let values: [any PostgrestFilterValue] = chunk.map { $0 as any PostgrestFilterValue }
+            let page: [EntryStoryboard] = try await client
+                .from("entry_storyboards")
+                .select()
+                .eq("user_id", value: userID)
+                .in("client_entry_id", values: values)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+
+            for row in page where seen.insert(row.id).inserted {
+                aggregated.append(row)
+            }
+        }
+
+        return aggregated
     }
 
     private func downloadStoryboardImages(from rows: [EntryStoryboard]) async -> [GeneratedStoryboard] {

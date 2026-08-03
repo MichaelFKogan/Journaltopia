@@ -1699,10 +1699,12 @@ struct CreateEntryView: View {
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningCompletedEntryFromEntries: Bool
+    @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     var existingEntryStartsReadOnly = false
     let dismissCreate: () -> Void
     var onJournalEntryCreated: (String, PrototypeEntry) -> Void = { _, _ in }
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
     @State private var selectedArtStyle = CreateEntryView.defaultArtStyle
     @AppStorage("StorytopiaImageGenerationQuality") private var selectedImageGenerationQualityRawValue = OpenAIImageGenerationQuality.standard.rawValue
@@ -2330,27 +2332,54 @@ struct CreateEntryView: View {
         let apiKey = OpenAITestConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty, apiKey != "PASTE_OPENAI_API_KEY_HERE" else {
             generationErrorMessage = StoryboardGenerationError.missingAPIKey.localizedDescription
+            setStoryboardGenerationGlobalStatus(
+                kind: .failed,
+                message: generationErrorMessage ?? StoryboardGenerationError.missingAPIKey.localizedDescription
+            )
             return
         }
 
         guard let generationPayload = makeEntryDraftSavePayload(forceSave: true) else {
             generationErrorMessage = StoryboardGenerationError.invalidRequest.localizedDescription
+            setStoryboardGenerationGlobalStatus(
+                kind: .failed,
+                message: generationErrorMessage ?? StoryboardGenerationError.invalidRequest.localizedDescription
+            )
             return
         }
 
         guard authStore.userID != nil else {
             generationErrorMessage = "Sign in before generating a storyboard."
+            setStoryboardGenerationGlobalStatus(
+                kind: .failed,
+                message: generationErrorMessage ?? "Sign in before generating a storyboard."
+            )
             return
         }
 
         let photos = storyboardPhotos.compactMap { $0 }
         let photoImages = photos.map(\.image)
         let generationQuality = selectedImageGenerationQuality
+        let creditCost = generationQuality.creditCost
+        guard generationCreditStore.canSpend(creditCost) else {
+            generationErrorMessage = "You need \(creditCost) credit to generate this storyboard."
+            setStoryboardGenerationGlobalStatus(
+                kind: .failed,
+                message: generationErrorMessage ?? "You need \(creditCost) credit to generate this storyboard."
+            )
+            return
+        }
+
         let requiresEntrySave = activeDraftID == nil || hasUnsavedDraftChanges
         let requiresReferencePhotoSync = requiresEntrySave && hasUnsavedEntryMediaChanges
         isGeneratingStoryboard = true
         isShowingStoryboardGenerationProgress = true
         storyboardGenerationPhase = requiresReferencePhotoSync ? .uploadingReferencePhotos : .preparingEntry
+        setStoryboardGenerationGlobalStatus(
+            kind: .running,
+            entryID: activeDraftID,
+            phase: storyboardGenerationPhase
+        )
 
         Task {
             do {
@@ -2362,6 +2391,11 @@ struct CreateEntryView: View {
                     syncReferencePhotos: requiresReferencePhotoSync
                 )
                 activeDraftID = prepareResult.localDraftID
+                setStoryboardGenerationGlobalStatus(
+                    kind: .running,
+                    entryID: prepareResult.localDraftID,
+                    phase: storyboardGenerationPhase
+                )
                 setCloudSaveState(prepareResult.state)
                 if case .failed(let message) = prepareResult.state {
                     throw StoryboardGenerationError.openAIMessage(message)
@@ -2375,6 +2409,11 @@ struct CreateEntryView: View {
 
                 await MainActor.run {
                     storyboardGenerationPhase = .generating
+                    setStoryboardGenerationGlobalStatus(
+                        kind: .running,
+                        entryID: prepareResult.localDraftID,
+                        phase: .generating
+                    )
                 }
 
                 print("[Storytopia] Calling OpenAI.")
@@ -2390,8 +2429,15 @@ struct CreateEntryView: View {
                 )
                 print("[Storytopia] OpenAI response received.")
 
+                try await generationCreditStore.spend(creditCost)
+
                 await MainActor.run {
                     storyboardGenerationPhase = .savingResult
+                    setStoryboardGenerationGlobalStatus(
+                        kind: .running,
+                        entryID: prepareResult.localDraftID,
+                        phase: .savingResult
+                    )
                 }
 
                 print("[Storytopia] Saving generated storyboard.")
@@ -2507,6 +2553,11 @@ struct CreateEntryView: View {
                     completedEntryOpenedStoryboardImage = storyboardForCompletion.image
                     selectedEntryStoryboardIndex = 0
                     isShowingEntryOptionsPage = true
+                    setStoryboardGenerationGlobalStatus(
+                        kind: .completed,
+                        entryID: completionResult.localDraftID,
+                        storyboard: storyboardForCompletion
+                    )
                     print("[Storytopia] Storyboard completion refreshed on Create page.")
                 }
             } catch {
@@ -2515,8 +2566,56 @@ struct CreateEntryView: View {
                     storyboardGenerationPhase = .failed
                     isGeneratingStoryboard = false
                     isShowingStoryboardGenerationProgress = false
+                    setStoryboardGenerationGlobalStatus(
+                        kind: .failed,
+                        entryID: activeDraftID,
+                        message: error.localizedDescription
+                    )
                 }
             }
+        }
+    }
+
+    private func setStoryboardGenerationGlobalStatus(
+        kind: StoryboardGenerationGlobalStatusKind,
+        entryID: UUID? = nil,
+        phase: StoryboardGenerationPhase? = nil,
+        storyboard: GeneratedStoryboard? = nil,
+        message: String? = nil
+    ) {
+        let statusID = storyboardGenerationStatus?.id ?? UUID()
+        let resolvedEntryID = entryID ?? storyboard?.clientEntryID ?? storyboardGenerationStatus?.entryID ?? activeDraftID
+        let resolvedJournalTitle = selectedEntryJournalTitle ?? storyboardGenerationStatus?.journalTitle
+        let resolvedTitle: String
+        let resolvedMessage: String
+
+        switch kind {
+        case .running:
+            resolvedTitle = "Generating storyboard"
+            resolvedMessage = phase?.progressTitle ?? "Your storyboard image is still in progress."
+        case .completed:
+            resolvedTitle = "Storyboard ready"
+            if let resolvedJournalTitle {
+                resolvedMessage = "Paperclipped to \(resolvedJournalTitle). Tap to view."
+            } else {
+                resolvedMessage = "Saved to this entry. Tap to view."
+            }
+        case .failed:
+            resolvedTitle = "Storyboard failed"
+            resolvedMessage = message ?? "Open the generator to try again."
+        }
+
+        withAnimation(.snappy(duration: 0.24)) {
+            storyboardGenerationStatus = StoryboardGenerationGlobalStatus(
+                id: statusID,
+                entryID: resolvedEntryID,
+                storyboardID: storyboard?.id ?? storyboardGenerationStatus?.storyboardID,
+                title: resolvedTitle,
+                message: resolvedMessage,
+                journalTitle: resolvedJournalTitle,
+                kind: kind,
+                image: storyboard?.image ?? storyboardGenerationStatus?.image
+            )
         }
     }
 
@@ -4963,6 +5062,7 @@ struct CreateEntryView: View {
             journalDestinationCard
             storyDetailsCard
             imageGenerationQualityCard
+            generationCreditsStatusCard
             // entryPrivacyCard — Save Entry / Private Entry toggles (kept for later reuse)
             generateStoryboardButton
         }
@@ -5023,7 +5123,9 @@ struct CreateEntryView: View {
     }
 
     private var isStoryboardGenerationButtonDisabled: Bool {
-        isGeneratingStoryboard || storyboardGenerationPhase == .completed
+        isGeneratingStoryboard
+            || storyboardGenerationPhase == .completed
+            || !generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost)
     }
 
     private var photosMenuBadgeCount: Int {
@@ -5668,6 +5770,8 @@ struct CreateEntryView: View {
                 }
 
                 Spacer()
+
+                generationCostChip(cost: selectedImageGenerationQuality.creditCost)
             }
 
             Picker("Image Quality", selection: $selectedImageGenerationQualityRawValue) {
@@ -5685,6 +5789,70 @@ struct CreateEntryView: View {
                 .stroke(Color.storyBorder.opacity(0.68), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 9, y: 3)
+    }
+
+    private var generationCreditsStatusCard: some View {
+        HStack(spacing: 11) {
+            CreditBalanceBadge(
+                balance: generationCreditStore.balance,
+                isRefreshing: generationCreditStore.isRefreshing
+            )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Generation Credits")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Text(generationCreditsStatusText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost) ? Color.homeMutedText : Color.red.opacity(0.82))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.68), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 9, y: 3)
+    }
+
+    private var generationCreditsStatusText: String {
+        let cost = selectedImageGenerationQuality.creditCost
+
+        guard authStore.userID != nil else {
+            return "Sign in to use credits across devices."
+        }
+
+        guard let balance = generationCreditStore.balance else {
+            return "Checking your balance."
+        }
+
+        if balance < cost {
+            return "You need \(cost) credit to generate."
+        }
+
+        return "\(cost) credit will be used after a successful image."
+    }
+
+    private func generationCostChip(cost: Int) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 10, weight: .bold))
+
+            Text("\(cost)")
+                .font(.system(size: 12, weight: .bold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(Color.storyPurple)
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .background(Color.storyPurple.opacity(0.1), in: Capsule())
+        .accessibilityLabel("\(cost) generation credit")
     }
 
     private func journalDestinationButton(
@@ -7215,8 +7383,17 @@ struct CreateEntryView: View {
                     } else {
                         Text(storyboardGenerationButtonTitle)
                         if storyboardGenerationPhase != .completed {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 14, weight: .semibold))
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkle")
+                                    .font(.system(size: 12, weight: .semibold))
+
+                                Text("\(selectedImageGenerationQuality.creditCost)")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .monospacedDigit()
+                            }
+                            .padding(.horizontal, 7)
+                            .frame(height: 24)
+                            .background(Color.white.opacity(0.18), in: Capsule())
                         }
                     }
                 }
@@ -7237,9 +7414,9 @@ struct CreateEntryView: View {
             .disabled(isStoryboardGenerationButtonDisabled)
             .opacity(isStoryboardGenerationButtonDisabled ? 0.76 : 1)
 
-            Text(completedEntryOpenedStoryboardImage == nil ? "Estimated time: around 2 minutes" : "This will be saved as a new version.")
+            Text(generationButtonFootnote)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.storyInk.opacity(0.46))
+                .foregroundStyle(generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost) ? Color.storyInk.opacity(0.46) : Color.red.opacity(0.82))
 
             Button {
                 showStoryboardGenerationProgressPreview()
@@ -7252,6 +7429,14 @@ struct CreateEntryView: View {
             .buttonStyle(.plain)
         }
         .padding(.top, 2)
+    }
+
+    private var generationButtonFootnote: String {
+        if !generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost) {
+            return "Add credits before generating another storyboard."
+        }
+
+        return completedEntryOpenedStoryboardImage == nil ? "Estimated time: around 2 minutes" : "This will be saved as a new version."
     }
 }
 
@@ -7354,6 +7539,7 @@ private struct AnimatedStoryboardSparkleIcon: View {
             }
         }
     }
+
 }
 
 private struct StoryboardGenerationProgressBar: View {

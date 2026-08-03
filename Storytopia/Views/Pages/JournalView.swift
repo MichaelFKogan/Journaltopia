@@ -16,6 +16,7 @@ struct JournalView: View {
     @Binding var isOpeningEntryFromEntries: Bool
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var generatedStoryboards: [GeneratedStoryboard]
+    @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     @State private var showsPrototypeData = false
@@ -65,7 +66,8 @@ struct JournalView: View {
         completedEntryOpenedStoryboardImage: Binding<UIImage?> = .constant(nil),
         isOpeningEntryFromEntries: Binding<Bool> = .constant(false),
         isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false),
-        generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([])
+        generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([]),
+        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil)
     ) {
         _selectedPage = selectedPage
         _isDraftSaved = isDraftSaved
@@ -75,6 +77,7 @@ struct JournalView: View {
         _isOpeningEntryFromEntries = isOpeningEntryFromEntries
         _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
         _generatedStoryboards = generatedStoryboards
+        _storyboardGenerationStatus = storyboardGenerationStatus
         _chapters = State(initialValue: DailyJournalData.allChapters())
     }
 
@@ -879,6 +882,7 @@ struct JournalView: View {
         DailyJournalData.detailView(
             for: chapter,
             dayOffset: dayOffset,
+            storyboardGenerationStatus: $storyboardGenerationStatus,
             onCreateEntryRequested: openFreshEntryFromJournalDetail,
             onChapterUpdated: updateChapterFromDetail,
             onOpenExistingEntry: openExistingEntryFromJournalDetail
@@ -935,6 +939,7 @@ struct JournalView: View {
             generatedStoryboards: $generatedStoryboards,
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+            storyboardGenerationStatus: $storyboardGenerationStatus,
             existingEntryStartsReadOnly: isOpeningEntryFromEntries,
             dismissCreate: {
                 popJournalCreateEntryRoute()
@@ -7084,6 +7089,7 @@ enum DailyJournalData {
     static func detailView(
         for chapter: PrototypeChapter,
         dayOffset: Int,
+        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil),
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
@@ -7096,6 +7102,7 @@ enum DailyJournalData {
             chapter: datedChapter.copy(title: chapter.title),
             entryDate: journalDate(dayOffset: dayOffset),
             presentation: .dailyJournal,
+            storyboardGenerationStatus: storyboardGenerationStatus,
             onNewEntryPresentationChange: onNewEntryPresentationChange,
             onCreateEntryRequested: onCreateEntryRequested,
             onChapterUpdated: onChapterUpdated,
@@ -12315,6 +12322,7 @@ private struct PrototypeChapterDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var chapter: PrototypeChapter
+    @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     let onCreateStory: (PrototypeEntry) -> Void
     let onNewEntryPresentationChange: (Bool) -> Void
     let onCreateEntryRequested: ((CreateEntryPresentation) -> Void)?
@@ -12354,6 +12362,10 @@ private struct PrototypeChapterDetailView: View {
     @State private var lastMediaLoadEntryIDs: Set<UUID> = []
     @State private var draggingMediaStoryboardID: UUID?
     @State private var hasVisibleJournalEntries: Bool
+    @State private var detailMembershipSnapshot: JournalDetailMembershipSnapshot
+    @State private var displayedMediaStoryboardCount: Int
+    @State private var cachedHeroCoverImage: UIImage?
+    @State private var cachedHeroCoverStorageKey: String?
 
     private var sections: [String] {
         ["Pages", "Media"]
@@ -12368,9 +12380,7 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private var mediaClientEntryIDs: Set<UUID> {
-        Set(StoryEntryStore.clientEntryIDs(for: chapter.title))
-            .union(chapter.entries.map(\.id))
-            .union(EntryJournalLinkStore.draftIDs(linkedTo: chapter.title))
+        detailMembershipSnapshot.mediaClientEntryIDs
     }
 
     private func storyboardCoverCandidates(for chapter: PrototypeChapter) -> [JournalStoryboardCoverCandidate] {
@@ -12419,6 +12429,7 @@ private struct PrototypeChapterDetailView: View {
 
         chapter = updatedChapter
         onChapterUpdated(updatedChapter)
+        refreshCachedHeroCoverImage()
         UserChapterStore.updateAppearance(
             id: updatedChapter.id,
             color: updatedChapter.color,
@@ -12481,15 +12492,23 @@ private struct PrototypeChapterDetailView: View {
         chapter: PrototypeChapter,
         entryDate: Date = Date(),
         presentation: Presentation = .story,
+        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil),
         onNewEntryPresentationChange: @escaping (Bool) -> Void = { _ in },
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
+        let initialMembershipSnapshot = JournalDetailMembershipSnapshot.make(for: chapter)
+
         _chapter = State(initialValue: chapter)
+        _storyboardGenerationStatus = storyboardGenerationStatus
         _selectedSection = State(initialValue: Self.initialSection(for: chapter, presentation: presentation))
         _hasVisibleJournalEntries = State(initialValue: Self.hasLocalEntries(for: chapter))
+        _detailMembershipSnapshot = State(initialValue: initialMembershipSnapshot)
+        _displayedMediaStoryboardCount = State(
+            initialValue: GeneratedStoryboardStore.count(clientEntryIDs: initialMembershipSnapshot.mediaClientEntryIDs)
+        )
         self.entryDate = entryDate
         self.presentation = presentation
         self.onNewEntryPresentationChange = onNewEntryPresentationChange
@@ -12557,6 +12576,7 @@ private struct PrototypeChapterDetailView: View {
                 generatedStoryboards: $generatedStoryboards,
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+                storyboardGenerationStatus: $storyboardGenerationStatus,
                 existingEntryStartsReadOnly: isOpeningExistingEntryFromJournal,
                 dismissCreate: {
                     isShowingNewStory = false
@@ -12590,9 +12610,13 @@ private struct PrototypeChapterDetailView: View {
             }
         }
         .onChange(of: chapter.entries.map(\.id)) { _ in
+            refreshDetailMembershipSnapshot()
             resortMediaStoryboardsToEntryOrder()
         }
         .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardPrimaryChanged)) { _ in
+            refreshMediaStoryboardsFromLocalStore()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
             refreshMediaStoryboardsFromLocalStore()
         }
         .onChange(of: selectedSection) { newSection in
@@ -12605,6 +12629,7 @@ private struct PrototypeChapterDetailView: View {
             }
 
             if newSection == "Media" {
+                refreshDetailMembershipSnapshot()
                 resortMediaStoryboardsToEntryOrder()
                 Task {
                     await loadMediaStoryboardsIfNeeded()
@@ -12618,6 +12643,7 @@ private struct PrototypeChapterDetailView: View {
 
             restorePendingCoverSyncIfNeeded()
             retryPendingCoverSync()
+            refreshDetailMembershipSnapshot()
             hasLoadedMediaStoryboards = false
             lastMediaLoadEntryIDs = []
             if selectedSection == "Media" {
@@ -12650,13 +12676,24 @@ private struct PrototypeChapterDetailView: View {
         }
         .onAppear {
             restorePendingCoverSyncIfNeeded()
+            refreshDetailMembershipSnapshot()
+            refreshCachedHeroCoverImage()
 
             guard !skipsBookOpenHintOnNextAppear else {
                 skipsBookOpenHintOnNextAppear = false
                 return
             }
 
-            playBookOpenHint()
+            // Defer the book-open hint so it does not compete with first-content loading.
+            bookOpenHintTask?.cancel()
+            bookOpenHintTask = Task { @MainActor in
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 650_000_000)
+                guard !Task.isCancelled else {
+                    return
+                }
+                playBookOpenHint()
+            }
         }
         .onDisappear {
             bookOpenHintTask?.cancel()
@@ -12698,7 +12735,7 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private var showsJournalDetailWriteButton: Bool {
-        hasVisibleJournalEntries || !chapter.entries.isEmpty || Self.hasLocalEntries(for: chapter)
+        hasVisibleJournalEntries || !chapter.entries.isEmpty || !detailMembershipSnapshot.memberIDs.isEmpty
     }
 
     private var journalDetailFloatingWriteButton: some View {
@@ -12720,21 +12757,21 @@ private struct PrototypeChapterDetailView: View {
 
     private func journalDetailLowerBannerBackground(proxy: GeometryProxy) -> some View {
         let metrics = journalHeroMetrics(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
+        let primaryHeight = metrics.backdropHeight
+        let mirroredHeight = max(0, proxy.size.height - primaryHeight + proxy.safeAreaInsets.bottom)
 
         return VStack(spacing: 0) {
             journalDetailBannerBackdrop
                 .frame(maxWidth: .infinity)
-                .frame(height: metrics.backdropHeight)
+                .frame(height: primaryHeight)
 
+            // Reuse one mirrored continuation instead of painting the cover three times.
             journalDetailBannerBackdrop
                 .frame(maxWidth: .infinity)
-                .frame(height: metrics.backdropHeight)
-                .scaleEffect(x: 1, y: -1, anchor: .center)
-
-            journalDetailBannerBackdrop
-                .frame(maxWidth: .infinity)
-                .frame(height: max(0, proxy.size.height - (metrics.backdropHeight * 2) + proxy.safeAreaInsets.bottom))
-                .scaleEffect(x: 1, y: -1, anchor: .center)
+                .frame(height: mirroredHeight)
+                .scaleEffect(x: 1, y: -1, anchor: .top)
+                .frame(height: mirroredHeight, alignment: .top)
+                .clipped()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea(edges: [.top, .bottom])
@@ -12745,7 +12782,7 @@ private struct PrototypeChapterDetailView: View {
         ZStack {
             JournalDetailBannerBackground(
                 color: chapter.color,
-                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                coverImage: cachedHeroCoverImage,
                 remoteCoverURL: chapter.remoteCover?.imageNSURL ?? chapter.remoteCover?.thumbnailNSURL,
                 fallbackImageName: chapter.coverImageName
             )
@@ -12768,55 +12805,202 @@ private struct PrototypeChapterDetailView: View {
             height: proxy.size.height,
             safeAreaTop: proxy.safeAreaInsets.top
         )
+        let bottomPadding = 112 + proxy.safeAreaInsets.bottom + min(sheetTopOffset * 0.45, 260)
 
         return ScrollView(showsIndicators: false) {
             LazyVStack(spacing: 0) {
                 journalHeroSpacerTapTargets(height: sheetTopOffset, proxy: proxy)
 
-                VStack(alignment: .leading, spacing: 16) {
-                    Capsule()
-                        .fill(Color.homeMutedText.opacity(0.22))
-                        .frame(width: 44, height: 5)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 10)
-                        .padding(.bottom, 2)
-
-                    if isCoverSyncInProgress || pendingCoverSync != nil {
-                        JournalCoverSyncNotice(
-                            isInProgress: isCoverSyncInProgress,
-                            message: pendingCoverSync?.message,
-                            onRetry: retryPendingCoverSync
+                journalDetailSheetTopChrome
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(Color.homePageBackground, ignoresSafeAreaEdges: [])
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 32,
+                            bottomLeadingRadius: 0,
+                            bottomTrailingRadius: 0,
+                            topTrailingRadius: 32,
+                            style: .continuous
                         )
-                    }
-
-                    sectionPicker
-
-                    if selectedSection == "Pages" {
-                        entriesList
-                    } else {
-                        mediaGrid
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 112 + proxy.safeAreaInsets.bottom + min(sheetTopOffset * 0.45, 260))
-                .frame(maxWidth: .infinity, minHeight: proxy.size.height + proxy.safeAreaInsets.bottom, alignment: .top)
-                .background(Color.homePageBackground)
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 32,
-                        bottomLeadingRadius: 0,
-                        bottomTrailingRadius: 0,
-                        topTrailingRadius: 32,
-                        style: .continuous
                     )
-                )
-                .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -8)
-                .contentShape(Rectangle())
-                .onTapGesture { }
+                    .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -8)
+
+                if selectedSection == "Pages" {
+                    JournalDetailEntryBrowser(
+                        chapter: chapter,
+                        editMode: $editMode,
+                        allowsCreation: true,
+                        scrollViewportHeight: proxy.size.height,
+                        onCreateEntry: {
+                            openFreshEntryFromJournalDetail()
+                        },
+                        onOpenEntry: { entry, isCompleted, storyboardImage in
+                            if let onOpenExistingEntry {
+                                onOpenExistingEntry(
+                                    entry,
+                                    isCompleted,
+                                    storyboardImage,
+                                    .editDraftInJournal(title: chapter.title)
+                                )
+                            } else {
+                                activeDraftID = entry.id
+                                isOpeningCompletedEntryFromEntries = isCompleted
+                                isOpeningExistingEntryFromJournal = true
+                                completedEntryOpenedStoryboardImage = storyboardImage
+                                generatedStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: [entry.id])
+                                isShowingNewStory = true
+                            }
+                        },
+                        onEntriesChanged: { entries in
+                            let hadKnownEntries = !detailMembershipSnapshot.memberIDs.isEmpty
+                            let previousIDs = chapter.entries.map(\.id)
+                            let nextIDs = entries.map(\.id)
+                            if !entries.isEmpty || !hadKnownEntries {
+                                guard previousIDs != nextIDs || chapter.entries.count != entries.count else {
+                                    if !entries.isEmpty {
+                                        hasVisibleJournalEntries = true
+                                    }
+                                    return
+                                }
+                                chapter.entries = entries
+                                onChapterUpdated(chapter)
+                            }
+                            if !entries.isEmpty {
+                                hasVisibleJournalEntries = true
+                            }
+                        },
+                        hasVisibleJournalEntries: $hasVisibleJournalEntries
+                    )
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(Color.homePageBackground)
+                } else {
+                    mediaLazyContent
+                        .padding(.horizontal, 16)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .background(Color.homePageBackground)
+                }
+
+                Color.clear
+                    .frame(height: bottomPadding)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.homePageBackground)
             }
         }
+        .coordinateSpace(name: JournalDetailScrollCoordinate.spaceName)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: .top)
+    }
+
+    private var journalDetailSheetTopChrome: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Capsule()
+                .fill(Color.homeMutedText.opacity(0.22))
+                .frame(width: 44, height: 5)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 2)
+
+            if isCoverSyncInProgress || pendingCoverSync != nil {
+                JournalCoverSyncNotice(
+                    isInProgress: isCoverSyncInProgress,
+                    message: pendingCoverSync?.message,
+                    onRetry: retryPendingCoverSync
+                )
+            }
+
+            sectionPicker
+        }
+    }
+
+    private var mediaLazyContent: some View {
+        Group {
+            if isLoadingMediaStoryboards && mediaStoryboards.isEmpty {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 8),
+                        GridItem(.flexible(), spacing: 8)
+                    ],
+                    spacing: 8
+                ) {
+                    ForEach(0..<4, id: \.self) { index in
+                        LoadingStoryboardCard()
+                            .aspectRatio(1, contentMode: .fit)
+                            .accessibilityLabel("Loading storyboard \(index + 1)")
+                    }
+                }
+            } else if mediaStoryboards.isEmpty {
+                VStack(spacing: 10) {
+                    Text("No storyboards yet")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+
+                    if let mediaStoryboardErrorMessage {
+                        Text(mediaStoryboardErrorMessage)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.homeMutedText.opacity(0.82))
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 36)
+            } else {
+                let items = mediaStoryboardItems
+                LazyVStack(spacing: 8) {
+                    ForEach(Array(stride(from: 0, to: items.count, by: 2).enumerated()), id: \.offset) { _, start in
+                        let end = min(start + 2, items.count)
+                        let rowItems = Array(items[start..<end])
+                        HStack(alignment: .top, spacing: 8) {
+                            ForEach(Array(rowItems.enumerated()), id: \.element.id) { rowOffset, item in
+                                let index = start + rowOffset
+                                let storyboard = item.storyboard
+                                let pageLabel = mediaPageLabel(for: storyboard, fallbackIndex: index)
+
+                                Button {
+                                    selectedMediaIndex = index
+                                } label: {
+                                    VStack(spacing: 8) {
+                                        mediaStoryboardThumbnail(item)
+
+                                        Text(pageLabel)
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(Color.homeMutedText)
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.82)
+                                            .multilineTextAlignment(.center)
+                                            .frame(maxWidth: .infinity, alignment: .center)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .modifier(MediaStoryboardDragModifier(
+                                    storyboardID: storyboard.id,
+                                    draggingStoryboardID: $draggingMediaStoryboardID
+                                ))
+                                .onDrop(
+                                    of: [UTType.text],
+                                    delegate: MediaStoryboardDropDelegate(
+                                        storyboard: storyboard,
+                                        storyboards: mediaStoryboards,
+                                        draggingStoryboardID: $draggingMediaStoryboardID,
+                                        onReorder: moveMediaStoryboard
+                                    )
+                                )
+                                .accessibilityLabel(mediaStoryboardAccessibilityLabel(item: item, pageLabel: pageLabel, index: index))
+                            }
+
+                            if rowItems.count == 1 {
+                                Color.clear
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.top, 8)
     }
 
     private func journalHeroSpacerTapTargets(height: CGFloat, proxy: GeometryProxy) -> some View {
@@ -12993,7 +13177,7 @@ private struct PrototypeChapterDetailView: View {
                 } label: {
                     JournalDetailCoverImage(
                         chapter: chapter,
-                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                        coverImage: cachedHeroCoverImage,
                         remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                         fallbackImageName: chapter.coverImageName,
                         openHintProgress: bookOpenHintProgress,
@@ -13190,55 +13374,6 @@ private struct PrototypeChapterDetailView: View {
         .padding(.top, 2)
     }
 
-    private var entriesList: some View {
-        JournalDetailEntryBrowser(
-            chapter: chapter,
-            editMode: $editMode,
-            allowsCreation: true,
-            onCreateEntry: {
-                openFreshEntryFromJournalDetail()
-            },
-            onOpenEntry: { entry, isCompleted, storyboardImage in
-                if let onOpenExistingEntry {
-                    onOpenExistingEntry(
-                        entry,
-                        isCompleted,
-                        storyboardImage,
-                        .editDraftInJournal(title: chapter.title)
-                    )
-                } else {
-                    activeDraftID = entry.id
-                    isOpeningCompletedEntryFromEntries = isCompleted
-                    isOpeningExistingEntryFromJournal = true
-                    completedEntryOpenedStoryboardImage = storyboardImage
-                    generatedStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: [entry.id])
-                    isShowingNewStory = true
-                }
-            },
-            onEntriesChanged: { entries in
-                let hadKnownEntries = Self.hasLocalEntries(for: chapter)
-                // Avoid wiping known memberships while the browser is still loading
-                // cloud-backed entries into `filteredItems`.
-                let previousIDs = chapter.entries.map(\.id)
-                let nextIDs = entries.map(\.id)
-                if !entries.isEmpty || !hadKnownEntries {
-                    guard previousIDs != nextIDs || chapter.entries.count != entries.count else {
-                        if !entries.isEmpty {
-                            hasVisibleJournalEntries = true
-                        }
-                        return
-                    }
-                    chapter.entries = entries
-                    onChapterUpdated(chapter)
-                }
-                if !entries.isEmpty {
-                    hasVisibleJournalEntries = true
-                }
-            },
-            hasVisibleJournalEntries: $hasVisibleJournalEntries
-        )
-    }
-
     private func editableEntryRow(_ entry: PrototypeEntry, at index: Int) -> some View {
         HStack(spacing: editMode == .active ? 10 : 0) {
             if editMode == .active {
@@ -13338,6 +13473,39 @@ private struct PrototypeChapterDetailView: View {
         StoryEntryStore.saveStoredOrder(from: chapter.entries, for: chapter.title)
     }
 
+    private func refreshDetailMembershipSnapshot() {
+        let snapshot = JournalDetailMembershipSnapshot.make(for: chapter)
+        detailMembershipSnapshot = snapshot
+        updateDisplayedMediaStoryboardCount(snapshot: snapshot)
+    }
+
+    private func refreshCachedHeroCoverImage() {
+        let storageKey = chapter.coverStorageKey
+        if chapter.remoteCover != nil {
+            cachedHeroCoverImage = nil
+            cachedHeroCoverStorageKey = nil
+            return
+        }
+
+        if cachedHeroCoverStorageKey == storageKey, cachedHeroCoverImage != nil {
+            return
+        }
+
+        cachedHeroCoverStorageKey = storageKey
+        cachedHeroCoverImage = JournalCoverStore.image(for: storageKey)
+    }
+
+    private func updateDisplayedMediaStoryboardCount(snapshot: JournalDetailMembershipSnapshot? = nil) {
+        if !mediaStoryboards.isEmpty {
+            displayedMediaStoryboardCount = mediaStoryboardItems.count
+            return
+        }
+
+        displayedMediaStoryboardCount = GeneratedStoryboardStore.count(
+            clientEntryIDs: (snapshot ?? detailMembershipSnapshot).mediaClientEntryIDs
+        )
+    }
+
     private var pageCountText: String {
         let pageCount = max(displayedMediaStoryboardCount, chapter.entries.count)
         return "\(pageCount) \(pageCount == 1 ? "page" : "pages")"
@@ -13354,98 +13522,13 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private var comicReaderStoryboards: [GeneratedStoryboard] {
-        primaryStoryboardsByEntry(from: mediaStoryboards)
+        primaryStoryboardsByEntry(
+            from: GeneratedStoryboardStore.load(clientEntryIDs: mediaClientEntryIDs)
+        )
     }
 
     private var mediaStoryboardItems: [JournalMediaStoryboardItem] {
         primaryStoryboardItemsByEntry(from: mediaStoryboards)
-    }
-
-    private var displayedMediaStoryboardCount: Int {
-        if !mediaStoryboards.isEmpty {
-            return mediaStoryboardItems.count
-        }
-
-        return GeneratedStoryboardStore.count(clientEntryIDs: mediaClientEntryIDs)
-    }
-
-    private var mediaGrid: some View {
-        Group {
-            if isLoadingMediaStoryboards && mediaStoryboards.isEmpty {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 8),
-                        GridItem(.flexible(), spacing: 8)
-                    ],
-                    spacing: 8
-                ) {
-                    ForEach(0..<4, id: \.self) { index in
-                        LoadingStoryboardCard()
-                            .aspectRatio(1, contentMode: .fit)
-                            .accessibilityLabel("Loading storyboard \(index + 1)")
-                    }
-                }
-            } else if mediaStoryboards.isEmpty {
-                VStack(spacing: 10) {
-                    Text("No storyboards yet")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-
-                    if let mediaStoryboardErrorMessage {
-                        Text(mediaStoryboardErrorMessage)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.homeMutedText.opacity(0.82))
-                            .multilineTextAlignment(.center)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 36)
-            } else {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 8),
-                        GridItem(.flexible(), spacing: 8)
-                    ],
-                    spacing: 8
-                ) {
-                    ForEach(Array(mediaStoryboardItems.enumerated()), id: \.element.id) { index, item in
-                        let storyboard = item.storyboard
-                        let pageLabel = mediaPageLabel(for: storyboard, fallbackIndex: index)
-
-                        Button {
-                            selectedMediaIndex = index
-                        } label: {
-                            VStack(spacing: 8) {
-                                mediaStoryboardThumbnail(item)
-
-                                Text(pageLabel)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(Color.homeMutedText)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.82)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .modifier(MediaStoryboardDragModifier(
-                            storyboardID: storyboard.id,
-                            draggingStoryboardID: $draggingMediaStoryboardID
-                        ))
-                        .onDrop(
-                            of: [UTType.text],
-                            delegate: MediaStoryboardDropDelegate(
-                                storyboard: storyboard,
-                                storyboards: mediaStoryboards,
-                                draggingStoryboardID: $draggingMediaStoryboardID,
-                                onReorder: moveMediaStoryboard
-                            )
-                        )
-                        .accessibilityLabel(mediaStoryboardAccessibilityLabel(item: item, pageLabel: pageLabel, index: index))
-                    }
-                }
-            }
-        }
     }
 
     private func mediaStoryboardThumbnail(_ item: JournalMediaStoryboardItem) -> some View {
@@ -13493,10 +13576,11 @@ private struct PrototypeChapterDetailView: View {
 
     private func mediaViewerStoryboards(for storyboard: GeneratedStoryboard) -> [GeneratedStoryboard] {
         guard let clientEntryID = storyboard.clientEntryID else {
-            return [storyboard]
+            let stored = GeneratedStoryboardStore.load().first(where: { $0.id == storyboard.id })
+            return [stored ?? storyboard]
         }
 
-        let entryStoryboards = mediaStoryboards.filter { $0.clientEntryID == clientEntryID }
+        let entryStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: [clientEntryID])
         guard !entryStoryboards.isEmpty else {
             return [storyboard]
         }
@@ -13504,10 +13588,30 @@ private struct PrototypeChapterDetailView: View {
         return entryStoryboards
     }
 
+    private func cardSizedMediaStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
+        storyboards.map { storyboard in
+            GeneratedStoryboard(
+                id: storyboard.id,
+                clientEntryID: storyboard.clientEntryID,
+                image: storyboard.image.storytopiaDownsampled(maxDimension: 640),
+                promptText: storyboard.promptText,
+                artStyle: storyboard.artStyle,
+                panelLayout: storyboard.panelLayout,
+                sourcePhotoCount: storyboard.sourcePhotoCount,
+                createdAt: storyboard.createdAt,
+                imageFileName: storyboard.imageFileName,
+                storagePath: storyboard.storagePath,
+                cloudSyncState: storyboard.cloudSyncState,
+                isPrimary: storyboard.isPrimary
+            )
+        }
+    }
+
     private func refreshMediaStoryboardsFromLocalStore() {
         let clientEntryIDs = mediaClientEntryIDs
         guard !clientEntryIDs.isEmpty else {
             mediaStoryboards = []
+            displayedMediaStoryboardCount = 0
             return
         }
 
@@ -13516,7 +13620,8 @@ private struct PrototypeChapterDetailView: View {
             in: GeneratedStoryboardStore.load(clientEntryIDs: clientEntryIDs)
         )
 
-        mediaStoryboards = mergedMediaStoryboards(localStoryboards + mediaStoryboards)
+        mediaStoryboards = mergedMediaStoryboards(cardSizedMediaStoryboards(localStoryboards + mediaStoryboards))
+        updateDisplayedMediaStoryboardCount()
     }
 
     @MainActor
@@ -13540,7 +13645,8 @@ private struct PrototypeChapterDetailView: View {
             clientEntryIDs: clientEntryIDs,
             in: GeneratedStoryboardStore.load(clientEntryIDs: clientEntryIDs)
         )
-        mediaStoryboards = localStoryboards
+        mediaStoryboards = cardSizedMediaStoryboards(localStoryboards)
+        updateDisplayedMediaStoryboardCount()
         mediaStoryboardErrorMessage = nil
         lastMediaLoadEntryIDs = clientEntryIDs
         hasLoadedMediaStoryboards = true
@@ -13556,6 +13662,7 @@ private struct PrototypeChapterDetailView: View {
         do {
             let cloudClientEntryIDs = try await mediaClientEntryIDsFromCloudEntries()
             let allClientEntryIDs = clientEntryIDs.union(cloudClientEntryIDs)
+            // Media tab needs every storyboard for an entry (viewer + counts); query is membership-scoped.
             let cloudStoryboards = try await SupabaseStoryboardService().loadStoryboardImages(for: allClientEntryIDs)
             let cachedCloudStoryboards = GeneratedStoryboardStore.cachedStoryboards(cloudStoryboards)
             var persistedStoryboards = GeneratedStoryboardStore.load()
@@ -13568,7 +13675,8 @@ private struct PrototypeChapterDetailView: View {
                 clientEntryIDs: allClientEntryIDs,
                 in: persistedStoryboards
             )
-            mediaStoryboards = mergedMediaStoryboards(refreshedLocalStoryboards)
+            mediaStoryboards = mergedMediaStoryboards(cardSizedMediaStoryboards(refreshedLocalStoryboards))
+            updateDisplayedMediaStoryboardCount()
             lastMediaLoadEntryIDs = allClientEntryIDs
         } catch {
             mediaStoryboardErrorMessage = "Could not load cloud storyboards."
@@ -13645,7 +13753,7 @@ private struct PrototypeChapterDetailView: View {
 
     /// Matches Pages-tab order (Page 1 / Page 2 / …) via journal membership order.
     private func mediaEntryOrderPositions() -> [UUID: Int] {
-        var positions = StoryEntryStore.clientEntryIDPositions(for: chapter.title)
+        var positions = detailMembershipSnapshot.memberPositions
         for (offset, entry) in chapter.entries.enumerated() where positions[entry.id] == nil {
             positions[entry.id] = offset
         }
@@ -13708,7 +13816,7 @@ private struct PrototypeChapterDetailView: View {
         placesAfterTarget: Bool
     ) -> [UUID] {
         var seenEntryIDs = Set<UUID>()
-        var orderedEntryIDs = StoryEntryStore.clientEntryIDs(for: chapter.title).filter {
+        var orderedEntryIDs = detailMembershipSnapshot.memberIDsInOrder.filter {
             seenEntryIDs.insert($0).inserted
         }
 
@@ -13763,6 +13871,7 @@ private struct PrototypeChapterDetailView: View {
         if chapter.entries.map(\.id) != previousEntryIDs {
             onChapterUpdated(chapter)
         }
+        refreshDetailMembershipSnapshot()
 
         Task {
             guard authStore.userID != nil else {
@@ -13788,6 +13897,7 @@ private struct PrototypeChapterDetailView: View {
         }
 
         mediaStoryboards = mergedMediaStoryboards(mediaStoryboards)
+        updateDisplayedMediaStoryboardCount()
     }
 
     private func mergedMediaStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
@@ -13827,12 +13937,61 @@ private struct JournalHeroMetrics {
     let backdropHeight: CGFloat
 }
 
+private struct JournalDetailMembershipSnapshot {
+    static let empty = JournalDetailMembershipSnapshot(
+        memberIDsInOrder: [],
+        memberIDs: [],
+        memberPositions: [:],
+        linkedJournalTitlesByEntryID: [:],
+        mediaClientEntryIDs: []
+    )
+
+    let memberIDsInOrder: [UUID]
+    let memberIDs: Set<UUID>
+    let memberPositions: [UUID: Int]
+    let linkedJournalTitlesByEntryID: [UUID: Set<String>]
+    let mediaClientEntryIDs: Set<UUID>
+
+    static func make(for chapter: PrototypeChapter) -> JournalDetailMembershipSnapshot {
+        let memberIDsInOrder = StoryEntryStore.clientEntryIDs(for: chapter.title)
+        let linkedDraftIDs = EntryJournalLinkStore.draftIDs(linkedTo: chapter.title)
+        let knownChapterEntryIDs = Set(chapter.entries.map(\.id))
+        let allMemberIDs = Set(memberIDsInOrder).union(linkedDraftIDs).union(knownChapterEntryIDs)
+
+        var positions: [UUID: Int] = [:]
+        for (offset, id) in memberIDsInOrder.enumerated() where positions[id] == nil {
+            positions[id] = offset
+        }
+
+        return JournalDetailMembershipSnapshot(
+            memberIDsInOrder: memberIDsInOrder,
+            memberIDs: allMemberIDs,
+            memberPositions: positions,
+            linkedJournalTitlesByEntryID: EntryJournalLinkStore.loadJournalTitles(for: Array(allMemberIDs)),
+            mediaClientEntryIDs: allMemberIDs
+        )
+    }
+}
+
+private enum JournalDetailScrollCoordinate {
+    static let spaceName = "journalDetailScroll"
+}
+
+private struct JournalDetailScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private struct JournalDetailEntryBrowser: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     let chapter: PrototypeChapter
     @Binding var editMode: EditMode
     let allowsCreation: Bool
+    let scrollViewportHeight: CGFloat
     let onCreateEntry: () -> Void
     let onOpenEntry: (CreateEntryDraft, Bool, UIImage?) -> Void
     let onEntriesChanged: ([PrototypeEntry]) -> Void
@@ -13841,6 +14000,7 @@ private struct JournalDetailEntryBrowser: View {
     @State private var localEntries: [CreateEntryDraft] = []
     @State private var cloudEntries: [JournalEntry] = []
     @State private var completedStoryboards: [GeneratedStoryboard] = []
+    @State private var storyboardCountsByClientEntryID: [UUID: Int] = [:]
     @State private var cloudStoryboardClientIDs: Set<UUID> = []
     @State private var failedCloudStoryboardClientIDs: Set<UUID> = []
     @State private var isLoading = false
@@ -13852,10 +14012,14 @@ private struct JournalDetailEntryBrowser: View {
     @State private var selectedEntriesJournalTitles: Set<String> = []
     @State private var draggingEntryID: UUID?
     @State private var manualEntryOrderOverrides: [UUID: Int] = [:]
-    @State private var chapterMemberIDs: Set<UUID> = []
-    @State private var chapterMemberPositions: [UUID: Int] = [:]
-    @State private var linkedJournalTitlesByEntryID: [UUID: Set<String>] = [:]
+    @State private var membershipSnapshot = JournalDetailMembershipSnapshot.empty
+    @State private var visibleItems: [EntryDisplayItem] = []
+    @State private var visibleItemSignature: [UUID] = []
+    @State private var lastNotifiedEntrySignature: [UUID] = []
+    @State private var suppressedChapterEntryRefreshSignature: [UUID]?
     @State private var renderedThumbnails: [UUID: JournalDetailRenderedThumbnail] = [:]
+    @State private var thumbnailRenderTask: Task<Void, Never>?
+    @State private var entryContentMinY: CGFloat = 0
     @AppStorage("StorytopiaSelectedJournalDetailEntryLayout") private var selectedLayoutRawValue = JournalEntryLayout.grid.rawValue
 
     private var selectedLayout: JournalEntryLayout {
@@ -13870,28 +14034,34 @@ private struct JournalDetailEntryBrowser: View {
         )
     }
 
-    private var filteredItems: [EntryDisplayItem] {
+    private func makeDisplayItems(
+        localEntries: [CreateEntryDraft],
+        cloudEntries: [JournalEntry],
+        membershipSnapshot: JournalDetailMembershipSnapshot
+    ) -> [EntryDisplayItem] {
         let cloudByClientID = Dictionary(grouping: cloudEntries, by: \.clientEntryID).compactMapValues(\.first)
         let localItems = localEntries
             .map { EntryDisplayItem.local($0, cloudEntry: cloudByClientID[$0.id]) }
-            .filter(matchesChapterFilter)
+            .filter { matchesChapterFilter($0, membershipSnapshot: membershipSnapshot) }
         let localIDs = Set(localEntries.map(\.id))
         let cloudOnlyItems = cloudEntries
             .filter { !localIDs.contains($0.clientEntryID) }
             .map(EntryDisplayItem.cloud)
-            .filter(matchesChapterFilter)
+            .filter { matchesChapterFilter($0, membershipSnapshot: membershipSnapshot) }
 
         return (localItems + cloudOnlyItems)
             .filter { $0.status != JournalEntryStatus.archived.rawValue }
-            .sorted(by: sortEntryItems)
+            .sorted { lhs, rhs in
+                sortEntryItems(lhs, rhs, membershipSnapshot: membershipSnapshot)
+            }
     }
 
     private var isEntryReorderingEnabled: Bool {
-        true
+        editMode == .active
     }
 
     var body: some View {
-        let items = filteredItems
+        let items = visibleItems
 
         VStack(alignment: .leading, spacing: 14) {
             controlsRow
@@ -13916,11 +14086,24 @@ private struct JournalDetailEntryBrowser: View {
         .onChange(of: authStore.userID) { _ in
             refreshEntries()
         }
-        .onChange(of: filteredItems.map(\.id)) { _ in
+        .onChange(of: visibleItemSignature) { _ in
             notifyVisibleEntriesAvailability()
         }
         .onChange(of: chapter.entries.map(\.id)) { _ in
+            let chapterSignature = chapter.entries.map(\.id)
+            if suppressedChapterEntryRefreshSignature == chapterSignature {
+                suppressedChapterEntryRefreshSignature = nil
+                return
+            }
+
             refreshEntries()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
+            refreshEntries()
+        }
+        .onDisappear {
+            thumbnailRenderTask?.cancel()
+            thumbnailRenderTask = nil
         }
         .onChange(of: editMode) { mode in
             if mode != .active {
@@ -14075,88 +14258,139 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func entryGrid(_ items: [EntryDisplayItem]) -> some View {
-        GeometryReader { proxy in
-            let gridHeight = entryGridContentHeight(
-                itemCount: items.count,
-                availableWidth: proxy.size.width
-            )
+        let columns = max(1, selectedLayout.gridColumnCount)
+        let spacing: CGFloat = 14
+        let availableWidth = entryGridAvailableWidth
+        let rowHeight = entryGridRowHeight(availableWidth: availableWidth, columns: columns)
+        let rowCount = Int(ceil(Double(items.count) / Double(columns)))
+        let totalHeight = entryGridContentHeight(itemCount: items.count, availableWidth: availableWidth)
+        let window = visibleRowWindow(
+            rowCount: rowCount,
+            rowStride: rowHeight + spacing
+        )
 
-            LazyVGrid(columns: entryGridColumns, spacing: 14) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    let displayEntry = entryForDisplay(item)
-                    if isCompleted(item) {
-                        CompletedEntryGridCard(
-                            entry: displayEntry,
-                            title: entryDisplayTitle(displayEntry),
-                            sortOption: .manual,
-                            pageLabel: pageLabel(for: index),
-                            storyboardImage: storyboardImage(for: item, fallbackIndex: index),
-                            storyboardCount: storyboardCount(for: item),
-                            category: nil,
-                            isSelecting: editMode == .active,
-                            isSelected: selectedEntryIDs.contains(item.id),
-                            onOpen: {
-                                handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
-                            }
-                        )
-                        .modifier(JournalDetailEntryDragModifier(
-                            entryID: item.id,
-                            isEnabled: isEntryReorderingEnabled,
-                            draggingEntryID: $draggingEntryID
-                        ))
-                        .onDrop(
-                            of: [UTType.text],
-                            delegate: EntryDropDelegate(
-                                item: item,
-                                items: items,
-                                draggingEntryID: $draggingEntryID,
-                                isEnabled: isEntryReorderingEnabled,
-                                onReorder: moveEntryItem
-                            )
-                        )
-                    } else {
-                        EntryGridPreviewCard(
-                            entry: displayEntry,
-                            sortOption: .manual,
-                            pageLabel: pageLabel(for: index),
-                            isEditing: false,
-                            showsActions: false,
-                            title: entryDisplayTitle(displayEntry),
-                            category: nil,
-                            isOpening: false,
-                            isSelecting: editMode == .active,
-                            isSelected: selectedEntryIDs.contains(item.id),
-                            onOpen: {
-                                handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
-                            },
-                            onDelete: {},
-                            onRename: nil
-                        )
-                        .modifier(JournalDetailEntryDragModifier(
-                            entryID: item.id,
-                            isEnabled: isEntryReorderingEnabled,
-                            draggingEntryID: $draggingEntryID
-                        ))
-                        .onDrop(
-                            of: [UTType.text],
-                            delegate: EntryDropDelegate(
-                                item: item,
-                                items: items,
-                                draggingEntryID: $draggingEntryID,
-                                isEnabled: isEntryReorderingEnabled,
-                                onReorder: moveEntryItem
-                            )
-                        )
+        return VStack(spacing: 0) {
+            if window.lowerBound > 0 {
+                Color.clear
+                    .frame(height: CGFloat(window.lowerBound) * (rowHeight + spacing))
+            }
+
+            ForEach(Array(window), id: \.self) { rowIndex in
+                let start = rowIndex * columns
+                let end = min(start + columns, items.count)
+                let rowItems = Array(items[start..<end])
+
+                HStack(alignment: .top, spacing: spacing) {
+                    ForEach(Array(rowItems.enumerated()), id: \.element.id) { rowOffset, item in
+                        let index = start + rowOffset
+                        entryGridCell(item: item, index: index, items: items)
+                            .frame(maxWidth: .infinity, alignment: .top)
+                    }
+
+                    if rowItems.count < columns {
+                        ForEach(0..<(columns - rowItems.count), id: \.self) { _ in
+                            Color.clear
+                                .frame(maxWidth: .infinity)
+                        }
                     }
                 }
+                .frame(height: rowHeight, alignment: .top)
+                .padding(.bottom, rowIndex < rowCount - 1 ? spacing : 0)
             }
-            .frame(width: proxy.size.width, height: gridHeight, alignment: .top)
+
+            Color.clear
+                .frame(height: max(0, totalHeight - CGFloat(window.lowerBound) * (rowHeight + spacing) - CGFloat(window.count) * rowHeight - CGFloat(max(0, window.count - 1)) * spacing))
         }
-        .frame(height: entryGridContentHeight(itemCount: items.count, availableWidth: entryGridAvailableWidth))
+        .frame(height: totalHeight, alignment: .top)
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: JournalDetailScrollOffsetKey.self,
+                    value: geo.frame(in: .named(JournalDetailScrollCoordinate.spaceName)).minY
+                )
+            }
+        }
+        .onPreferenceChange(JournalDetailScrollOffsetKey.self) { entryContentMinY = $0 }
+    }
+
+    @ViewBuilder
+    private func entryGridCell(item: EntryDisplayItem, index: Int, items: [EntryDisplayItem]) -> some View {
+        let displayEntry = entryForDisplay(item)
+        if isCompleted(item) {
+            CompletedEntryGridCard(
+                entry: displayEntry,
+                title: entryDisplayTitle(displayEntry),
+                sortOption: .manual,
+                pageLabel: pageLabel(for: index),
+                storyboardImage: storyboardImage(for: item, fallbackIndex: index),
+                storyboardCount: storyboardCount(for: item),
+                category: nil,
+                isSelecting: editMode == .active,
+                isSelected: selectedEntryIDs.contains(item.id),
+                onOpen: {
+                    handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
+                }
+            )
+            .modifier(JournalDetailEntryDragModifier(
+                entryID: item.id,
+                isEnabled: isEntryReorderingEnabled,
+                draggingEntryID: $draggingEntryID
+            ))
+            .onDrop(
+                of: [UTType.text],
+                delegate: EntryDropDelegate(
+                    item: item,
+                    items: items,
+                    draggingEntryID: $draggingEntryID,
+                    isEnabled: isEntryReorderingEnabled,
+                    onReorder: moveEntryItem
+                )
+            )
+        } else {
+            EntryGridPreviewCard(
+                entry: displayEntry,
+                sortOption: .manual,
+                pageLabel: pageLabel(for: index),
+                isEditing: false,
+                showsActions: false,
+                title: entryDisplayTitle(displayEntry),
+                category: nil,
+                isOpening: false,
+                isSelecting: editMode == .active,
+                isSelected: selectedEntryIDs.contains(item.id),
+                onOpen: {
+                    handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
+                },
+                onDelete: {},
+                onRename: nil
+            )
+            .modifier(JournalDetailEntryDragModifier(
+                entryID: item.id,
+                isEnabled: isEntryReorderingEnabled,
+                draggingEntryID: $draggingEntryID
+            ))
+            .onDrop(
+                of: [UTType.text],
+                delegate: EntryDropDelegate(
+                    item: item,
+                    items: items,
+                    draggingEntryID: $draggingEntryID,
+                    isEnabled: isEntryReorderingEnabled,
+                    onReorder: moveEntryItem
+                )
+            )
+        }
     }
 
     private var entryGridAvailableWidth: CGFloat {
         max(1, UIScreen.main.bounds.width - 32)
+    }
+
+    private func entryGridRowHeight(availableWidth: CGFloat, columns: Int) -> CGFloat {
+        let spacing: CGFloat = 14
+        let cellWidth = (availableWidth - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+        let imageHeight = cellWidth * (340.0 / 260.0)
+        return imageHeight + 8 + 34
     }
 
     private func entryGridContentHeight(itemCount: Int, availableWidth: CGFloat) -> CGFloat {
@@ -14167,18 +14401,38 @@ private struct JournalDetailEntryBrowser: View {
         let columns = max(1, selectedLayout.gridColumnCount)
         let spacing: CGFloat = 14
         let rowCount = Int(ceil(Double(itemCount) / Double(columns)))
-        let cellWidth = (availableWidth - spacing * CGFloat(columns - 1)) / CGFloat(columns)
-        let imageHeight = cellWidth * (340.0 / 260.0)
-        let rowHeight = imageHeight + 8 + 34
+        let rowHeight = entryGridRowHeight(availableWidth: availableWidth, columns: columns)
         return CGFloat(rowCount) * rowHeight + CGFloat(max(0, rowCount - 1)) * spacing
+    }
+
+    private func visibleRowWindow(rowCount: Int, rowStride: CGFloat) -> Range<Int> {
+        guard rowCount > 0, rowStride > 0 else {
+            return 0..<0
+        }
+
+        let viewport = max(scrollViewportHeight, 1)
+        // Content moves up as the user scrolls; minY decreases.
+        let scrolled = max(0, -entryContentMinY)
+        let bufferRows = 2
+        let first = max(0, Int(floor(scrolled / rowStride)) - bufferRows)
+        let visibleRows = Int(ceil(viewport / rowStride)) + (bufferRows * 2)
+        let last = min(rowCount, first + max(visibleRows, 1))
+        return first..<max(first, last)
     }
 
     private func entryList(_ items: [EntryDisplayItem]) -> some View {
         let rowHeight = JournalChapterListMetrics.rowHeight
         let listHeight = CGFloat(items.count) * rowHeight
+        let window = visibleRowWindow(rowCount: items.count, rowStride: rowHeight)
 
-        return LazyVStack(spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+        return VStack(spacing: 0) {
+            if window.lowerBound > 0 {
+                Color.clear
+                    .frame(height: CGFloat(window.lowerBound) * rowHeight)
+            }
+
+            ForEach(Array(window), id: \.self) { index in
+                let item = items[index]
                 let displayEntry = entryForDisplay(item)
                 Button {
                     handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
@@ -14216,8 +14470,20 @@ private struct JournalDetailEntryBrowser: View {
                     )
                 )
             }
+
+            Color.clear
+                .frame(height: max(0, listHeight - CGFloat(window.lowerBound) * rowHeight - CGFloat(window.count) * rowHeight))
         }
         .frame(height: listHeight, alignment: .top)
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: JournalDetailScrollOffsetKey.self,
+                    value: geo.frame(in: .named(JournalDetailScrollCoordinate.spaceName)).minY
+                )
+            }
+        }
+        .onPreferenceChange(JournalDetailScrollOffsetKey.self) { entryContentMinY = $0 }
     }
 
     private var loadingGrid: some View {
@@ -14278,22 +14544,55 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func refreshEntries() {
-        refreshMembershipCaches()
+        let membershipSnapshot = JournalDetailMembershipSnapshot.make(for: chapter)
+        self.membershipSnapshot = membershipSnapshot
 
-        let memberIDs = Array(chapterMemberIDs)
+        let memberIDs = Array(membershipSnapshot.memberIDs)
         let loadedLocalEntries = CreateEntryDraftStore.load(ids: memberIDs, includeMedia: false)
         localEntries = loadedLocalEntries
-        completedStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: chapterMemberIDs)
+        let localStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: membershipSnapshot.memberIDs)
+        completedStoryboards = localStoryboards.map { storyboard in
+            GeneratedStoryboard(
+                id: storyboard.id,
+                clientEntryID: storyboard.clientEntryID,
+                image: storyboard.image.storytopiaDownsampled(maxDimension: 640),
+                promptText: storyboard.promptText,
+                artStyle: storyboard.artStyle,
+                panelLayout: storyboard.panelLayout,
+                sourcePhotoCount: storyboard.sourcePhotoCount,
+                createdAt: storyboard.createdAt,
+                imageFileName: storyboard.imageFileName,
+                storagePath: storyboard.storagePath,
+                cloudSyncState: storyboard.cloudSyncState,
+                isPrimary: storyboard.isPrimary
+            )
+        }
+        var localCounts: [UUID: Int] = [:]
+        for storyboard in localStoryboards {
+            if let clientEntryID = storyboard.clientEntryID {
+                localCounts[clientEntryID, default: 0] += 1
+            }
+        }
+        storyboardCountsByClientEntryID = localCounts
 
-        let currentItems = filteredItems
-        renderMissingThumbnails(for: currentItems)
-        onEntriesChanged(currentItems.map { entryForDisplay($0).prototypeEntry() })
-        notifyVisibleEntriesAvailability(items: currentItems)
+        let localItems = makeDisplayItems(
+            localEntries: loadedLocalEntries,
+            cloudEntries: cloudEntries,
+            membershipSnapshot: membershipSnapshot
+        )
+        publishVisibleItems(localItems, notifiesParent: authStore.userID == nil)
 
         guard let userID = authStore.userID else {
             cloudEntries = []
             cloudStoryboardClientIDs = []
             failedCloudStoryboardClientIDs = []
+            errorMessage = nil
+            isLoading = false
+            return
+        }
+
+        guard !membershipSnapshot.memberIDs.isEmpty else {
+            cloudEntries = []
             errorMessage = nil
             isLoading = false
             return
@@ -14305,42 +14604,50 @@ private struct JournalDetailEntryBrowser: View {
             statusFilter: .all
         )
 
-        if let cachedEntries = EntriesCloudFetchCache.entrySummaries(for: queryKey)
-            ?? completeStaleEntrySummaries(for: queryKey) {
-            cloudEntries = cachedEntries.entries
+        // Prefer an existing global cache when present, then filter to this journal.
+        let exactCachedEntries = EntriesCloudFetchCache.entrySummaries(for: queryKey)
+        let staleCachedEntries = exactCachedEntries == nil ? completeStaleEntrySummaries(for: queryKey) : nil
+
+        if let cachedEntries = exactCachedEntries ?? staleCachedEntries {
+            let scopedEntries = cachedEntries.entries.filter { membershipSnapshot.memberIDs.contains($0.clientEntryID) }
+            cloudEntries = scopedEntries
             errorMessage = nil
             isLoading = false
-            let cachedItems = filteredItems
-            renderMissingThumbnails(for: cachedItems)
-            onEntriesChanged(cachedItems.map { entryForDisplay($0).prototypeEntry() })
-            notifyVisibleEntriesAvailability(items: cachedItems)
+            let cachedItems = makeDisplayItems(
+                localEntries: loadedLocalEntries,
+                cloudEntries: scopedEntries,
+                membershipSnapshot: membershipSnapshot
+            )
+            publishVisibleItems(cachedItems, notifiesParent: exactCachedEntries != nil)
             loadMissingCompletedStoryboards()
 
-            if EntriesCloudFetchCache.entrySummaries(for: queryKey) != nil {
+            if exactCachedEntries != nil {
                 return
             }
-        } else {
+        } else if localItems.isEmpty {
             isLoading = true
         }
 
+        let scopedMemberIDs = membershipSnapshot.memberIDs
         Task {
             do {
-                let entries = try await SupabaseEntryRepository().getEntrySummaries()
-                EntriesCloudFetchCache.storeEntrySummaries(
-                    entries,
-                    counts: nil,
-                    hasMore: false,
-                    nextOffset: entries.count,
-                    for: queryKey
-                )
+                let entries = try await SupabaseEntryRepository().getEntrySummaries(clientEntryIDs: scopedMemberIDs)
                 await MainActor.run {
+                    guard self.membershipSnapshot.memberIDs == membershipSnapshot.memberIDs,
+                          self.membershipSnapshot.memberPositions == membershipSnapshot.memberPositions
+                    else {
+                        return
+                    }
+
                     cloudEntries = entries
                     errorMessage = nil
                     isLoading = false
-                    let currentItems = filteredItems
-                    renderMissingThumbnails(for: currentItems)
-                    onEntriesChanged(currentItems.map { entryForDisplay($0).prototypeEntry() })
-                    notifyVisibleEntriesAvailability(items: currentItems)
+                    let currentItems = makeDisplayItems(
+                        localEntries: localEntries,
+                        cloudEntries: entries,
+                        membershipSnapshot: membershipSnapshot
+                    )
+                    publishVisibleItems(currentItems, notifiesParent: true)
                     loadMissingCompletedStoryboards()
                 }
             } catch {
@@ -14374,7 +14681,7 @@ private struct JournalDetailEntryBrowser: View {
             return
         }
 
-        let currentItems = filteredItems
+        let currentItems = visibleItems
         let completedClientEntryIDs = Set(currentItems.filter { isCompleted($0) }.map(\.id))
 
         guard !completedClientEntryIDs.isEmpty else {
@@ -14388,18 +14695,27 @@ private struct JournalDetailEntryBrowser: View {
         cloudStoryboardClientIDs.formUnion(missingClientEntryIDs)
         failedCloudStoryboardClientIDs.subtract(missingClientEntryIDs)
 
+        guard !missingClientEntryIDs.isEmpty else {
+            return
+        }
+
         Task {
             let storyboardService = SupabaseStoryboardService()
 
             do {
-                let downloadedStoryboards = try await storyboardService.loadStoryboardImages(for: completedClientEntryIDs)
-                let cachedStoryboards = GeneratedStoryboardStore.cachedStoryboards(downloadedStoryboards)
-                let downloadedClientEntryIDs = Set(cachedStoryboards.compactMap(\.clientEntryID))
-                let failedClientEntryIDs = completedClientEntryIDs.subtracting(downloadedClientEntryIDs)
+                let cardLoad = try await storyboardService.loadJournalDetailStoryboardCards(
+                    for: missingClientEntryIDs,
+                    cardMaxDimension: 640
+                )
 
                 await MainActor.run {
+                    let currentCompletedClientEntryIDs = Set(visibleItems.filter { isCompleted($0) }.map(\.id))
+                    guard currentCompletedClientEntryIDs.isSuperset(of: missingClientEntryIDs) else {
+                        return
+                    }
+
                     var mergedStoryboards = completedStoryboards
-                    for storyboard in cachedStoryboards {
+                    for storyboard in cardLoad.cardImages {
                         mergedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: mergedStoryboards)
                         if let clientEntryID = storyboard.clientEntryID {
                             cloudStoryboardClientIDs.remove(clientEntryID)
@@ -14407,56 +14723,80 @@ private struct JournalDetailEntryBrowser: View {
                     }
 
                     completedStoryboards = mergedStoryboards
-                    var persisted = GeneratedStoryboardStore.load()
-                    for storyboard in cachedStoryboards {
-                        persisted = GeneratedStoryboardStore.merging(storyboard, into: persisted)
+                    for (clientEntryID, count) in cardLoad.countsByClientEntryID {
+                        storyboardCountsByClientEntryID[clientEntryID] = max(
+                            storyboardCountsByClientEntryID[clientEntryID, default: 0],
+                            count
+                        )
                     }
-                    GeneratedStoryboardStore.save(persisted)
+
+                    let failedClientEntryIDs = missingClientEntryIDs.subtracting(Set(cardLoad.cardImages.compactMap(\.clientEntryID)))
                     cloudStoryboardClientIDs.subtract(failedClientEntryIDs)
                     failedCloudStoryboardClientIDs.formUnion(failedClientEntryIDs)
-                    let currentItems = filteredItems
-                    onEntriesChanged(currentItems.map { entryForDisplay($0).prototypeEntry() })
-                    notifyVisibleEntriesAvailability(items: currentItems)
+                    notifyEntriesChangedIfNeeded(for: visibleItems)
+                    notifyVisibleEntriesAvailability(items: visibleItems)
                 }
             } catch {
                 await MainActor.run {
-                    cloudStoryboardClientIDs.subtract(completedClientEntryIDs)
-                    failedCloudStoryboardClientIDs.formUnion(completedClientEntryIDs)
+                    cloudStoryboardClientIDs.subtract(missingClientEntryIDs)
+                    failedCloudStoryboardClientIDs.formUnion(missingClientEntryIDs)
                 }
             }
         }
     }
 
-    private func refreshMembershipCaches() {
-        let memberIDsInOrder = StoryEntryStore.clientEntryIDs(for: chapter.title)
-        let linkedDraftIDs = EntryJournalLinkStore.draftIDs(linkedTo: chapter.title)
-        let knownChapterEntryIDs = Set(chapter.entries.map(\.id))
-        let allMemberIDs = Set(memberIDsInOrder).union(linkedDraftIDs).union(knownChapterEntryIDs)
-        chapterMemberIDs = allMemberIDs
+    private func publishVisibleItems(_ items: [EntryDisplayItem], notifiesParent: Bool) {
+        let signature = items.map(\.id)
+        visibleItems = items
+        visibleItemSignature = signature
+        notifyVisibleEntriesAvailability(items: items)
+        queueMissingThumbnailRender(for: items)
 
-        var positions: [UUID: Int] = [:]
-        for (offset, id) in memberIDsInOrder.enumerated() where positions[id] == nil {
-            positions[id] = offset
+        if notifiesParent {
+            notifyEntriesChangedIfNeeded(for: items)
         }
-        chapterMemberPositions = positions
-        linkedJournalTitlesByEntryID = EntryJournalLinkStore.loadJournalTitles(for: Array(allMemberIDs))
     }
 
-    private func matchesChapterFilter(_ entry: CreateEntryDraft) -> Bool {
-        chapterMemberIDs.contains(entry.id) || linkedJournalTitlesByEntryID[entry.id, default: []].contains(chapter.title)
+    private func notifyEntriesChangedIfNeeded(for items: [EntryDisplayItem]) {
+        let signature = items.map(\.id)
+        guard signature != lastNotifiedEntrySignature else {
+            return
+        }
+
+        lastNotifiedEntrySignature = signature
+        suppressedChapterEntryRefreshSignature = signature
+        onEntriesChanged(items.map { entryForDisplay($0).prototypeEntry() })
     }
 
-    private func matchesChapterFilter(_ entry: JournalEntry) -> Bool {
-        chapterMemberIDs.contains(entry.clientEntryID)
+    private func matchesChapterFilter(
+        _ entry: CreateEntryDraft,
+        membershipSnapshot: JournalDetailMembershipSnapshot
+    ) -> Bool {
+        membershipSnapshot.memberIDs.contains(entry.id)
+            || membershipSnapshot.linkedJournalTitlesByEntryID[entry.id, default: []].contains(chapter.title)
     }
 
-    private func matchesChapterFilter(_ item: EntryDisplayItem) -> Bool {
-        matchesChapterFilter(item.entry)
+    private func matchesChapterFilter(
+        _ entry: JournalEntry,
+        membershipSnapshot: JournalDetailMembershipSnapshot
+    ) -> Bool {
+        membershipSnapshot.memberIDs.contains(entry.clientEntryID)
     }
 
-    private func sortEntryItems(_ lhs: EntryDisplayItem, _ rhs: EntryDisplayItem) -> Bool {
-        let lhsPosition = manualEntryOrderOverrides[lhs.id] ?? chapterMemberPositions[lhs.id]
-        let rhsPosition = manualEntryOrderOverrides[rhs.id] ?? chapterMemberPositions[rhs.id]
+    private func matchesChapterFilter(
+        _ item: EntryDisplayItem,
+        membershipSnapshot: JournalDetailMembershipSnapshot
+    ) -> Bool {
+        matchesChapterFilter(item.entry, membershipSnapshot: membershipSnapshot)
+    }
+
+    private func sortEntryItems(
+        _ lhs: EntryDisplayItem,
+        _ rhs: EntryDisplayItem,
+        membershipSnapshot: JournalDetailMembershipSnapshot
+    ) -> Bool {
+        let lhsPosition = manualEntryOrderOverrides[lhs.id] ?? membershipSnapshot.memberPositions[lhs.id]
+        let rhsPosition = manualEntryOrderOverrides[rhs.id] ?? membershipSnapshot.memberPositions[rhs.id]
 
         switch (lhsPosition, rhsPosition) {
         case let (lhsPosition?, rhsPosition?) where lhsPosition != rhsPosition:
@@ -14509,24 +14849,50 @@ private struct JournalDetailEntryBrowser: View {
         )
     }
 
-    private func renderMissingThumbnails(for items: [EntryDisplayItem]) {
+    private func queueMissingThumbnailRender(for items: [EntryDisplayItem]) {
         let entriesNeedingThumbnails = items
             .map(\.entry)
-            .filter { $0.thumbnail == nil }
+            .filter { entry in
+                guard entry.thumbnail == nil else {
+                    return false
+                }
 
-        let currentIDs = Set(entriesNeedingThumbnails.map(\.id))
-        renderedThumbnails = renderedThumbnails.filter { currentIDs.contains($0.key) }
-
-        for entry in entriesNeedingThumbnails {
-            let signature = JournalDetailThumbnailSignature(entry: entry)
-            if renderedThumbnails[entry.id]?.signature == signature {
-                continue
+                let signature = JournalDetailThumbnailSignature(entry: entry)
+                return renderedThumbnails[entry.id]?.signature != signature
             }
 
-            renderedThumbnails[entry.id] = JournalDetailRenderedThumbnail(
-                signature: signature,
-                thumbnail: renderThumbnail(for: entry)
-            )
+        let currentIDs = Set(items.map(\.id))
+        renderedThumbnails = renderedThumbnails.filter { currentIDs.contains($0.key) }
+        thumbnailRenderTask?.cancel()
+
+        guard !entriesNeedingThumbnails.isEmpty else {
+            thumbnailRenderTask = nil
+            return
+        }
+
+        thumbnailRenderTask = Task { @MainActor in
+            for entry in entriesNeedingThumbnails {
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                let signature = JournalDetailThumbnailSignature(entry: entry)
+                if renderedThumbnails[entry.id]?.signature == signature {
+                    continue
+                }
+
+                let thumbnail = renderThumbnail(for: entry)
+                renderedThumbnails[entry.id] = JournalDetailRenderedThumbnail(
+                    signature: signature,
+                    thumbnail: thumbnail
+                )
+
+                if let thumbnail {
+                    CreateEntryDraftStore.saveThumbnail(thumbnail, for: entry.id)
+                }
+
+                await Task.yield()
+            }
         }
     }
 
@@ -14535,7 +14901,7 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private var selectedItems: [EntryDisplayItem] {
-        filteredItems.filter { selectedEntryIDs.contains($0.id) }
+        visibleItems.filter { selectedEntryIDs.contains($0.id) }
     }
 
     private var isDeleteEntryAlertPresented: Binding<Bool> {
@@ -14597,7 +14963,7 @@ private struct JournalDetailEntryBrowser: View {
             return
         }
 
-        var reorderedItems = filteredItems
+        var reorderedItems = visibleItems
         guard
             let fromIndex = reorderedItems.firstIndex(where: { $0.id == draggingEntryID }),
             let toIndex = reorderedItems.firstIndex(where: { $0.id == targetEntryID })
@@ -14617,15 +14983,14 @@ private struct JournalDetailEntryBrowser: View {
             }
         )
         StoryEntryStore.saveStoredOrder(from: reorderedEntries, for: chapter.title)
-        onEntriesChanged(reorderedEntries)
-        notifyVisibleEntriesAvailability()
+        publishVisibleItems(reorderedItems, notifiesParent: true)
         Task {
             await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
         }
     }
 
     private func notifyVisibleEntriesAvailability() {
-        notifyVisibleEntriesAvailability(items: filteredItems)
+        notifyVisibleEntriesAvailability(items: visibleItems)
     }
 
     private func notifyVisibleEntriesAvailability(items: [EntryDisplayItem]) {
@@ -14771,7 +15136,7 @@ private struct JournalDetailEntryBrowser: View {
     private func otherJournalTitles(for item: EntryDisplayItem) -> Set<String> {
         let entry = entryForDisplay(item).prototypeEntry()
         return StoryEntryStore.journalTitles(containing: entry)
-            .union(linkedJournalTitlesByEntryID[item.id, default: []])
+            .union(membershipSnapshot.linkedJournalTitlesByEntryID[item.id, default: []])
             .subtracting([chapter.title])
     }
 
@@ -14847,7 +15212,11 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func storyboardCount(for item: EntryDisplayItem) -> Int {
-        completedStoryboards.filter { $0.clientEntryID == item.id }.count
+        if let counted = storyboardCountsByClientEntryID[item.id], counted > 0 {
+            return counted
+        }
+
+        return completedStoryboards.filter { $0.clientEntryID == item.id }.count
     }
 
     private func storyboardUIImage(for item: EntryDisplayItem, fallbackIndex: Int) -> UIImage? {
@@ -14866,7 +15235,19 @@ private struct JournalDetailEntryBrowser: View {
 
     private func openItem(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
         let isCompleted = isCompleted(item)
-        let storyboardImage = isCompleted ? storyboardUIImage(for: item, fallbackIndex: fallbackIndex) : nil
+        let storyboardImage: UIImage? = {
+            guard isCompleted else {
+                return nil
+            }
+
+            if let fullImage = GeneratedStoryboardStore.load(clientEntryIDs: [item.id])
+                .first(where: { $0.isPrimary })?.image
+                ?? GeneratedStoryboardStore.load(clientEntryIDs: [item.id]).first?.image {
+                return fullImage
+            }
+
+            return storyboardUIImage(for: item, fallbackIndex: fallbackIndex)
+        }()
         let hydratedDisplayEntry = CreateEntryDraftStore.load(id: displayEntry.id) ?? displayEntry
         let entryToOpen = materializedEntry(for: item, displayEntry: hydratedDisplayEntry)
         onOpenEntry(entryToOpen, isCompleted, storyboardImage)

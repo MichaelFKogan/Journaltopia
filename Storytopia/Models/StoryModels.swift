@@ -185,6 +185,43 @@ struct GeneratedStoryboard: Identifiable {
     }
 }
 
+enum StoryboardGenerationGlobalStatusKind: Equatable {
+    case running
+    case completed
+    case failed
+}
+
+struct StoryboardGenerationGlobalStatus: Identifiable {
+    let id: UUID
+    let entryID: UUID?
+    let storyboardID: UUID?
+    let title: String
+    let message: String
+    let journalTitle: String?
+    let kind: StoryboardGenerationGlobalStatusKind
+    let image: UIImage?
+
+    init(
+        id: UUID = UUID(),
+        entryID: UUID?,
+        storyboardID: UUID? = nil,
+        title: String,
+        message: String,
+        journalTitle: String? = nil,
+        kind: StoryboardGenerationGlobalStatusKind,
+        image: UIImage? = nil
+    ) {
+        self.id = id
+        self.entryID = entryID
+        self.storyboardID = storyboardID
+        self.title = title
+        self.message = message
+        self.journalTitle = journalTitle
+        self.kind = kind
+        self.image = image
+    }
+}
+
 extension Notification.Name {
     static let storytopiaGeneratedStoryboardsChanged = Notification.Name("StorytopiaGeneratedStoryboardsChanged")
     static let storytopiaGeneratedStoryboardPrimaryChanged = Notification.Name("StorytopiaGeneratedStoryboardPrimaryChanged")
@@ -352,6 +389,13 @@ enum OpenAIImageGenerationQuality: String, CaseIterable, Identifiable {
     case highDefinition = "medium"
 
     var id: String { rawValue }
+
+    var creditCost: Int {
+        switch self {
+        case .standard, .highDefinition:
+            return 1
+        }
+    }
 
     var title: String {
         switch self {

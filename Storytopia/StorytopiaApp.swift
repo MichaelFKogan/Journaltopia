@@ -10,11 +10,13 @@ import SwiftUI
 @main
 struct StorytopiaApp: App {
     @StateObject private var authStore = SupabaseAuthStore()
+    @StateObject private var generationCreditStore = GenerationCreditStore()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(authStore)
+                .environmentObject(generationCreditStore)
                 .onOpenURL { url in
                     authStore.handleOpenURL(url)
                 }

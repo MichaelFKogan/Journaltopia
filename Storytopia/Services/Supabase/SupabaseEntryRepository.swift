@@ -886,6 +886,63 @@ struct SupabaseEntryRepository {
         }
     }
 
+    /// Fetches entry summaries for a specific membership set (journal-scoped).
+    func getEntrySummaries(clientEntryIDs: Set<UUID>) async throws -> [JournalEntry] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        let userID = try await authenticatedUserID()
+        let orderedIDs = Array(clientEntryIDs)
+        var aggregated: [JournalEntry] = []
+        var seen = Set<UUID>()
+
+        for start in stride(from: 0, to: orderedIDs.count, by: 80) {
+            let chunk = Array(orderedIDs[start..<min(start + 80, orderedIDs.count)])
+            let page = try await getEntrySummaries(userID: userID, clientEntryIDs: chunk)
+            for entry in page where seen.insert(entry.clientEntryID).inserted {
+                aggregated.append(entry)
+            }
+        }
+
+        return aggregated.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func getEntrySummaries(
+        userID: UUID,
+        clientEntryIDs: [UUID]
+    ) async throws -> [JournalEntry] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        let values: [any PostgrestFilterValue] = clientEntryIDs.map { $0 as any PostgrestFilterValue }
+
+        do {
+            return try await client
+                .from("entries")
+                .select(Self.entrySummaryColumns)
+                .eq("user_id", value: userID)
+                .in("client_entry_id", values: values)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+        } catch {
+            do {
+                return try await client
+                    .from("entries")
+                    .select(Self.legacyEntrySummaryColumns)
+                    .eq("user_id", value: userID)
+                    .in("client_entry_id", values: values)
+                    .order("created_at", ascending: false)
+                    .execute()
+                    .value
+            } catch {
+                throw JournalEntryRepositoryError.operationFailed
+            }
+        }
+    }
+
     func getEntrySummariesPage(
         limit: Int,
         offset: Int,
