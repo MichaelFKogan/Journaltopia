@@ -392,8 +392,10 @@ enum OpenAIImageGenerationQuality: String, CaseIterable, Identifiable {
 
     var creditCost: Int {
         switch self {
-        case .standard, .highDefinition:
+        case .standard:
             return 1
+        case .highDefinition:
+            return 2
         }
     }
 

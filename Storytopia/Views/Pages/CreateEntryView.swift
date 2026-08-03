@@ -2362,10 +2362,10 @@ struct CreateEntryView: View {
         let generationQuality = selectedImageGenerationQuality
         let creditCost = generationQuality.creditCost
         guard generationCreditStore.canSpend(creditCost) else {
-            generationErrorMessage = "You need \(creditCost) credit to generate this storyboard."
+            generationErrorMessage = "You need \(formattedCreditCount(creditCost)) to generate this storyboard."
             setStoryboardGenerationGlobalStatus(
                 kind: .failed,
-                message: generationErrorMessage ?? "You need \(creditCost) credit to generate this storyboard."
+                message: generationErrorMessage ?? "You need \(formattedCreditCount(creditCost)) to generate this storyboard."
             )
             return
         }
@@ -5833,10 +5833,10 @@ struct CreateEntryView: View {
         }
 
         if balance < cost {
-            return "You need \(cost) credit to generate."
+            return "You need \(formattedCreditCount(cost)) to generate."
         }
 
-        return "\(cost) credit will be used after a successful image."
+        return "\(formattedCreditCount(cost)) will be used after a successful image."
     }
 
     private func generationCostChip(cost: Int) -> some View {
@@ -5852,7 +5852,11 @@ struct CreateEntryView: View {
         .padding(.horizontal, 8)
         .frame(height: 26)
         .background(Color.storyPurple.opacity(0.1), in: Capsule())
-        .accessibilityLabel("\(cost) generation credit")
+        .accessibilityLabel("\(formattedCreditCount(cost)) generation cost")
+    }
+
+    private func formattedCreditCount(_ count: Int) -> String {
+        count == 1 ? "1 credit" : "\(count) credits"
     }
 
     private func journalDestinationButton(

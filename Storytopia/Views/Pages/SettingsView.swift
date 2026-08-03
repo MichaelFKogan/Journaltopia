@@ -265,7 +265,7 @@ struct SettingsView: View {
     private var generationCreditsSubtitle: String {
         switch authStore.status {
         case .signedIn:
-            return "Standard and HD storyboards cost 1 credit"
+            return "Standard storyboards cost 1 credit; HD costs 2"
         case .loading:
             return "Checking your account"
         case .misconfigured:

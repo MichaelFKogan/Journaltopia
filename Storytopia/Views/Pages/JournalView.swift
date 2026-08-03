@@ -18,6 +18,7 @@ struct JournalView: View {
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
     @State private var showsPrototypeData = false
     @State private var chapters: [PrototypeChapter]
@@ -135,6 +136,8 @@ struct JournalView: View {
                         generatedStoryboards: $generatedStoryboards,
                         embedsInNavigationStack: false
                     )
+                case .credits:
+                    GenerationCreditsView()
                 }
             }
         }
@@ -215,12 +218,16 @@ struct JournalView: View {
                 Text("My Journals")
                     .font(.system(size: 24, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
 
                 Spacer()
 
                 journalSelectButton
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.homeAccent)
+
+                journalCreditBalanceButton
 
                 journalProfileButton
             }
@@ -312,6 +319,21 @@ struct JournalView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Profile")
+    }
+
+    private var journalCreditBalanceButton: some View {
+        Button {
+            journalNavigationPath.append(.credits)
+        } label: {
+            CreditBalanceBadge(
+                balance: generationCreditStore.balance,
+                isRefreshing: generationCreditStore.isRefreshing
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Generation credits")
+        .accessibilityValue(generationCreditStore.balance.map { "\($0) credits" } ?? "Loading")
+        .accessibilityHint("Opens credits")
     }
 
     private var floatingAddButton: some View {
@@ -1195,6 +1217,7 @@ private enum JournalRoute: Hashable {
     case journalDetail(JournalDetailRoute)
     case createEntry
     case profile
+    case credits
 }
 
 private struct JournalDetailRoute: Hashable, Identifiable {
@@ -1953,9 +1976,23 @@ private struct JournalCustomizationSheet: View {
 
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Color")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(Color.storyInk)
+            HStack {
+                Text("Color")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Spacer()
+
+                Button("Use Color") {
+                    selectedCoverImageName = nil
+                    selectedRemoteCover = nil
+                    selectedStoredCoverImage = nil
+                    selectedStoryboardCoverID = nil
+                    clearsStoredCover = true
+                }
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.homeAccent)
+            }
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5), spacing: 10) {
                 ForEach(JournalColorOption.all) { option in
@@ -1987,23 +2024,9 @@ private struct JournalCustomizationSheet: View {
 
     private var coverSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Cover Photo")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(Color.storyInk)
-
-                Spacer()
-
-                Button("Use Color") {
-                    selectedCoverImageName = nil
-                    selectedRemoteCover = nil
-                    selectedStoredCoverImage = nil
-                    selectedStoryboardCoverID = nil
-                    clearsStoredCover = true
-                }
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(Color.homeAccent)
-            }
+            Text("Cover Photo")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyInk)
 
             if storyboardCoverCandidates.isEmpty && coverImageCandidates.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
@@ -2185,6 +2208,9 @@ private struct JournalCustomizationSheet: View {
                 .padding(.top, 2)
                 .zIndex(1)
             }
+
+            Color.clear
+                .frame(height: 160)
         }
     }
 
@@ -12547,11 +12573,16 @@ private struct PrototypeChapterDetailView: View {
                 Button {
                     isShowingCoverCustomization = true
                 } label: {
-                    HStack(spacing: 6) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "photo.on.rectangle")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("Change Cover")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+
                         Image(systemName: "photo.on.rectangle")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("Change Cover")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 15, weight: .semibold))
                     }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 10)

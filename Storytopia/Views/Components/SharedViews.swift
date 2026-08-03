@@ -96,6 +96,7 @@ struct CreditBalanceBadge: View {
         }
         .padding(.horizontal, 9)
         .frame(height: 30)
+        .fixedSize(horizontal: true, vertical: false)
         .background(Color.white.opacity(0.86), in: Capsule())
         .overlay(
             Capsule()
