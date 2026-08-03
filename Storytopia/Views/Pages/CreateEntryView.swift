@@ -7562,7 +7562,7 @@ private struct StoryboardGenerationProgressBar: View {
             if isComplete {
                 StoryboardGenerationCompleteBar()
             } else {
-                StoryboardGenerationShimmerBar(isActive: !isFailed)
+                StoryboardGenerationProgressFillBar(phase: phase, isActive: !isFailed)
             }
         }
         .frame(maxWidth: .infinity)
@@ -7592,37 +7592,88 @@ private struct StoryboardGenerationCompleteBar: View {
     }
 }
 
-private struct StoryboardGenerationShimmerBar: View {
+private struct StoryboardGenerationProgressFillBar: View {
+    let phase: StoryboardGenerationPhase
     let isActive: Bool
 
     @State private var isAnimating = false
 
+    private var progress: CGFloat {
+        switch phase {
+        case .ready:
+            return 0.12
+        case .preparingEntry:
+            return 0.26
+        case .uploadingReferencePhotos:
+            return 0.42
+        case .generating:
+            return 0.74
+        case .savingResult:
+            return 0.9
+        case .completed:
+            return 1
+        case .failed:
+            return 0.18
+        }
+    }
+
     var body: some View {
         GeometryReader { proxy in
-            let shimmerWidth = max(proxy.size.width * 0.36, 56)
+            let width = proxy.size.width
+            let fillWidth = max(width * progress, 12)
+            let highlightWidth = max(fillWidth * 0.28, 22)
 
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.storyPurple.opacity(0.14))
 
-                if isActive {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.storyPurple.opacity(0.78),
+                                Color.storyPurple,
+                                Color.storyPurple.opacity(0.86)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: fillWidth)
+                    .overlay(alignment: .leading) {
+                        if isActive {
+                            Capsule()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            Color.white.opacity(0),
+                                            Color.white.opacity(0.48),
+                                            Color.white.opacity(0)
+                                        ],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: highlightWidth)
+                                .offset(x: isAnimating ? fillWidth : -highlightWidth)
+                                .mask(Capsule().frame(width: fillWidth))
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.45), value: progress)
+
+                if phase == .failed {
+                    Capsule()
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.storyPurple.opacity(0),
-                                    Color.storyPurple.opacity(0.82),
-                                    Color.white.opacity(0.95),
-                                    Color.storyPurple.opacity(0.82),
-                                    Color.storyPurple.opacity(0)
+                                    Color.storyPurple.opacity(0.44),
+                                    Color.storyPurple.opacity(0.24)
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             )
                         )
-                        .frame(width: shimmerWidth)
-                        .offset(x: isAnimating ? proxy.size.width + shimmerWidth : -shimmerWidth)
-                        .mask(Capsule())
+                        .frame(width: width)
                 }
             }
             .clipShape(Capsule())
@@ -7632,7 +7683,18 @@ private struct StoryboardGenerationShimmerBar: View {
                 }
 
                 isAnimating = false
-                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+                    isAnimating = true
+                }
+            }
+            .onChange(of: isActive) { newValue in
+                guard newValue else {
+                    isAnimating = false
+                    return
+                }
+
+                isAnimating = false
+                withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
                     isAnimating = true
                 }
             }

@@ -466,11 +466,23 @@ struct SupabaseStoryboardService {
             return []
         }
 
-        let rows = try await loadStoryboardRows(for: clientEntryIDs)
-            .filter { $0.generationStatus == JournalEntryStatus.completed.rawValue }
-            .sorted { $0.createdAt > $1.createdAt }
+        let rows = try await loadCompletedStoryboardRows(for: clientEntryIDs)
 
         return await downloadStoryboardImages(from: rows)
+    }
+
+    func loadCompletedStoryboardRows(for clientEntryIDs: Set<UUID>) async throws -> [EntryStoryboard] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        return try await loadStoryboardRows(for: clientEntryIDs)
+            .filter { $0.generationStatus == JournalEntryStatus.completed.rawValue }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func downloadStoryboards(from rows: [EntryStoryboard]) async -> [GeneratedStoryboard] {
+        await downloadStoryboardImages(from: rows)
     }
 
     /// Loads journal-detail card assets: metadata for all matching storyboards, full images

@@ -761,7 +761,7 @@ struct SupabaseJournalRepository {
         let storagePath = [
             userID.uuidString.lowercased(),
             journalID.uuidString.lowercased(),
-            "cover.jpg"
+            "cover-\(UUID().uuidString.lowercased()).jpg"
         ].joined(separator: "/")
 
         do {

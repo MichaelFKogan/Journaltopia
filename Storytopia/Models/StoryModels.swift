@@ -225,6 +225,7 @@ struct StoryboardGenerationGlobalStatus: Identifiable {
 extension Notification.Name {
     static let storytopiaGeneratedStoryboardsChanged = Notification.Name("StorytopiaGeneratedStoryboardsChanged")
     static let storytopiaGeneratedStoryboardPrimaryChanged = Notification.Name("StorytopiaGeneratedStoryboardPrimaryChanged")
+    static let storytopiaJournalCoverChanged = Notification.Name("StorytopiaJournalCoverChanged")
 }
 
 struct CreateEntryReferencePhoto: Identifiable {

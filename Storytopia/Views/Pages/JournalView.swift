@@ -19,6 +19,7 @@ struct JournalView: View {
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showsPrototypeData = false
     @State private var chapters: [PrototypeChapter]
@@ -160,6 +161,16 @@ struct JournalView: View {
         }
         .onChange(of: authStore.userID) { userID in
             guard userID != nil else {
+                return
+            }
+
+            chapters = DailyJournalData.allChapters()
+            loadCloudJournalsIfNeeded()
+            restorePendingCoverSyncIfNeeded()
+            retryPendingCoverSync()
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active, authStore.userID != nil else {
                 return
             }
 
@@ -371,7 +382,7 @@ struct JournalView: View {
                 ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                     JournalCoverCard(
                         chapter: chapter,
-                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
                         remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                         fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
                         isEditing: editMode == .active,
@@ -521,7 +532,7 @@ struct JournalView: View {
     private func journalListRow(for chapter: PrototypeChapter, at index: Int) -> some View {
         let row = JournalChapterListRow(
             chapter: chapter,
-            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
             remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
             fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index),
             isEditing: editMode == .active,
@@ -632,9 +643,9 @@ struct JournalView: View {
         }
 
         if let storedCoverImage = customization.storedCoverImage {
-            JournalCoverStore.save(storedCoverImage, for: chapters[index].coverStorageKey)
+            JournalCoverStore.save(storedCoverImage, for: chapters[index])
         } else if customization.clearsStoredCover {
-            JournalCoverStore.delete(key: chapters[index].coverStorageKey)
+            JournalCoverStore.delete(for: chapters[index])
         }
 
         let updatedChapter = PrototypeChapter(
@@ -802,7 +813,7 @@ struct JournalView: View {
         let isUserJournal = UserChapterStore.contains(title: journal.title)
         UserChapterStore.delete(title: journal.title)
         UserChapterStore.deleteFromCloud(journal)
-        JournalCoverStore.delete(key: journal.coverStorageKey)
+        JournalCoverStore.delete(for: journal)
         if !isUserJournal {
             DeletedSampleChapterStore.add(title: journal.title)
         }
@@ -831,7 +842,7 @@ struct JournalView: View {
         let context = JournalOpeningContext(
             chapter: chapter,
             dayOffset: dayOffset,
-            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+            coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
             remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
             fallbackImageName: fallbackCoverImageName(for: chapter, at: dayOffset)
         )
@@ -850,11 +861,11 @@ struct JournalView: View {
                 return
             }
 
-            withAnimation(.spring(response: 1.04, dampingFraction: 0.91)) {
+            withAnimation(.easeInOut(duration: 0.46)) {
                 areJournalPagesExpanded = true
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.48) {
                 guard openingJournal?.id == context.id else {
                     return
                 }
@@ -1091,20 +1102,36 @@ struct JournalView: View {
         repository: SupabaseJournalRepository
     ) async {
         for cloudJournal in cloudJournals where !LegacySystemJournalIDs.all.contains(cloudJournal.id) {
-            let coverStorageKey = cloudJournal.title
-
             guard
                 cloudJournal.remoteCover == nil,
                 cloudJournal.coverImageName?.trimmedOrNil == nil,
                 let coverStoragePath = cloudJournal.coverStoragePath?.trimmedOrNil
             else {
-                JournalCoverStore.delete(key: coverStorageKey)
+                JournalCoverStore.delete(journalID: cloudJournal.id, legacyTitle: cloudJournal.title)
+                JournalCoverStore.clearCloudStoragePath(for: cloudJournal.id)
+                continue
+            }
+
+            guard JournalCoverStore.needsCloudCoverDownload(
+                journalID: cloudJournal.id,
+                cloudStoragePath: coverStoragePath,
+                cloudUpdatedAt: cloudJournal.updatedAt
+            ) else {
+                print("[Storytopia] Journal cover is current locally for \(cloudJournal.id).")
                 continue
             }
 
             do {
+                print("[Storytopia] Downloading journal cover \(cloudJournal.id) from \(coverStoragePath).")
                 let coverImage = try await repository.downloadCover(storagePath: coverStoragePath)
-                JournalCoverStore.save(coverImage, for: coverStorageKey)
+                JournalCoverStore.save(
+                    coverImage,
+                    journalID: cloudJournal.id,
+                    legacyTitle: cloudJournal.title,
+                    cloudStoragePath: coverStoragePath,
+                    cloudUpdatedAt: cloudJournal.updatedAt
+                )
+                print("[Storytopia] Journal cover hydrated for \(cloudJournal.id) from \(coverStoragePath).")
             } catch {
                 print("[Storytopia] Cloud journal cover download failed: \(error.localizedDescription)")
             }
@@ -1369,7 +1396,7 @@ private struct JournalOpeningBook: View {
             }
         }
         .animation(.spring(response: 1.16, dampingFraction: 0.88), value: isOpen)
-        .animation(.spring(response: 1.04, dampingFraction: 0.91), value: pagesExpanded)
+        .animation(.easeInOut(duration: 0.46), value: pagesExpanded)
         .accessibilityHidden(true)
     }
 
@@ -1675,7 +1702,7 @@ private struct PendingJournalCoverSync: Identifiable {
             return nil
         }
 
-        return JournalCoverStore.image(for: chapter.coverStorageKey)
+        return JournalCoverStore.image(for: chapter)
     }
 
     var message: String {
@@ -1845,7 +1872,7 @@ private struct JournalCustomizationSheet: View {
         _selectedColorHex = State(initialValue: JournalColorOption.hexString(for: chapter.color))
         _selectedCoverImageName = State(initialValue: chapter.coverImageName)
         _selectedRemoteCover = State(initialValue: chapter.remoteCover)
-        _selectedStoredCoverImage = State(initialValue: JournalCoverStore.image(for: chapter.coverStorageKey))
+        _selectedStoredCoverImage = State(initialValue: JournalCoverStore.image(for: chapter))
         _storyboardCoverCandidates = State(initialValue: initialStoryboardCovers)
         _unsplashQuery = State(initialValue: "")
     }
@@ -2628,29 +2655,89 @@ private struct JournalColorOption: Identifiable {
 }
 
 private enum JournalCoverStore {
-    private static let folderName = "JournalCovers"
+    private struct CloudCoverRecord: Codable, Equatable {
+        let storagePath: String
+        let updatedAt: Date
+    }
 
-    static func image(for title: String) -> UIImage? {
-        guard
-            let data = try? Data(contentsOf: fileURL(for: title)),
-            let image = UIImage(data: data)
-        else {
+    private static let folderName = "JournalCovers"
+    private static let cloudStoragePathKey = "StorytopiaJournalCoverCloudStoragePaths"
+
+    static func image(for chapter: PrototypeChapter) -> UIImage? {
+        image(journalID: chapter.id, legacyTitle: chapter.title)
+    }
+
+    static func image(journalID: UUID, legacyTitle: String? = nil) -> UIImage? {
+        if let image = image(forKey: storageKey(for: journalID)) {
+            return image
+        }
+
+        guard let legacyTitle else {
             return nil
         }
 
-        return image
+        return image(forKey: legacyTitle)
+    }
+
+    static func image(for title: String) -> UIImage? {
+        image(forKey: title)
+    }
+
+    static func save(
+        _ image: UIImage,
+        for chapter: PrototypeChapter,
+        cloudStoragePath: String? = nil,
+        cloudUpdatedAt: Date? = nil
+    ) {
+        save(
+            image,
+            journalID: chapter.id,
+            legacyTitle: chapter.title,
+            cloudStoragePath: cloudStoragePath,
+            cloudUpdatedAt: cloudUpdatedAt
+        )
     }
 
     static func save(_ image: UIImage, for title: String) {
-        guard let data = image.storytopiaPreparedJPEGData(compressionQuality: 0.86) ?? image.jpegData(compressionQuality: 0.86) else {
+        save(image, forKey: title)
+    }
+
+    static func save(
+        _ image: UIImage,
+        journalID: UUID,
+        legacyTitle _: String? = nil,
+        cloudStoragePath: String? = nil,
+        cloudUpdatedAt: Date? = nil
+    ) {
+        guard save(image, forKey: storageKey(for: journalID)) else {
             return
+        }
+
+        if let cloudStoragePath, let cloudUpdatedAt {
+            setCloudCoverRecord(
+                CloudCoverRecord(storagePath: cloudStoragePath, updatedAt: cloudUpdatedAt),
+                for: journalID
+            )
+        }
+        postCoverChanged(journalID: journalID)
+    }
+
+    @discardableResult
+    private static func save(_ image: UIImage, forKey key: String) -> Bool {
+        guard let data = image.storytopiaPreparedJPEGData(compressionQuality: 0.86) ?? image.jpegData(compressionQuality: 0.86) else {
+            return false
         }
 
         try? FileManager.default.createDirectory(
             at: directoryURL,
             withIntermediateDirectories: true
         )
-        try? data.write(to: fileURL(for: title), options: [.atomic])
+        do {
+            try data.write(to: fileURL(for: key), options: [.atomic])
+            return true
+        } catch {
+            return false
+        }
     }
 
     static func rename(from oldTitle: String, to newTitle: String) {
@@ -2668,8 +2755,61 @@ private enum JournalCoverStore {
         delete(key: title)
     }
 
-    static func delete(key: String) {
-        try? FileManager.default.removeItem(at: fileURL(for: key))
+    static func delete(for chapter: PrototypeChapter) {
+        delete(journalID: chapter.id, legacyTitle: chapter.title)
+    }
+
+    static func delete(journalID: UUID, legacyTitle: String? = nil) {
+        let removedIDCover = delete(key: storageKey(for: journalID))
+        let hadCloudStoragePath = cloudCoverRecords[journalID.uuidString] != nil
+        var removedLegacyCover = false
+        if let legacyTitle {
+            removedLegacyCover = delete(key: legacyTitle)
+        }
+        clearCloudStoragePath(for: journalID)
+        if removedIDCover || removedLegacyCover || hadCloudStoragePath {
+            postCoverChanged(journalID: journalID)
+        }
+    }
+
+    @discardableResult
+    static func delete(key: String) -> Bool {
+        let url = fileURL(for: key)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return false
+        }
+
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func needsCloudCoverDownload(
+        journalID: UUID,
+        cloudStoragePath: String,
+        cloudUpdatedAt: Date
+    ) -> Bool {
+        cloudCoverRecords[journalID.uuidString] != CloudCoverRecord(
+            storagePath: cloudStoragePath,
+            updatedAt: cloudUpdatedAt
+        )
+            || !FileManager.default.fileExists(atPath: fileURL(for: storageKey(for: journalID)).path)
+    }
+
+    static func clearCloudStoragePath(for journalID: UUID) {
+        var records = cloudCoverRecords
+        records.removeValue(forKey: journalID.uuidString)
+        persistCloudCoverRecords(records)
+    }
+
+    static func recordCloudStoragePath(_ storagePath: String, updatedAt: Date, for journalID: UUID) {
+        setCloudCoverRecord(
+            CloudCoverRecord(storagePath: storagePath, updatedAt: updatedAt),
+            for: journalID
+        )
     }
 
     private static var directoryURL: URL {
@@ -2677,16 +2817,71 @@ private enum JournalCoverStore {
             .appendingPathComponent(folderName, isDirectory: true)
     }
 
-    private static func fileURL(for title: String) -> URL {
-        directoryURL.appendingPathComponent(fileName(for: title))
+    private static func image(forKey key: String) -> UIImage? {
+        guard
+            let data = try? Data(contentsOf: fileURL(for: key)),
+            let image = UIImage(data: data)
+        else {
+            return nil
+        }
+
+        return image
     }
 
-    private static func fileName(for title: String) -> String {
+    private static func fileURL(for key: String) -> URL {
+        directoryURL.appendingPathComponent(fileName(for: key))
+    }
+
+    private static func fileName(for key: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let sanitized = title.unicodeScalars.map { scalar in
+        let sanitized = key.unicodeScalars.map { scalar in
             allowed.contains(scalar) ? String(scalar) : "-"
         }.joined()
         return "\(sanitized.isEmpty ? "journal" : sanitized).jpg"
+    }
+
+    private static func storageKey(for journalID: UUID) -> String {
+        "journal-\(journalID.uuidString.lowercased())"
+    }
+
+    private static var cloudCoverRecords: [String: CloudCoverRecord] {
+        guard let data = UserDefaults.standard.data(forKey: cloudStoragePathKey) else {
+            return [:]
+        }
+
+        if let records = try? JSONDecoder().decode([String: CloudCoverRecord].self, from: data) {
+            return records
+        }
+
+        if let legacyPaths = try? JSONDecoder().decode([String: String].self, from: data) {
+            return legacyPaths.mapValues {
+                CloudCoverRecord(storagePath: $0, updatedAt: .distantPast)
+            }
+        }
+
+        return [:]
+    }
+
+    private static func setCloudCoverRecord(_ record: CloudCoverRecord, for journalID: UUID) {
+        var records = cloudCoverRecords
+        records[journalID.uuidString] = record
+        persistCloudCoverRecords(records)
+    }
+
+    private static func persistCloudCoverRecords(_ records: [String: CloudCoverRecord]) {
+        guard let data = try? JSONEncoder().encode(records) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: cloudStoragePathKey)
+    }
+
+    private static func postCoverChanged(journalID: UUID) {
+        NotificationCenter.default.post(
+            name: .storytopiaJournalCoverChanged,
+            object: nil,
+            userInfo: ["journalID": journalID]
+        )
     }
 }
 
@@ -2895,7 +3090,7 @@ struct ClassicJournalView: View {
             } label: {
                 JournalChapterListRow(
                     chapter: chapter,
-                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.title) : nil,
+                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
                     remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                     fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index)
                 )
@@ -3028,7 +3223,7 @@ struct ClassicJournalView: View {
         let isUserJournal = UserChapterStore.contains(title: journal.title)
         UserChapterStore.delete(title: journal.title)
         UserChapterStore.deleteFromCloud(journal)
-        JournalCoverStore.delete(title: journal.title)
+        JournalCoverStore.delete(for: journal)
         if !isUserJournal {
             DeletedSampleChapterStore.add(title: journal.title)
         }
@@ -12433,9 +12628,9 @@ private struct PrototypeChapterDetailView: View {
 
     private func applyJournalCustomization(_ customization: JournalCustomization) {
         if let storedCoverImage = customization.storedCoverImage {
-            JournalCoverStore.save(storedCoverImage, for: chapter.coverStorageKey)
+            JournalCoverStore.save(storedCoverImage, for: chapter)
         } else if customization.clearsStoredCover {
-            JournalCoverStore.delete(key: chapter.coverStorageKey)
+            JournalCoverStore.delete(for: chapter)
         }
 
         let updatedChapter = PrototypeChapter(
@@ -12455,7 +12650,10 @@ private struct PrototypeChapterDetailView: View {
 
         chapter = updatedChapter
         onChapterUpdated(updatedChapter)
-        refreshCachedHeroCoverImage()
+        refreshCachedHeroCoverImage(
+            storedCoverImage: customization.storedCoverImage,
+            force: customization.storedCoverImage != nil || customization.clearsStoredCover
+        )
         UserChapterStore.updateAppearance(
             id: updatedChapter.id,
             color: updatedChapter.color,
@@ -12650,6 +12848,16 @@ private struct PrototypeChapterDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
             refreshMediaStoryboardsFromLocalStore()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .storytopiaJournalCoverChanged)) { notification in
+            guard
+                let journalID = notification.userInfo?["journalID"] as? UUID,
+                journalID == chapter.id
+            else {
+                return
+            }
+
+            refreshCachedHeroCoverImage(force: true)
+        }
         .onChange(of: selectedSection) { newSection in
             if newSection != "Pages" {
                 editMode = .inactive
@@ -12695,7 +12903,7 @@ private struct PrototypeChapterDetailView: View {
                 currentPageIndex: $comicPageIndex,
                 journalTitle: chapter.title,
                 journalColor: chapter.color,
-                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter.coverStorageKey) : nil,
+                coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
                 remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                 fallbackCoverImageName: chapter.coverImageName,
                 pageCountText: pageCountText,
@@ -13510,7 +13718,7 @@ private struct PrototypeChapterDetailView: View {
         updateDisplayedMediaStoryboardCount(snapshot: snapshot)
     }
 
-    private func refreshCachedHeroCoverImage() {
+    private func refreshCachedHeroCoverImage(storedCoverImage: UIImage? = nil, force: Bool = false) {
         let storageKey = chapter.coverStorageKey
         if chapter.remoteCover != nil {
             cachedHeroCoverImage = nil
@@ -13518,12 +13726,18 @@ private struct PrototypeChapterDetailView: View {
             return
         }
 
-        if cachedHeroCoverStorageKey == storageKey, cachedHeroCoverImage != nil {
+        if let storedCoverImage {
+            cachedHeroCoverStorageKey = storageKey
+            cachedHeroCoverImage = storedCoverImage
+            return
+        }
+
+        if !force, cachedHeroCoverStorageKey == storageKey, cachedHeroCoverImage != nil {
             return
         }
 
         cachedHeroCoverStorageKey = storageKey
-        cachedHeroCoverImage = JournalCoverStore.image(for: storageKey)
+        cachedHeroCoverImage = JournalCoverStore.image(for: chapter)
     }
 
     private func updateDisplayedMediaStoryboardCount(snapshot: JournalDetailMembershipSnapshot? = nil) {
@@ -14721,47 +14935,89 @@ private struct JournalDetailEntryBrowser: View {
             return
         }
 
-        let cachedClientEntryIDs = Set(completedStoryboards.compactMap(\.clientEntryID))
+        let locallyCachedStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: completedClientEntryIDs)
+        let cachedClientEntryIDs = Set((completedStoryboards + locallyCachedStoryboards).compactMap(\.clientEntryID))
         let missingClientEntryIDs = completedClientEntryIDs.subtracting(cachedClientEntryIDs)
-        cloudStoryboardClientIDs.formUnion(missingClientEntryIDs)
-        failedCloudStoryboardClientIDs.subtract(missingClientEntryIDs)
-
-        guard !missingClientEntryIDs.isEmpty else {
-            return
+        if !missingClientEntryIDs.isEmpty {
+            cloudStoryboardClientIDs.formUnion(missingClientEntryIDs)
+            failedCloudStoryboardClientIDs.subtract(missingClientEntryIDs)
         }
 
         Task {
             let storyboardService = SupabaseStoryboardService()
 
             do {
-                let cardLoad = try await storyboardService.loadJournalDetailStoryboardCards(
-                    for: missingClientEntryIDs,
-                    cardMaxDimension: 640
+                let rows = try await storyboardService.loadCompletedStoryboardRows(for: completedClientEntryIDs)
+                var countsByClientEntryID: [UUID: Int] = [:]
+                for row in rows {
+                    countsByClientEntryID[row.clientEntryID, default: 0] += 1
+                }
+
+                let cachedStoryboardIDs = Set(locallyCachedStoryboards.map(\.id))
+                let clientEntryIDsNeedingImages = Set(
+                    rows.compactMap { row in
+                        cachedStoryboardIDs.contains(row.id) ? nil : row.clientEntryID
+                    }
                 )
+                let rowsToDownload = rows.filter { clientEntryIDsNeedingImages.contains($0.clientEntryID) }
+                if !clientEntryIDsNeedingImages.isEmpty {
+                    await MainActor.run {
+                        cloudStoryboardClientIDs.formUnion(clientEntryIDsNeedingImages)
+                        failedCloudStoryboardClientIDs.subtract(clientEntryIDsNeedingImages)
+                    }
+                }
+
+                let downloadedStoryboards = await storyboardService.downloadStoryboards(from: rowsToDownload)
+                let cachedCloudStoryboards = GeneratedStoryboardStore.cachedStoryboards(downloadedStoryboards)
+                var persistedStoryboards = GeneratedStoryboardStore.load()
+                for storyboard in cachedCloudStoryboards {
+                    persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
+                }
+                if !cachedCloudStoryboards.isEmpty {
+                    GeneratedStoryboardStore.save(persistedStoryboards)
+                }
 
                 await MainActor.run {
                     let currentCompletedClientEntryIDs = Set(visibleItems.filter { isCompleted($0) }.map(\.id))
-                    guard currentCompletedClientEntryIDs.isSuperset(of: missingClientEntryIDs) else {
+                    guard currentCompletedClientEntryIDs == completedClientEntryIDs else {
                         return
                     }
 
                     var mergedStoryboards = completedStoryboards
-                    for storyboard in cardLoad.cardImages {
-                        mergedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: mergedStoryboards)
+                    for storyboard in locallyCachedStoryboards + cachedCloudStoryboards {
+                        let cardStoryboard = GeneratedStoryboard(
+                            id: storyboard.id,
+                            clientEntryID: storyboard.clientEntryID,
+                            image: storyboard.image.storytopiaDownsampled(maxDimension: 640),
+                            promptText: storyboard.promptText,
+                            artStyle: storyboard.artStyle,
+                            panelLayout: storyboard.panelLayout,
+                            sourcePhotoCount: storyboard.sourcePhotoCount,
+                            createdAt: storyboard.createdAt,
+                            imageFileName: storyboard.imageFileName,
+                            storagePath: storyboard.storagePath,
+                            cloudSyncState: storyboard.cloudSyncState,
+                            isPrimary: storyboard.isPrimary
+                        )
+                        mergedStoryboards = GeneratedStoryboardStore.merging(cardStoryboard, into: mergedStoryboards)
                         if let clientEntryID = storyboard.clientEntryID {
                             cloudStoryboardClientIDs.remove(clientEntryID)
                         }
                     }
 
                     completedStoryboards = mergedStoryboards
-                    for (clientEntryID, count) in cardLoad.countsByClientEntryID {
+                    for (clientEntryID, count) in countsByClientEntryID {
                         storyboardCountsByClientEntryID[clientEntryID] = max(
                             storyboardCountsByClientEntryID[clientEntryID, default: 0],
                             count
                         )
                     }
 
-                    let failedClientEntryIDs = missingClientEntryIDs.subtracting(Set(cardLoad.cardImages.compactMap(\.clientEntryID)))
+                    let downloadedClientEntryIDs = Set(cachedCloudStoryboards.compactMap(\.clientEntryID))
+                    let clientEntryIDsWithCloudRows = Set(countsByClientEntryID.keys)
+                    let failedClientEntryIDs = clientEntryIDsNeedingImages
+                        .subtracting(downloadedClientEntryIDs)
+                        .union(missingClientEntryIDs.subtracting(clientEntryIDsWithCloudRows))
                     cloudStoryboardClientIDs.subtract(failedClientEntryIDs)
                     failedCloudStoryboardClientIDs.formUnion(failedClientEntryIDs)
                     notifyEntriesChangedIfNeeded(for: visibleItems)
@@ -14769,8 +15025,8 @@ private struct JournalDetailEntryBrowser: View {
                 }
             } catch {
                 await MainActor.run {
-                    cloudStoryboardClientIDs.subtract(missingClientEntryIDs)
-                    failedCloudStoryboardClientIDs.formUnion(missingClientEntryIDs)
+                    cloudStoryboardClientIDs.subtract(completedClientEntryIDs)
+                    failedCloudStoryboardClientIDs.formUnion(completedClientEntryIDs)
                 }
             }
         }
@@ -16653,7 +16909,7 @@ struct PrototypeChapter: Identifiable {
     var entries: [PrototypeEntry]
 
     var coverStorageKey: String {
-        title
+        "journal-\(id.uuidString.lowercased())"
     }
 
     var imageCount: Int {
@@ -16951,8 +17207,6 @@ enum UserChapterStore {
 
     static func replace(with chapters: [PrototypeChapter]) {
         let updatedRecords = chapters.map { chapter in
-            let existingRecord = record(for: chapter)
-
             return Record(
                 id: chapter.id,
                 title: chapter.title,
@@ -16960,8 +17214,8 @@ enum UserChapterStore {
                 symbol: chapter.symbol,
                 kind: chapter.kind == .storyboard ? "storyboard" : "journal",
                 colorHex: colorHex(for: chapter),
-                coverImageName: chapter.coverImageName ?? existingRecord?.coverImageName,
-                remoteCover: chapter.remoteCover ?? existingRecord?.remoteCover,
+                coverImageName: chapter.coverImageName,
+                remoteCover: chapter.remoteCover,
                 createdAt: chapter.createdAt,
                 updatedAt: chapter.updatedAt
             )
@@ -17122,11 +17376,26 @@ enum UserChapterStore {
         )
 
         if let storedCoverImage {
-            try await repository.uploadCover(storedCoverImage, journalID: chapter.id)
+            print("[Storytopia] Journal cover upload started for \(chapter.id).")
+            let uploadedJournal = try await repository.uploadCover(storedCoverImage, journalID: chapter.id)
+            if let coverStoragePath = uploadedJournal.coverStoragePath?.trimmedOrNil {
+                JournalCoverStore.recordCloudStoragePath(
+                    coverStoragePath,
+                    updatedAt: uploadedJournal.updatedAt,
+                    for: chapter.id
+                )
+                print("[Storytopia] Journal cover upload stored path \(coverStoragePath) for \(chapter.id).")
+            } else {
+                print("[Storytopia] Journal cover upload returned no storage path for \(chapter.id).")
+            }
         } else if requiresStoredCoverUpload {
             throw StoryJournalRepositoryError.invalidCover
         } else if clearsStoredCover {
             try await repository.clearCover(journalID: chapter.id)
+            JournalCoverStore.clearCloudStoragePath(for: chapter.id)
+            print("[Storytopia] Journal cover cleared in cloud for \(chapter.id).")
+        } else {
+            JournalCoverStore.clearCloudStoragePath(for: chapter.id)
         }
     }
 
