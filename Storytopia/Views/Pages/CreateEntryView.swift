@@ -1755,6 +1755,10 @@ struct CreateEntryView: View {
     @State private var characterEditorSession: CharacterEditorSession?
     @State private var isPreviewingCompletedStoryboard = false
     @State private var selectedEntryStoryboardIndex: Int?
+    @State private var completedEntryStoryboardDragOffset: CGSize = .zero
+    @State private var completedEntryStoryboardDragStartOffset: CGSize?
+    @State private var completedEntryStoryboardScale: CGFloat = 1
+    @State private var completedEntryStoryboardScaleStart: CGFloat?
     @State private var isPhotosPanelVisible = false
     @State private var isPhotoTabCollapsed = true
     @State private var isCharacterTabCollapsed = true
@@ -1957,6 +1961,9 @@ struct CreateEntryView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
+            completedEntryStoryboardFloatingOverlay
+        }
+        .overlay(alignment: .bottomTrailing) {
             if showsSpeechMicButton {
                 speechMicButton
                     .padding(.trailing, 18)
@@ -1985,11 +1992,6 @@ struct CreateEntryView: View {
         }
         .onChange(of: isShowingEntryOptionsPage) { isShowing in
             if isShowing {
-                speechTranscriber.stop()
-            }
-        }
-        .onChange(of: opensExistingEntryReadMode) { isReadOnly in
-            if isReadOnly {
                 speechTranscriber.stop()
             }
         }
@@ -2043,7 +2045,10 @@ struct CreateEntryView: View {
             if !storyboards.isEmpty {
                 StoryboardImageViewer(
                     storyboards: storyboards,
-                    initialIndex: min(selectedEntryStoryboardIndex ?? 0, storyboards.count - 1)
+                    initialIndex: min(selectedEntryStoryboardIndex ?? 0, storyboards.count - 1),
+                    onSelectPrimary: { storyboard in
+                        setPrimaryStoryboard(storyboard)
+                    }
                 )
             }
         }
@@ -2298,6 +2303,7 @@ struct CreateEntryView: View {
             return
         }
 
+        resetCompletedEntryStoryboardDrag()
         dismissKeyboard()
         isFullScreenEditorVisible = false
         isShowingEntryOptionsPage = false
@@ -3668,7 +3674,6 @@ struct CreateEntryView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                    completedEntryStoryboardHeader(containerWidth: proxy.size.width)
                 }
                 .frame(maxWidth: .infinity, minHeight: scrollContentHeight)
             }
@@ -3700,12 +3705,28 @@ struct CreateEntryView: View {
     }
 
     @ViewBuilder
-    private func completedEntryStoryboardHeader(containerWidth: CGFloat) -> some View {
+    private var completedEntryStoryboardFloatingOverlay: some View {
+        GeometryReader { proxy in
+            completedEntryStoryboardClip(containerSize: proxy.size)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(.trailing, 20)
+                .padding(.bottom, completedEntryStoryboardBottomPadding)
+                .offset(completedEntryStoryboardDragOffset)
+        }
+        .allowsHitTesting(completedEntryOpenedStoryboardImage != nil)
+    }
+
+    private var completedEntryStoryboardBottomPadding: CGFloat {
+        speechMicBottomPadding + (showsSpeechMicButton ? 110 : 18)
+    }
+
+    @ViewBuilder
+    private func completedEntryStoryboardClip(containerSize: CGSize) -> some View {
         if let completedEntryOpenedStoryboardImage {
             let storyboards = currentEntryStoryboards
             let primaryImage = storyboards.first(where: \.isPrimary)?.image ?? storyboards.first?.image ?? completedEntryOpenedStoryboardImage
             let storyboardCount = max(storyboards.count, 1)
-            let imageWidth = min(containerWidth * 0.34, 180)
+            let imageWidth = min(containerSize.width * 0.34, 180)
             let aspectRatio = max(primaryImage.size.width / primaryImage.size.height, 0.1)
             let imageHeight = imageWidth / aspectRatio
 
@@ -3765,15 +3786,123 @@ struct CreateEntryView: View {
                 selectedEntryStoryboardIndex = 0
                 isPreviewingCompletedStoryboard = true
             }
+            .simultaneousGesture(
+                completedEntryStoryboardDragGesture(
+                    clipSize: completedEntryStoryboardScaledClipSize(
+                        CGSize(width: imageWidth, height: imageHeight)
+                    ),
+                    containerSize: containerSize
+                )
+            )
+            .simultaneousGesture(
+                completedEntryStoryboardMagnificationGesture(
+                    baseClipSize: CGSize(width: imageWidth, height: imageHeight),
+                    containerSize: containerSize
+                )
+            )
             .rotationEffect(.degrees(2))
+            .scaleEffect(completedEntryStoryboardScale)
             .shadow(color: Color.storyInk.opacity(0.16), radius: 7, y: 4)
-            .frame(maxWidth: .infinity, alignment: .topTrailing)
-            .padding(.top, 24)
-            .padding(.trailing, 20)
             .zIndex(3)
             .accessibilityLabel("Open storyboard full screen")
             .accessibilityAddTraits(.isButton)
         }
+    }
+
+    private func completedEntryStoryboardDragGesture(clipSize: CGSize, containerSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .global)
+            .onChanged { value in
+                let startOffset = completedEntryStoryboardDragStartOffset ?? completedEntryStoryboardDragOffset
+                completedEntryStoryboardDragStartOffset = startOffset
+
+                let proposedOffset = CGSize(
+                    width: startOffset.width + value.translation.width,
+                    height: startOffset.height + value.translation.height
+                )
+                completedEntryStoryboardDragOffset = clampedCompletedEntryStoryboardDragOffset(
+                    proposedOffset,
+                    clipSize: clipSize,
+                    containerSize: containerSize
+                )
+            }
+            .onEnded { value in
+                let startOffset = completedEntryStoryboardDragStartOffset ?? completedEntryStoryboardDragOffset
+                let proposedOffset = CGSize(
+                    width: startOffset.width + value.translation.width,
+                    height: startOffset.height + value.translation.height
+                )
+                completedEntryStoryboardDragOffset = clampedCompletedEntryStoryboardDragOffset(
+                    proposedOffset,
+                    clipSize: clipSize,
+                    containerSize: containerSize
+                )
+                completedEntryStoryboardDragStartOffset = nil
+            }
+    }
+
+    private func completedEntryStoryboardMagnificationGesture(
+        baseClipSize: CGSize,
+        containerSize: CGSize
+    ) -> some Gesture {
+        MagnificationGesture(minimumScaleDelta: 0.01)
+            .onChanged { value in
+                let startScale = completedEntryStoryboardScaleStart ?? completedEntryStoryboardScale
+                completedEntryStoryboardScaleStart = startScale
+                completedEntryStoryboardScale = clampedCompletedEntryStoryboardScale(startScale * value)
+                completedEntryStoryboardDragOffset = clampedCompletedEntryStoryboardDragOffset(
+                    completedEntryStoryboardDragOffset,
+                    clipSize: completedEntryStoryboardScaledClipSize(baseClipSize),
+                    containerSize: containerSize
+                )
+            }
+            .onEnded { value in
+                let startScale = completedEntryStoryboardScaleStart ?? completedEntryStoryboardScale
+                completedEntryStoryboardScale = clampedCompletedEntryStoryboardScale(startScale * value)
+                completedEntryStoryboardDragOffset = clampedCompletedEntryStoryboardDragOffset(
+                    completedEntryStoryboardDragOffset,
+                    clipSize: completedEntryStoryboardScaledClipSize(baseClipSize),
+                    containerSize: containerSize
+                )
+                completedEntryStoryboardScaleStart = nil
+            }
+    }
+
+    private func clampedCompletedEntryStoryboardDragOffset(
+        _ proposedOffset: CGSize,
+        clipSize: CGSize,
+        containerSize: CGSize
+    ) -> CGSize {
+        let edgeInset: CGFloat = 18
+        let anchorTrailingPadding: CGFloat = 20
+        let anchorBottomPadding = completedEntryStoryboardBottomPadding
+
+        let minX = -(containerSize.width - clipSize.width - anchorTrailingPadding - edgeInset)
+        let maxX = anchorTrailingPadding - edgeInset
+        let minY = -(containerSize.height - clipSize.height - anchorBottomPadding - edgeInset)
+        let maxY = max(anchorBottomPadding - edgeInset, 0)
+
+        return CGSize(
+            width: min(max(proposedOffset.width, minX), maxX),
+            height: min(max(proposedOffset.height, minY), maxY)
+        )
+    }
+
+    private func completedEntryStoryboardScaledClipSize(_ baseSize: CGSize) -> CGSize {
+        CGSize(
+            width: baseSize.width * completedEntryStoryboardScale,
+            height: baseSize.height * completedEntryStoryboardScale
+        )
+    }
+
+    private func clampedCompletedEntryStoryboardScale(_ scale: CGFloat) -> CGFloat {
+        min(max(scale, 0.55), 2.15)
+    }
+
+    private func resetCompletedEntryStoryboardDrag() {
+        completedEntryStoryboardDragOffset = .zero
+        completedEntryStoryboardDragStartOffset = nil
+        completedEntryStoryboardScale = 1
+        completedEntryStoryboardScaleStart = nil
     }
 
     private var showsDraftKeyboardAccessory: Bool {
@@ -3785,8 +3914,7 @@ struct CreateEntryView: View {
     }
 
     private var showsSpeechMicButton: Bool {
-        !opensExistingEntryReadMode
-            && !isShowingEntryOptionsPage
+        !isShowingEntryOptionsPage
             && !isBlockingSaveInProgress
             && !isPhotosPanelVisible
             && !isShowingCustomizeSheet

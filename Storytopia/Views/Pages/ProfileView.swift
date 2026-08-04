@@ -635,14 +635,22 @@ private extension View {
 struct StoryboardImageViewer: View {
     let storyboards: [GeneratedStoryboard]
     let initialIndex: Int
+    let onSelectPrimary: ((GeneratedStoryboard) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var visibleIndex: Int
+    @State private var primaryStoryboardID: UUID?
 
-    init(storyboards: [GeneratedStoryboard], initialIndex: Int) {
+    init(
+        storyboards: [GeneratedStoryboard],
+        initialIndex: Int,
+        onSelectPrimary: ((GeneratedStoryboard) -> Void)? = nil
+    ) {
         self.storyboards = storyboards
         self.initialIndex = initialIndex
+        self.onSelectPrimary = onSelectPrimary
         _visibleIndex = State(initialValue: initialIndex)
+        _primaryStoryboardID = State(initialValue: storyboards.first(where: \.isPrimary)?.id)
     }
 
     var body: some View {
@@ -651,9 +659,12 @@ struct StoryboardImageViewer: View {
                 .ignoresSafeArea()
 
             ZoomableVerticalStoryboardView(
+                storyboards: storyboards,
                 images: storyboards.map(\.image),
                 initialIndex: initialIndex,
-                visibleIndex: $visibleIndex
+                visibleIndex: $visibleIndex,
+                primaryStoryboardID: primaryStoryboardID,
+                onSelectPrimary: primarySelectionHandler
             )
             .background(Color.black)
 
@@ -685,16 +696,126 @@ struct StoryboardImageViewer: View {
         .preferredColorScheme(.dark)
         .statusBarHidden()
     }
+
+    private var shouldShowPrimaryPicker: Bool {
+        onSelectPrimary != nil && storyboards.count > 1
+    }
+
+    private var primarySelectionHandler: ((GeneratedStoryboard) -> Void)? {
+        guard shouldShowPrimaryPicker else {
+            return nil
+        }
+
+        return { storyboard in
+            primaryStoryboardID = storyboard.id
+            onSelectPrimary?(storyboard)
+        }
+    }
+}
+
+private struct StoryboardPrimarySelectionRow: View {
+    let storyboards: [GeneratedStoryboard]
+    let primaryStoryboardID: UUID?
+    let onSelectPrimary: (GeneratedStoryboard) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 7) {
+                Text("Current Storyboards")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white)
+
+                Text("\(storyboards.count)")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Color.storyPurple.opacity(0.72), in: Circle())
+
+                Spacer(minLength: 0)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                        Button {
+                            onSelectPrimary(storyboard)
+                        } label: {
+                            StoryboardPrimarySelectionThumbnail(
+                                image: storyboard.image,
+                                isPrimary: storyboard.id == primaryStoryboardID
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(storyboard.id == primaryStoryboardID ? "Primary storyboard" : "Set storyboard version \(index + 1) as primary")
+                    }
+                }
+                .padding(.horizontal, 1)
+                .padding(.vertical, 1)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 18)
+    }
+}
+
+private struct StoryboardPrimarySelectionThumbnail: View {
+    let image: UIImage
+    let isPrimary: Bool
+
+    var body: some View {
+        let aspectRatio = max(image.size.width, 1) / max(image.size.height, 1)
+        let thumbnailHeight: CGFloat = 132
+
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(width: min(max(thumbnailHeight * aspectRatio, 100), 214), height: thumbnailHeight)
+            .background(Color.storyInk.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isPrimary ? Color.storyPurple : Color.storyBorder.opacity(0.58), lineWidth: isPrimary ? 2 : 1)
+            )
+            .overlay(alignment: .bottomLeading) {
+                if isPrimary {
+                    HStack(spacing: 4) {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 8, weight: .black))
+
+                        Text("Primary")
+                            .font(.system(size: 10, weight: .heavy))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background(Color.storyPurple, in: UnevenRoundedRectangle(
+                        topLeadingRadius: 0,
+                        bottomLeadingRadius: 7,
+                        bottomTrailingRadius: 6,
+                        topTrailingRadius: 6,
+                        style: .continuous
+                    ))
+                }
+            }
+    }
 }
 
 private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
+    let storyboards: [GeneratedStoryboard]
     let images: [UIImage]
     let initialIndex: Int
     @Binding var visibleIndex: Int
+    let primaryStoryboardID: UUID?
+    let onSelectPrimary: ((GeneratedStoryboard) -> Void)?
     private let topOverlayClearance: CGFloat = 64
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
+    }
+
+    private var hasStoryboardPicker: Bool {
+        onSelectPrimary != nil && storyboards.count > 1
     }
 
     func makeUIView(context: Context) -> UIScrollView {
@@ -723,15 +844,16 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         ])
 
         context.coordinator.stackView = stackView
-        context.coordinator.imageViews = images.enumerated().map { index, image in
-            if index == 0 {
-                let spacer = UIView()
-                spacer.backgroundColor = .black
-                spacer.translatesAutoresizingMaskIntoConstraints = false
-                spacer.heightAnchor.constraint(equalToConstant: topOverlayClearance).isActive = true
-                stackView.addArrangedSubview(spacer)
-            }
+        let topSpacer = UIView()
+        topSpacer.backgroundColor = .black
+        topSpacer.translatesAutoresizingMaskIntoConstraints = false
+        topSpacer.heightAnchor.constraint(equalToConstant: topOverlayClearance).isActive = true
+        stackView.addArrangedSubview(topSpacer)
 
+        if let storyboardPicker = makeStoryboardPicker(context: context) {
+            stackView.addArrangedSubview(storyboardPicker)
+        }
+        context.coordinator.imageViews = images.enumerated().map { index, image in
             if index > 0 {
                 stackView.addArrangedSubview(
                     makeImageBoundary(nextIndex: index, totalCount: images.count)
@@ -758,6 +880,24 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         return scrollView
     }
 
+    private func makeStoryboardPicker(context: Context) -> UIView? {
+        guard let onSelectPrimary, storyboards.count > 1 else {
+            return nil
+        }
+
+        let picker = StoryboardPrimarySelectionRow(
+            storyboards: storyboards,
+            primaryStoryboardID: primaryStoryboardID,
+            onSelectPrimary: onSelectPrimary
+        )
+        let hostingController = UIHostingController(rootView: picker)
+        hostingController.view.backgroundColor = .clear
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        context.coordinator.storyboardPickerHostingController = hostingController
+
+        return hostingController.view
+    }
+
     private func makeImageBoundary(nextIndex _: Int, totalCount _: Int) -> UIView {
         let container = UIView()
         container.backgroundColor = UIColor(white: 0.035, alpha: 1)
@@ -769,11 +909,19 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         context.coordinator.parent = self
+        if let onSelectPrimary {
+            context.coordinator.storyboardPickerHostingController?.rootView = StoryboardPrimarySelectionRow(
+                storyboards: storyboards,
+                primaryStoryboardID: primaryStoryboardID,
+                onSelectPrimary: onSelectPrimary
+            )
+        }
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
         var parent: ZoomableVerticalStoryboardView
         weak var stackView: UIStackView?
+        var storyboardPickerHostingController: UIHostingController<StoryboardPrimarySelectionRow>?
         var imageViews: [UIImageView] = []
         private var didScrollToInitialImage = false
 
@@ -803,6 +951,13 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
 
             scrollView.layoutIfNeeded()
             stackView?.layoutIfNeeded()
+
+            if parent.hasStoryboardPicker && parent.initialIndex == 0 {
+                scrollView.setContentOffset(.zero, animated: false)
+                didScrollToInitialImage = true
+                updateVisibleIndex(in: scrollView)
+                return
+            }
 
             let imageView = imageViews[parent.initialIndex]
             let targetY = max(

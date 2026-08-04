@@ -675,7 +675,6 @@ struct JournalView: View {
             uploadsStoredCover: customization.storedCoverImage != nil,
             clearsStoredCover: customization.clearsStoredCover
         ))
-        journalBeingCustomized = nil
     }
 
     private func retryPendingCoverSync() {
@@ -1869,10 +1868,12 @@ private struct JournalCustomizationSheet: View {
         self.chapter = chapter
         self.initialStoryboardCovers = initialStoryboardCovers
         self.onSave = onSave
-        _selectedColorHex = State(initialValue: JournalColorOption.hexString(for: chapter.color))
+        let initialColorHex = JournalColorOption.hexString(for: chapter.color)
+        let initialStoredCoverImage = JournalCoverStore.image(for: chapter)
+        _selectedColorHex = State(initialValue: initialColorHex)
         _selectedCoverImageName = State(initialValue: chapter.coverImageName)
         _selectedRemoteCover = State(initialValue: chapter.remoteCover)
-        _selectedStoredCoverImage = State(initialValue: JournalCoverStore.image(for: chapter))
+        _selectedStoredCoverImage = State(initialValue: initialStoredCoverImage)
         _storyboardCoverCandidates = State(initialValue: initialStoryboardCovers)
         _unsplashQuery = State(initialValue: "")
     }
@@ -1919,23 +1920,8 @@ private struct JournalCustomizationSheet: View {
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        let remoteCover = selectedRemoteCover
-                        onSave(
-                            JournalCustomization(
-                                chapterID: chapter.id,
-                                color: selectedColor,
-                                coverImageName: selectedCoverImageName,
-                                remoteCover: remoteCover,
-                                storedCoverImage: selectedStoredCoverImage,
-                                clearsStoredCover: clearsStoredCover
-                            )
-                        )
-                        if let downloadLocation = remoteCover?.downloadLocation {
-                            Task {
-                                try? await unsplashService.trackDownload(downloadLocation: downloadLocation)
-                            }
-                        }
+                    Button("Save") {
+                        saveCurrentSelection()
                         dismiss()
                     }
                     .fontWeight(.bold)
@@ -1944,10 +1930,13 @@ private struct JournalCustomizationSheet: View {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
 
-                    Button("Done") {
+                    Button {
                         isUnsplashSearchFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
                     }
                     .fontWeight(.bold)
+                    .accessibilityLabel("Dismiss keyboard")
                 }
             }
         }
@@ -2252,6 +2241,25 @@ private struct JournalCustomizationSheet: View {
                     .stroke(Color.white, lineWidth: 2)
             )
             .shadow(color: Color.storyInk.opacity(0.22), radius: 4, y: 2)
+    }
+
+    private func saveCurrentSelection() {
+        let remoteCover = selectedRemoteCover
+        onSave(
+            JournalCustomization(
+                chapterID: chapter.id,
+                color: selectedColor,
+                coverImageName: selectedCoverImageName,
+                remoteCover: remoteCover,
+                storedCoverImage: selectedStoredCoverImage,
+                clearsStoredCover: clearsStoredCover
+            )
+        )
+        if let downloadLocation = remoteCover?.downloadLocation {
+            Task {
+                try? await unsplashService.trackDownload(downloadLocation: downloadLocation)
+            }
+        }
     }
 
     private func searchUnsplash() {
@@ -4241,6 +4249,7 @@ private struct JournalStoryboardComicReaderView: View {
     @State private var lastPanOffset: CGSize = .zero
     @State private var isShowingGestureHint = false
     @State private var isShowingCoverCustomization = false
+    @State private var isShowingVerticalView = false
     @State private var isPageTurnActive = false
     @State private var programmaticTurnOffset = 0
     @State private var programmaticTurnProgress: CGFloat = 0
@@ -4310,8 +4319,13 @@ private struct JournalStoryboardComicReaderView: View {
                 initialStoryboardCovers: storyboardCoverCandidates,
                 onSave: { customization in
                     onCoverCustomized(customization)
-                    isShowingCoverCustomization = false
                 }
+            )
+        }
+        .fullScreenCover(isPresented: $isShowingVerticalView) {
+            StoryboardImageViewer(
+                storyboards: storyboards,
+                initialIndex: verticalStoryboardInitialIndex
             )
         }
     }
@@ -4340,6 +4354,12 @@ private struct JournalStoryboardComicReaderView: View {
             Spacer()
 
             Menu {
+                Button {
+                    isShowingVerticalView = true
+                } label: {
+                    Label("Vertical View", systemImage: "list.bullet.rectangle")
+                }
+
                 Button {
                     isShowingCoverCustomization = true
                 } label: {
@@ -4669,6 +4689,10 @@ private struct JournalStoryboardComicReaderView: View {
 
     private var storyboardImages: [UIImage] {
         storyboards.map(\.image)
+    }
+
+    private var verticalStoryboardInitialIndex: Int {
+        min(max(currentPageIndex - 1, 0), max(storyboards.count - 1, 0))
     }
 
     private var totalPageCount: Int {
@@ -11001,6 +11025,10 @@ private struct EntryListRow: View {
     var category: EntriesTab?
     var completedStoryboardImage: CompletedStoryboardImage?
     var completedStoryboardCount = 0
+    var showsCompletedStoryboardCount = true
+    var rowHeight = JournalChapterListMetrics.rowHeight
+    var coverWidth = JournalChapterListMetrics.coverWidth
+    var coverHeight = JournalChapterListMetrics.coverHeight
     var isSelecting = false
     var isSelected = false
 
@@ -11048,7 +11076,7 @@ private struct EntryListRow: View {
             .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(1)
         }
-        .frame(maxWidth: .infinity, minHeight: JournalChapterListMetrics.rowHeight, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityLabel("\(entryDisplayTitle(entry)), \(pageLabel ?? entryDateDisplay.inlineText)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -11073,8 +11101,8 @@ private struct EntryListRow: View {
             }
         }
         .frame(
-            width: JournalChapterListMetrics.coverWidth,
-            height: JournalChapterListMetrics.coverHeight
+            width: coverWidth,
+            height: coverHeight
         )
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         .overlay(
@@ -11116,7 +11144,7 @@ private struct EntryListRow: View {
 
     @ViewBuilder
     private var storyboardCountBadge: some View {
-        if completedStoryboardCount > 1 {
+        if showsCompletedStoryboardCount, completedStoryboardCount > 1 {
             Text("\(completedStoryboardCount)")
                 .font(.system(size: 10, weight: .heavy))
                 .foregroundStyle(.white)
@@ -11654,7 +11682,7 @@ private struct CompletedEntryGridCard: View {
         .frame(width: overlayWidth, height: overlayHeight)
         .rotationEffect(.degrees(2))
         .shadow(color: Color.storyInk.opacity(0.16), radius: 6, y: 4)
-        .position(x: size.width * 0.76, y: size.height * 0.27)
+        .position(x: size.width * 0.76, y: size.height * 0.73)
     }
 
     private var paperclipSymbol: some View {
@@ -11825,7 +11853,7 @@ private struct EntryOpeningOverlay: View {
         .frame(width: overlayWidth, height: overlayHeight)
         .rotationEffect(.degrees(2))
         .shadow(color: Color.storyInk.opacity(0.16), radius: 6, y: 4)
-        .position(x: size.width * 0.76, y: size.height * 0.27)
+        .position(x: size.width * 0.76, y: size.height * 0.73)
     }
 }
 
@@ -12665,7 +12693,6 @@ private struct PrototypeChapterDetailView: View {
             uploadsStoredCover: customization.storedCoverImage != nil,
             clearsStoredCover: customization.clearsStoredCover
         ))
-        isShowingCoverCustomization = false
     }
 
     private func retryPendingCoverSync() {
@@ -14265,6 +14292,7 @@ private struct JournalDetailEntryBrowser: View {
     @State private var renderedThumbnails: [UUID: JournalDetailRenderedThumbnail] = [:]
     @State private var thumbnailRenderTask: Task<Void, Never>?
     @State private var entryContentMinY: CGFloat = 0
+    @State private var openingEntryID: UUID?
     @AppStorage("StorytopiaSelectedJournalDetailEntryLayout") private var selectedLayoutRawValue = JournalEntryLayout.grid.rawValue
 
     private var selectedLayout: JournalEntryLayout {
@@ -14666,7 +14694,7 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func entryList(_ items: [EntryDisplayItem]) -> some View {
-        let rowHeight = JournalChapterListMetrics.rowHeight
+        let rowHeight: CGFloat = 52
         let listHeight = CGFloat(items.count) * rowHeight
         let window = visibleRowWindow(rowCount: items.count, rowStride: rowHeight)
 
@@ -14688,7 +14716,11 @@ private struct JournalDetailEntryBrowser: View {
                         pageLabel: pageLabel(for: index),
                         category: isCompleted(item) ? .completed : .drafts,
                         completedStoryboardImage: isCompleted(item) ? storyboardImage(for: item, fallbackIndex: index) : nil,
-                        completedStoryboardCount: isCompleted(item) ? storyboardCount(for: item) : 0
+                        completedStoryboardCount: isCompleted(item) ? storyboardCount(for: item) : 0,
+                        showsCompletedStoryboardCount: false,
+                        rowHeight: rowHeight,
+                        coverWidth: 34,
+                        coverHeight: 44
                     )
                     .overlay(alignment: .leading) {
                         if editMode == .active {
@@ -15230,7 +15262,14 @@ private struct JournalDetailEntryBrowser: View {
         if editMode == .active {
             toggleEntrySelection(item.id)
         } else {
-            openItem(item, displayEntry: displayEntry, fallbackIndex: fallbackIndex)
+            guard openingEntryID == nil else {
+                return
+            }
+
+            openingEntryID = item.id
+            Task {
+                await openItem(item, displayEntry: displayEntry, fallbackIndex: fallbackIndex)
+            }
         }
     }
 
@@ -15520,7 +15559,11 @@ private struct JournalDetailEntryBrowser: View {
         return nil
     }
 
-    private func openItem(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
+    private func openItem(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) async {
+        defer {
+            openingEntryID = nil
+        }
+
         let isCompleted = isCompleted(item)
         let storyboardImage: UIImage? = {
             guard isCompleted else {
@@ -15536,44 +15579,69 @@ private struct JournalDetailEntryBrowser: View {
             return storyboardUIImage(for: item, fallbackIndex: fallbackIndex)
         }()
         let hydratedDisplayEntry = CreateEntryDraftStore.load(id: displayEntry.id) ?? displayEntry
-        let entryToOpen = materializedEntry(for: item, displayEntry: hydratedDisplayEntry)
+        guard let entryToOpen = await materializedEntry(for: item, displayEntry: hydratedDisplayEntry) else {
+            return
+        }
         onOpenEntry(entryToOpen, isCompleted, storyboardImage)
     }
 
-    private func materializedEntry(for item: EntryDisplayItem, displayEntry: CreateEntryDraft) -> CreateEntryDraft {
-        guard !item.isLocal else {
+    private func materializedEntry(for item: EntryDisplayItem, displayEntry: CreateEntryDraft) async -> CreateEntryDraft? {
+        guard let cloudEntry = item.cloudEntry else {
             return displayEntry
         }
 
-        _ = CreateEntryDraftStore.save(
-            id: displayEntry.id,
-            title: displayEntry.title,
-            text: displayEntry.text,
-            richText: displayEntry.richText,
-            referencePhotos: [],
-            characters: [],
-            artStyle: displayEntry.artStyle,
-            location: displayEntry.location,
-            date: displayEntry.date,
-            datePrecision: displayEntry.datePrecision,
-            savesDraft: displayEntry.savesDraft,
-            isPrivate: displayEntry.isPrivate,
-            status: JournalEntryStatus(rawValue: item.status) ?? .draft,
-            fontChoiceRawValue: displayEntry.fontChoiceRawValue,
-            textColorIndex: displayEntry.textColorIndex,
-            textSize: displayEntry.textSize,
-            paperStyleRawValue: displayEntry.paperStyleRawValue,
-            paperColorIndex: displayEntry.paperColorIndex,
-            isBold: displayEntry.isBold,
-            isItalic: displayEntry.isItalic,
-            isUnderlined: displayEntry.isUnderlined,
-            isStrikethrough: displayEntry.isStrikethrough,
-            isHighlighted: displayEntry.isHighlighted,
-            textAlignmentRawValue: displayEntry.textAlignmentRawValue,
-            thumbnail: displayEntry.thumbnail
-        )
+        guard displayEntry.photos.isEmpty || displayEntry.characters.isEmpty else {
+            return displayEntry
+        }
 
-        return displayEntry
+        do {
+            let fullCloudEntry = try await SupabaseEntryRepository().getEntry(id: cloudEntry.id)
+            let cloudDraft = CreateEntryDraft.fromCloud(fullCloudEntry, thumbnail: displayEntry.thumbnail)
+            let photos = try await SupabaseReferencePhotoService().loadReferencePhotos(entryID: fullCloudEntry.id)
+            let characters: [EntryCharacter]
+
+            do {
+                characters = try await SupabaseEntryCharacterService().loadCharacters(entryID: fullCloudEntry.id)
+            } catch {
+                print("[Storytopia] Journal detail entry character download skipped: \(error.localizedDescription)")
+                characters = []
+            }
+            let resolvedPhotos = photos.isEmpty && !displayEntry.photos.isEmpty ? displayEntry.photos : photos
+            let resolvedCharacters = characters.isEmpty && !displayEntry.characters.isEmpty ? displayEntry.characters : characters
+
+            _ = CreateEntryDraftStore.save(
+                id: cloudDraft.id,
+                title: cloudDraft.title,
+                text: cloudDraft.text,
+                richText: cloudDraft.richText,
+                referencePhotos: resolvedPhotos,
+                characters: resolvedCharacters,
+                artStyle: cloudDraft.artStyle,
+                location: cloudDraft.location,
+                date: cloudDraft.date,
+                datePrecision: cloudDraft.datePrecision,
+                savesDraft: cloudDraft.savesDraft,
+                isPrivate: cloudDraft.isPrivate,
+                status: JournalEntryStatus(rawValue: item.status) ?? .draft,
+                fontChoiceRawValue: cloudDraft.fontChoiceRawValue,
+                textColorIndex: cloudDraft.textColorIndex,
+                textSize: cloudDraft.textSize,
+                paperStyleRawValue: cloudDraft.paperStyleRawValue,
+                paperColorIndex: cloudDraft.paperColorIndex,
+                isBold: cloudDraft.isBold,
+                isItalic: cloudDraft.isItalic,
+                isUnderlined: cloudDraft.isUnderlined,
+                isStrikethrough: cloudDraft.isStrikethrough,
+                isHighlighted: cloudDraft.isHighlighted,
+                textAlignmentRawValue: cloudDraft.textAlignmentRawValue,
+                thumbnail: cloudDraft.thumbnail
+            )
+
+            return CreateEntryDraftStore.load(id: cloudDraft.id) ?? cloudDraft
+        } catch {
+            errorMessage = "Could not download this entry's reference photos."
+            return nil
+        }
     }
 }
 
