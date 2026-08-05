@@ -62,6 +62,7 @@ struct ProfileView: View {
             await loadProfileStoryboards()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
+        .preferredColorScheme(.light)
     }
 
     @ViewBuilder
@@ -86,7 +87,10 @@ struct ProfileView: View {
                     }
 
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        settingsButton
+                        HStack(spacing: 4) {
+                            creditsButton
+                            settingsButton
+                        }
                     }
                 }
         }
@@ -130,14 +134,25 @@ struct ProfileView: View {
 
             Spacer()
 
-            CreditBalanceBadge(
-                balance: generationCreditStore.balance,
-                isRefreshing: generationCreditStore.isRefreshing
-            )
+            creditsButton
 
             settingsButton
         }
         .padding(.top, 2)
+    }
+
+    private var creditsButton: some View {
+        NavigationLink {
+            GenerationCreditsView()
+                .enableInteractivePopGesture()
+        } label: {
+            CreditBalanceBadge(
+                balance: generationCreditStore.balance,
+                isRefreshing: generationCreditStore.isRefreshing
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open generation credits")
     }
 
     private var settingsButton: some View {

@@ -4,7 +4,6 @@ struct SettingsView: View {
     @Binding var selectedPage: StoryPage
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
-    @Environment(\.dismiss) private var dismiss
 
     @State private var selectedArtStyle = "Anime"
     @State private var isSigningIn = false
@@ -17,79 +16,22 @@ struct SettingsView: View {
             Section("Account") {
                 accountStatusRow
 
-                generationCreditsRow
-
                 accountActionRow
-
-                SettingsRow(
-                    systemName: "person.circle",
-                    title: "Profile",
-                    subtitle: "View your storyboard collection"
-                ) {
-                    dismiss()
-                }
-
-                SettingsNavigationRow(
-                    systemName: "lock.cloud",
-                    title: "Cloud Journal Test",
-                    subtitle: "Test Supabase sign-in and private entries",
-                    accessibilityLabel: "Open cloud journal test"
-                ) {
-                    SupabaseJournalTestView()
-                        .enableInteractivePopGesture()
-                }
             }
 
-            Section("Journal") {
-                SettingsNavigationRow(
-                    systemName: "calendar",
-                    title: "Daily",
-                    subtitle: "Open your daily journal",
-                    accessibilityLabel: "Open daily journal"
-                ) {
-                    DaybookView(
-                        selectedPage: $selectedPage,
-                        embedsInNavigationStack: false,
-                        showsBottomNavigation: false
-                    )
-                    .enableInteractivePopGesture()
-                }
-
-                SettingsNavigationRow(
-                    systemName: "book.closed",
-                    title: "All Journals",
-                    subtitle: "Open the classic journals list",
-                    accessibilityLabel: "Open all journals"
-                ) {
-                    ClassicJournalView(
-                        selectedPage: $selectedPage,
-                        isDraftSaved: .constant(false),
-                        activeDraftID: .constant(nil),
-                        embedsInNavigationStack: false,
-                        showsBottomNavigation: false
-                    )
-                    .enableInteractivePopGesture()
-                }
+            Section("Generation Credits") {
+                generationCreditsRow
             }
 
-            Section("Create") {
+            Section {
                 SettingsNavigationRow(
-                    systemName: "square.and.pencil",
-                    title: "Create Visual Test",
-                    subtitle: "Preview Create with Cloud Journal styling",
-                    accessibilityLabel: "Open create visual test"
+                    systemName: "ellipsis.circle",
+                    title: "Extra",
+                    subtitle: "Tests, daily journal, and create tools",
+                    accessibilityLabel: "Open extra settings"
                 ) {
-                    CreateVisualTestView()
-                        .enableInteractivePopGesture()
-                }
-
-                SettingsNavigationRow(
-                    systemName: "paintpalette",
-                    title: "Choose Art Style",
-                    subtitle: "Preview and pick a storyboard look",
-                    accessibilityLabel: "Open choose art style"
-                ) {
-                    ArtStyleGridSheet(
+                    SettingsExtraView(
+                        selectedPage: $selectedPage,
                         artStyles: artStyles,
                         selectedArtStyle: $selectedArtStyle
                     )
@@ -122,19 +64,26 @@ struct SettingsView: View {
     }
 
     private var generationCreditsRow: some View {
-        SettingsRowContent(
-            systemName: "sparkle",
-            title: "Generation Credits",
-            subtitle: generationCreditsSubtitle,
-            showsChevron: false,
-            trailingContent: {
-                CreditBalanceBadge(
-                    balance: generationCreditStore.balance,
-                    isRefreshing: generationCreditStore.isRefreshing
-                )
-            }
-        )
-        .padding(.vertical, 4)
+        NavigationLink {
+            GenerationCreditsView()
+                .enableInteractivePopGesture()
+        } label: {
+            SettingsRowContent(
+                systemName: "sparkle",
+                title: "Generation Credits",
+                subtitle: generationCreditsSubtitle,
+                showsChevron: false,
+                trailingContent: {
+                    CreditBalanceBadge(
+                        balance: generationCreditStore.balance,
+                        isRefreshing: generationCreditStore.isRefreshing
+                    )
+                }
+            )
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open generation credits")
     }
 
     @ViewBuilder
@@ -252,6 +201,128 @@ struct SettingsView: View {
     }
 }
 
+private struct SettingsExtraView: View {
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+
+    @Binding var selectedPage: StoryPage
+    let artStyles: [String]
+    @Binding var selectedArtStyle: String
+    @State private var isResettingGenerationCredits = false
+
+    var body: some View {
+        List {
+            Section("Tests") {
+                SettingsNavigationRow(
+                    systemName: "lock.cloud",
+                    title: "Cloud Journal Test",
+                    subtitle: "Test Supabase sign-in and private entries",
+                    accessibilityLabel: "Open cloud journal test"
+                ) {
+                    SupabaseJournalTestView()
+                        .enableInteractivePopGesture()
+                }
+            }
+
+            Section("Credits") {
+                Button {
+                    Task {
+                        isResettingGenerationCredits = true
+                        generationCreditStore.errorMessage = nil
+                        do {
+                            try await generationCreditStore.setBalance(25)
+                        } catch {
+                            generationCreditStore.errorMessage = error.localizedDescription
+                        }
+                        isResettingGenerationCredits = false
+                    }
+                } label: {
+                    SettingsRowContent(
+                        systemName: "arrow.counterclockwise.circle",
+                        title: isResettingGenerationCredits ? "Resetting Credits" : "Reset Generation Credits",
+                        subtitle: resetGenerationCreditsSubtitle,
+                        showsChevron: false,
+                        trailingContent: {
+                            if isResettingGenerationCredits {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                CreditBalanceBadge(
+                                    balance: generationCreditStore.balance,
+                                    isRefreshing: generationCreditStore.isRefreshing
+                                )
+                            }
+                        }
+                    )
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .disabled(authStore.userID == nil || isResettingGenerationCredits)
+                .accessibilityLabel("Reset generation credits to 25")
+
+                if let errorMessage = generationCreditStore.errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.red.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Section("Journal") {
+                SettingsNavigationRow(
+                    systemName: "calendar",
+                    title: "Daily",
+                    subtitle: "Open your daily journal",
+                    accessibilityLabel: "Open daily journal"
+                ) {
+                    DaybookView(
+                        selectedPage: $selectedPage,
+                        embedsInNavigationStack: false,
+                        showsBottomNavigation: false
+                    )
+                    .enableInteractivePopGesture()
+                }
+            }
+
+            Section("Create") {
+                SettingsNavigationRow(
+                    systemName: "square.and.pencil",
+                    title: "Create Visual Test",
+                    subtitle: "Preview Create with Cloud Journal styling",
+                    accessibilityLabel: "Open create visual test"
+                ) {
+                    CreateVisualTestView()
+                        .enableInteractivePopGesture()
+                }
+
+                SettingsNavigationRow(
+                    systemName: "paintpalette",
+                    title: "Choose Art Style",
+                    subtitle: "Preview and pick a storyboard look",
+                    accessibilityLabel: "Open choose art style"
+                ) {
+                    ArtStyleGridSheet(
+                        artStyles: artStyles,
+                        selectedArtStyle: $selectedArtStyle
+                    )
+                    .enableInteractivePopGesture()
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.homePageBackground)
+        .navigationTitle("Extra")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .preferredColorScheme(.light)
+    }
+
+    private var resetGenerationCreditsSubtitle: String {
+        authStore.userID == nil ? "Sign in to update your balance" : "Set your balance back to 25"
+    }
+}
+
 private struct SettingsNavigationRow<Destination: View>: View {
     let systemName: String
     let title: String
@@ -273,25 +344,6 @@ private struct SettingsNavigationRow<Destination: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
-    }
-}
-
-private struct SettingsRow: View {
-    let systemName: String
-    let title: String
-    let subtitle: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            SettingsRowContent(
-                systemName: systemName,
-                title: title,
-                subtitle: subtitle
-            )
-            .padding(.vertical, 4)
-        }
-        .buttonStyle(.plain)
     }
 }
 

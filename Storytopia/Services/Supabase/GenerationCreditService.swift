@@ -18,6 +18,14 @@ private struct GenerationCreditSpendPayload: Encodable, Sendable {
     }
 }
 
+private struct GenerationCreditUpdate: Encodable, Sendable {
+    let generationCredits: Int
+
+    enum CodingKeys: String, CodingKey {
+        case generationCredits = "generation_credits"
+    }
+}
+
 enum GenerationCreditError: LocalizedError {
     case notAuthenticated
     case insufficientCredits
@@ -80,6 +88,23 @@ struct GenerationCreditService {
         }
     }
 
+    func setBalance(_ balance: Int) async throws -> Int {
+        let userID = try await authenticatedUserID()
+        let clampedBalance = max(0, balance)
+
+        do {
+            try await client
+                .from("profiles")
+                .update(GenerationCreditUpdate(generationCredits: clampedBalance))
+                .eq("id", value: userID)
+                .execute()
+
+            return try await fetchBalance()
+        } catch {
+            throw GenerationCreditError.unavailable
+        }
+    }
+
     private func authenticatedUserID() async throws -> UUID {
         do {
             return try await client.auth.session.user.id
@@ -135,6 +160,12 @@ final class GenerationCreditStore: ObservableObject {
 
     func spend(_ cost: Int) async throws {
         let updatedBalance = try await service.spendCredit(cost: cost)
+        balance = updatedBalance
+        errorMessage = nil
+    }
+
+    func setBalance(_ newBalance: Int) async throws {
+        let updatedBalance = try await service.setBalance(newBalance)
         balance = updatedBalance
         errorMessage = nil
     }

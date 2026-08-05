@@ -161,6 +161,7 @@ struct JournalView: View {
         }
         .onChange(of: authStore.userID) { userID in
             guard userID != nil else {
+                resetJournalSessionState()
                 return
             }
 
@@ -315,8 +316,8 @@ struct JournalView: View {
             playJournalFloatingButtonHaptic()
             handleCreateButtonTapped()
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 25, weight: .regular))
+            Image(systemName: "book.closed.fill")
+                .font(.system(size: 24, weight: .regular))
                 .foregroundStyle(Color.white)
                 .frame(width: 60, height: 60)
                 .background(Color.black, in: Circle())
@@ -336,59 +337,60 @@ struct JournalView: View {
     }
 
     private var journalGridContent: some View {
-        journalGrid
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
+        Group {
+            if chapters.isEmpty {
+                emptyState
+            } else {
+                journalGrid
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
     }
 
     private var journalGrid: some View {
         LazyVGrid(columns: columns, spacing: 14) {
-            if chapters.isEmpty {
-                emptyState
-                    .gridCellColumns(selectedJournalLayout.gridColumnCount)
-            } else {
-                ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
-                    JournalCoverCard(
-                        chapter: chapter,
-                        coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
-                        remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
-                        fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
-                        isEditing: editMode == .active,
-                        onCustomize: { beginCustomizing(chapter) },
-                        onRename: { beginRenaming(chapter) },
-                        onDelete: { requestDeleteJournals([chapter]) }
-                    )
-                    .matchedGeometryEffect(
-                        id: journalCoverAnimationID(for: chapter),
-                        in: journalOpenNamespace,
-                        isSource: openingJournal?.id != chapter.id
-                    )
-                    .opacity(openingJournal?.id == chapter.id ? 0 : 1)
-                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .onTapGesture {
-                        openJournal(chapter, dayOffset: index)
-                    }
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAction {
-                        openJournal(chapter, dayOffset: index)
-                    }
-                    .modifier(JournalDragModifier(
-                        chapter: chapter,
-                        isEnabled: true,
-                        draggingJournalID: $draggingJournalID
-                    ))
-                    .onDrop(
-                        of: [UTType.text],
-                        delegate: JournalGridDropDelegate(
-                            chapter: chapter,
-                            chapters: $chapters,
-                            draggingJournalID: $draggingJournalID,
-                            isEnabled: true,
-                            onReorder: persistManualJournalOrder
-                        )
-                    )
-                    .allowsHitTesting(openingJournal == nil && journalNavigationPath.isEmpty)
+            ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
+                JournalCoverCard(
+                    chapter: chapter,
+                    coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
+                    remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
+                    fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
+                    isEditing: editMode == .active,
+                    onCustomize: { beginCustomizing(chapter) },
+                    onRename: { beginRenaming(chapter) },
+                    onDelete: { requestDeleteJournals([chapter]) }
+                )
+                .matchedGeometryEffect(
+                    id: journalCoverAnimationID(for: chapter),
+                    in: journalOpenNamespace,
+                    isSource: openingJournal?.id != chapter.id
+                )
+                .opacity(openingJournal?.id == chapter.id ? 0 : 1)
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .onTapGesture {
+                    openJournal(chapter, dayOffset: index)
                 }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    openJournal(chapter, dayOffset: index)
+                }
+                .modifier(JournalDragModifier(
+                    chapter: chapter,
+                    isEnabled: true,
+                    draggingJournalID: $draggingJournalID
+                ))
+                .onDrop(
+                    of: [UTType.text],
+                    delegate: JournalGridDropDelegate(
+                        chapter: chapter,
+                        chapters: $chapters,
+                        draggingJournalID: $draggingJournalID,
+                        isEnabled: true,
+                        onReorder: persistManualJournalOrder
+                    )
+                )
+                .allowsHitTesting(openingJournal == nil && journalNavigationPath.isEmpty)
             }
         }
     }
@@ -970,6 +972,26 @@ struct JournalView: View {
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil
+    }
+
+    private func resetJournalSessionState() {
+        chapters = []
+        showsPrototypeData = false
+        editMode = .inactive
+        journalBeingRenamed = nil
+        renamedJournalTitle = ""
+        journalsPendingDeletion = []
+        journalBeingCustomized = nil
+        pendingCoverSync = nil
+        isCoverSyncInProgress = false
+        isCreateJournalAlertPresented = false
+        newJournalTitle = ""
+        journalNavigationPath = []
+        openingJournal = nil
+        isJournalOpening = false
+        areJournalPagesExpanded = false
+        isJournalDetailVisible = false
+        resetJournalCreateEntryState()
     }
 
     private func updateJournalEntry(_ entry: PrototypeEntry, in journalTitle: String) {
@@ -17356,7 +17378,7 @@ enum UserChapterStore {
     static func add(_ chapter: PrototypeChapter) {
         let existingRecords: [Record]
         if
-            let data = UserDefaults.standard.data(forKey: storageKey),
+            let data = UserDefaults.standard.data(forKey: scopedStorageKey),
             let decodedRecords = try? JSONDecoder().decode([Record].self, from: data)
         {
             existingRecords = decodedRecords
@@ -17385,7 +17407,7 @@ enum UserChapterStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: storageKey)
+        UserDefaults.standard.set(data, forKey: scopedStorageKey)
         syncCreatedJournalToCloud(chapter, orderedChapters: load())
     }
 
@@ -17417,7 +17439,7 @@ enum UserChapterStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: storageKey)
+        UserDefaults.standard.set(data, forKey: scopedStorageKey)
     }
 
     static func replace(with chapters: [PrototypeChapter]) {
@@ -17440,7 +17462,7 @@ enum UserChapterStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: storageKey)
+        UserDefaults.standard.set(data, forKey: scopedStorageKey)
     }
 
     static func delete(title: String) {
@@ -17449,7 +17471,7 @@ enum UserChapterStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: storageKey)
+        UserDefaults.standard.set(data, forKey: scopedStorageKey)
     }
 
     static func touch(title: String) {
@@ -17477,7 +17499,7 @@ enum UserChapterStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: storageKey)
+        UserDefaults.standard.set(data, forKey: scopedStorageKey)
     }
 
     static func id(for title: String) -> UUID? {
@@ -17513,7 +17535,7 @@ enum UserChapterStore {
             return
         }
 
-        UserDefaults.standard.set(data, forKey: storageKey)
+        UserDefaults.standard.set(data, forKey: scopedStorageKey)
     }
 
     static func syncToCloud(_ chapter: PrototypeChapter, preservesDisplayOrder: Bool = true) {
@@ -17712,7 +17734,7 @@ enum UserChapterStore {
 
     private static func loadMigratedRecords() -> [Record] {
         guard
-            let data = UserDefaults.standard.data(forKey: storageKey),
+            let data = UserDefaults.standard.data(forKey: scopedStorageKey),
             let decodedRecords = try? JSONDecoder().decode([Record].self, from: data)
         else {
             return []
@@ -17721,10 +17743,29 @@ enum UserChapterStore {
         let migratedRecords = migrateRecords(decodedRecords)
         if migratedRecords != decodedRecords,
            let data = try? JSONEncoder().encode(migratedRecords) {
-            UserDefaults.standard.set(data, forKey: storageKey)
+            UserDefaults.standard.set(data, forKey: scopedStorageKey)
         }
 
         return migratedRecords
+    }
+
+    private static var scopedStorageKey: String {
+        migrateLegacyRecordsIfNeeded()
+        return StorytopiaLocalAccountScope.scopedUserDefaultsKey(storageKey)
+    }
+
+    private static func migrateLegacyRecordsIfNeeded() {
+        guard !StorytopiaLocalAccountScope.isAnonymous else {
+            return
+        }
+
+        let targetKey = StorytopiaLocalAccountScope.scopedUserDefaultsKey(storageKey)
+        guard UserDefaults.standard.data(forKey: targetKey) == nil,
+              let legacyData = UserDefaults.standard.data(forKey: storageKey) else {
+            return
+        }
+
+        UserDefaults.standard.set(legacyData, forKey: targetKey)
     }
 
     private static func migrateRecords(_ records: [Record]) -> [Record] {

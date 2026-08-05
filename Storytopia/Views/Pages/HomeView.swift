@@ -1,35 +1,9 @@
 import SwiftUI
 import UIKit
 
-private let homeSampleImageNames = [
-    "IMG_9080",
-    "IMG_9144",
-    "IMG_2390",
-    "IMG_2382 2",
-    "IMG_9131",
-    "IMG_9113",
-    "IMG_9127",
-    "IMG_9126",
-    "IMG_9114",
-    "IMG_9102",
-    "IMG_2385 2",
-    "IMG_9140",
-    "IMG_2214"
-]
-
-private func homeSampleImages(startIndex: Int, count: Int) -> [String] {
-    guard !homeSampleImageNames.isEmpty else {
-        return []
-    }
-
-    return (0..<count).map { offset in
-        homeSampleImageNames[(startIndex + offset) % homeSampleImageNames.count]
-    }
-}
-
 struct HomeView: View {
     @Binding var selectedPage: StoryPage
-    @State private var selectedChapterPostOption: ChapterPostDisplayOption = .cards
+    @State private var fullScreenImageName: String?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -40,8 +14,6 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     header
                     heroCard
-                    storyboardsSection
-                    chapterPostOptionsSection
                     socialFeedSection
                 }
                 .padding(.horizontal, 16)
@@ -51,6 +23,23 @@ struct HomeView: View {
 
             BottomNavigationBar(selectedPage: $selectedPage)
         }
+        .sheet(
+            isPresented: Binding(
+                get: { fullScreenImageName != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        fullScreenImageName = nil
+                    }
+                }
+            )
+        ) {
+            if let fullScreenImageName {
+                HomeImagePreviewSheet(imageName: fullScreenImageName) {
+                    self.fullScreenImageName = nil
+                }
+            }
+        }
+        .preferredColorScheme(.light)
     }
 
     private var header: some View {
@@ -128,134 +117,75 @@ struct HomeView: View {
     }
 
     private var socialFeedSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionTitle(title: "Recent moments", action: "View all")
-
-            LazyVStack(spacing: 14) {
-                ForEach(homeFeedPosts) { post in
-                    HomeSocialFeedCard(
-                        entry: post.entry,
-                        accentColor: Color.homeAccent,
-                        username: post.username,
-                        dateText: post.dateText,
-                        presentation: post.presentation
-                    )
+        LazyVStack(spacing: 14) {
+            ForEach(homeFeedPosts) { post in
+                HomeSocialFeedCard(
+                    entry: post.entry,
+                    accentColor: Color.homeAccent,
+                    username: post.username,
+                    dateText: post.dateText,
+                    presentation: post.presentation
+                ) { imageName in
+                    fullScreenImageName = imageName
+                } onUsernameTap: {
+                    selectedPage = .profile
                 }
+                .frame(maxWidth: .infinity)
+                .id(post.id)
             }
         }
     }
 
-    private var homeFeedPosts: [HomeFeedPost] {
+    private var storyboardFeedPosts: [HomeFeedPost] {
         [
             HomeFeedPost(
                 entry: PrototypeEntry(
                     weekday: "WED",
                     day: "17",
-                    title: "Chapter update",
-                    body: "Added a new page to Summer in the City. The whole chapter is here as a little book.",
+                    title: "City chapter",
+                    body: "A storyboard moment from a bright city walk.",
                     time: "4:38 PM",
                     location: "Brooklyn, NY",
-                    imageNames: homeSampleImages(startIndex: 0, count: 8)
+                    imageNames: ["IMG_2839"]
                 ),
                 username: "mikekogan",
                 dateText: "Wed, Jun 17",
-                presentation: .pageCurlBook(startIndex: 5)
-            ),
-            HomeFeedPost(
-                entry: PrototypeEntry(
-                    weekday: "WED",
-                    day: "17",
-                    title: "Fan stack chapter",
-                    body: "A chapter preview with one story card centered and the rest fanned into stacks on both sides.",
-                    time: "3:58 PM",
-                    location: "Brooklyn, NY",
-                    imageNames: homeSampleImages(startIndex: 2, count: 8)
-                ),
-                username: "mikekogan",
-                dateText: "Wed, Jun 17",
-                presentation: .fanCardStack(startIndex: 1)
-            ),
-            HomeFeedPost(
-                entry: PrototypeEntry(
-                    weekday: "WED",
-                    day: "17",
-                    title: "Collection stack",
-                    body: "Added a new image to City fragments. Swipe through the collection as a little stack of cards.",
-                    time: "3:22 PM",
-                    location: "Brooklyn, NY",
-                    imageNames: homeSampleImages(startIndex: 8, count: 5)
-                ),
-                username: "mikekogan",
-                dateText: "Wed, Jun 17",
-                presentation: .swipeCardStack(startIndex: 2)
+                presentation: .storyboardImage
             ),
             HomeFeedPost(
                 entry: PrototypeEntry(
                     weekday: "TUE",
                     day: "16",
-                    title: "A slow morning in Williamsburg",
-                    body: "Coffee, a window seat, and nowhere I needed to be for an hour.",
+                    title: "Slow morning",
+                    body: "Coffee, window light, and a few quiet panels from the day.",
                     time: "9:12 AM",
                     location: "Brooklyn, NY",
-                    imageNames: homeSampleImages(startIndex: 4, count: 5)
+                    imageNames: ["IMG_2840"]
                 ),
-                username: "mikekogan",
+                username: "storytopia",
                 dateText: "Tue, Jun 16",
-                presentation: .singleImage
+                presentation: .storyboardImage
             ),
             HomeFeedPost(
                 entry: PrototypeEntry(
                     weekday: "SUN",
                     day: "14",
                     title: "Sunday dinner",
-                    body: "We stayed at the table long after dessert and retold the same family stories.",
+                    body: "A little memory rendered as a storyboard page.",
                     time: "8:04 PM",
                     location: "Home",
-                    imageNames: homeSampleImages(startIndex: 9, count: 4)
+                    imageNames: ["IMG_2841"]
                 ),
-                username: "storytopia",
+                username: "mikekogan",
                 dateText: "Sun, Jun 14",
-                presentation: .singleImage
+                presentation: .storyboardImage
             )
         ]
     }
 
-    private var storyboardsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionTitle(title: "Your storyboards", action: "View all")
-
-            VStack(spacing: 3) {
-                Text("You haven’t created any storyboards yet.")
-                Text("Start by writing your first entry.")
-            }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(Color.homeMutedText)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            )
-            .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
-        }
+    private var homeFeedPosts: [HomeFeedPost] {
+        storyboardFeedPosts
     }
-
-    private var chapterPostOptionsSection: some View {
-        ChapterPostOptionsSection(selectedOption: $selectedChapterPostOption)
-    }
-}
-
-private enum ChapterPostDisplayOption: String, CaseIterable, Identifiable {
-    case cards = "Cards"
-    case book = "Book"
-    case swipe = "Swipe"
-    case shelf = "Shelf"
-    case snap = "Snap"
-    case fan = "Fan"
-
-    var id: String { rawValue }
 }
 
 private enum ChapterPostDemoLayout {
@@ -278,6 +208,7 @@ private struct HomeFeedPost: Identifiable {
 }
 
 private enum HomeFeedPresentation {
+    case storyboardImage
     case singleImage
     case pageCurlBook(startIndex: Int)
     case swipeCardStack(startIndex: Int)
@@ -285,7 +216,7 @@ private enum HomeFeedPresentation {
 
     var initialPageIndex: Int {
         switch self {
-        case .singleImage:
+        case .storyboardImage, .singleImage:
             return 0
         case .pageCurlBook(let startIndex):
             return startIndex
@@ -297,89 +228,156 @@ private enum HomeFeedPresentation {
     }
 }
 
-private struct ChapterPostOptionsSection: View {
-    @Binding var selectedOption: ChapterPostDisplayOption
-    @State private var selectedPageIndex = 0
+private struct HomeStoryboardFeedImage: View {
+    let imageName: String
+    let onTap: () -> Void
 
-    private let chapterPageImageNames = homeSampleImages(startIndex: 0, count: 8)
+    private var aspectRatio: CGFloat {
+        guard let image = UIImage(named: imageName),
+              image.size.height > 0 else {
+            return 1
+        }
+
+        return image.size.width / image.size.height
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Chapter post options")
-                .font(.system(size: 18, weight: .bold, design: .serif))
-                .foregroundStyle(Color.storyInk)
-                .padding(.horizontal, 2)
-
-            VStack(alignment: .leading, spacing: 12) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(ChapterPostDisplayOption.allCases) { option in
-                            Button {
-                                selectedOption = option
-                            } label: {
-                                Text(option.rawValue)
-                                    .font(.system(size: 12, weight: .heavy))
-                                    .foregroundStyle(selectedOption == option ? .white : Color.storyInk.opacity(0.76))
-                                    .padding(.horizontal, 12)
-                                    .frame(height: 30)
-                                    .background(
-                                        Capsule()
-                                            .fill(selectedOption == option ? Color.homeAccent : Color.homeCardGray)
-                                    )
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(selectedOption == option ? Color.homeAccent : Color.homeBorder, lineWidth: 1)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.vertical, 1)
-                }
-
-                Group {
-                    switch selectedOption {
-                    case .cards:
-                        ChapterCardsDemo(imageNames: chapterPageImageNames)
-                    case .book:
-                        ChapterBookDemo(
-                            imageNames: chapterPageImageNames,
-                            selectedPageIndex: $selectedPageIndex
-                        )
-                    case .swipe:
-                        ChapterScrollPageDemo(
-                            imageNames: chapterPageImageNames,
-                            selectedPageIndex: $selectedPageIndex
-                        )
-                    case .shelf:
-                        ChapterCollectionCarouselDemo(
-                            imageNames: chapterPageImageNames,
-                            selectedPageIndex: $selectedPageIndex,
-                            style: .groupPagingCentered
-                        )
-                    case .snap:
-                        ChapterCollectionCarouselDemo(
-                            imageNames: chapterPageImageNames,
-                            selectedPageIndex: $selectedPageIndex,
-                            style: .continuousLeading
-                        )
-                    case .fan:
-                        ChapterFanShelfDemo(
-                            imageNames: chapterPageImageNames,
-                            selectedPageIndex: $selectedPageIndex
-                        )
-                    }
-                }
-                .animation(.easeInOut(duration: 0.2), value: selectedOption)
-            }
-            .padding(12)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.homeBorder.opacity(0.88), lineWidth: 1)
-            )
-            .shadow(color: Color.storyInk.opacity(0.07), radius: 12, y: 5)
+        Button(action: onTap) {
+            Image(imageName)
+                .resizable()
+                .aspectRatio(aspectRatio, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .background(Color.homeCardGray)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open storyboard image full screen")
+    }
+}
+
+private struct HomeImagePreviewSheet: View {
+    let imageName: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black
+                .ignoresSafeArea()
+
+            HomeZoomableImageView(imageName: imageName)
+                .ignoresSafeArea()
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(.black.opacity(0.62), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close image")
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct HomeZoomableImageView: UIViewRepresentable {
+    let imageName: String
+
+    func makeUIView(context _: Context) -> HomeZoomableImageScrollView {
+        let scrollView = HomeZoomableImageScrollView()
+        scrollView.setImage(UIImage(named: imageName))
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: HomeZoomableImageScrollView, context _: Context) {
+        scrollView.setImage(UIImage(named: imageName))
+    }
+}
+
+private final class HomeZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
+    private let imageView = UIImageView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    func setImage(_ image: UIImage?) {
+        guard imageView.image !== image else {
+            return
+        }
+
+        imageView.image = image
+        zoomScale = 1
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutImageIfNeeded()
+        centerImage()
+    }
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+        imageView
+    }
+
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        centerImage()
+    }
+
+    private func configure() {
+        backgroundColor = .black
+        delegate = self
+        minimumZoomScale = 1
+        maximumZoomScale = 5
+        bouncesZoom = true
+        showsVerticalScrollIndicator = false
+        showsHorizontalScrollIndicator = false
+        alwaysBounceVertical = false
+        alwaysBounceHorizontal = false
+
+        imageView.contentMode = .scaleAspectFit
+        imageView.backgroundColor = .black
+        imageView.isUserInteractionEnabled = true
+        addSubview(imageView)
+    }
+
+    private func layoutImageIfNeeded() {
+        guard let image = imageView.image, bounds.width > 0, bounds.height > 0 else {
+            imageView.frame = bounds
+            contentSize = bounds.size
+            return
+        }
+
+        guard zoomScale == minimumZoomScale || imageView.frame == .zero else {
+            return
+        }
+
+        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        let fittedSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        imageView.frame = CGRect(origin: .zero, size: fittedSize)
+        contentSize = fittedSize
+    }
+
+    private func centerImage() {
+        let horizontalInset = max((bounds.width - contentSize.width) / 2, 0)
+        let verticalInset = max((bounds.height - contentSize.height) / 2, 0)
+        contentInset = UIEdgeInsets(
+            top: verticalInset,
+            left: horizontalInset,
+            bottom: verticalInset,
+            right: horizontalInset
+        )
     }
 }
 
@@ -1080,6 +1078,8 @@ private struct HomeSocialFeedCard: View {
     let username: String
     let dateText: String
     let presentation: HomeFeedPresentation
+    let onImageTap: (String) -> Void
+    let onUsernameTap: () -> Void
     @State private var currentSingleImageIndex: Int
     @State private var currentBookPageIndex: Int
     @State private var currentStackPageIndex: Int
@@ -1098,13 +1098,17 @@ private struct HomeSocialFeedCard: View {
         accentColor: Color,
         username: String,
         dateText: String,
-        presentation: HomeFeedPresentation = .singleImage
+        presentation: HomeFeedPresentation = .storyboardImage,
+        onImageTap: @escaping (String) -> Void,
+        onUsernameTap: @escaping () -> Void
     ) {
         self.entry = entry
         self.accentColor = accentColor
         self.username = username
         self.dateText = dateText
         self.presentation = presentation
+        self.onImageTap = onImageTap
+        self.onUsernameTap = onUsernameTap
         let maximumPageIndex = max(entry.imageNames.count - 1, 0)
         let initialPageIndex = min(max(presentation.initialPageIndex, 0), maximumPageIndex)
         _currentSingleImageIndex = State(initialValue: initialPageIndex)
@@ -1133,51 +1137,57 @@ private struct HomeSocialFeedCard: View {
 
     private var feedHeader: some View {
         HStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [accentColor.opacity(0.9), Color.storyRose.opacity(0.86), Color.storyGold.opacity(0.84)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+            Button(action: onUsernameTap) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [accentColor.opacity(0.9), Color.storyRose.opacity(0.86), Color.storyGold.opacity(0.84)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
 
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 32, height: 32)
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 32, height: 32)
 
-                Circle()
-                    .fill(Color.homeCardGray)
-                    .frame(width: 28, height: 28)
+                        Circle()
+                            .fill(Color.homeCardGray)
+                            .frame(width: 28, height: 28)
 
-                Image(systemName: "person.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.homeMutedText)
-            }
-            .frame(width: 38, height: 38)
-            .accessibilityLabel("Profile photo placeholder")
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.homeMutedText)
+                    }
+                    .frame(width: 38, height: 38)
+                    .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(username)
-                    .font(.system(size: 14, weight: .heavy))
-                    .foregroundStyle(Color.storyInk)
-                    .lineLimit(1)
-
-                HStack(spacing: 4) {
-                    Text(dateText)
-                    Text("•")
-                    Text(entry.time)
-                    if let location = entry.location {
-                        Text("•")
-                        Text(location)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(username)
+                            .font(.system(size: 14, weight: .heavy))
+                            .foregroundStyle(Color.storyInk)
                             .lineLimit(1)
+
+                        HStack(spacing: 4) {
+                            Text(dateText)
+                            Text("•")
+                            Text(entry.time)
+                            if let location = entry.location {
+                                Text("•")
+                                Text(location)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+                        .lineLimit(1)
                     }
                 }
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.homeMutedText)
-                .lineLimit(1)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(username)'s profile")
 
             Spacer(minLength: 8)
 
@@ -1193,6 +1203,8 @@ private struct HomeSocialFeedCard: View {
     @ViewBuilder
     private var feedImage: some View {
         switch presentation {
+        case .storyboardImage:
+            feedStoryboardImage
         case .pageCurlBook:
             feedBookImage
         case .swipeCardStack:
@@ -1201,6 +1213,18 @@ private struct HomeSocialFeedCard: View {
             feedFanCardStackImage
         case .singleImage:
             feedSingleImage
+        }
+    }
+
+    @ViewBuilder
+    private var feedStoryboardImage: some View {
+        if let imageName = entry.imageNames.first {
+            HomeStoryboardFeedImage(imageName: imageName) {
+                onImageTap(imageName)
+            }
+        } else {
+            Color.homeCardGray
+                .frame(height: 260)
         }
     }
 
@@ -1390,7 +1414,7 @@ private struct HomeSocialFeedCard: View {
 
     private var activeImageIndex: Int {
         switch presentation {
-        case .singleImage:
+        case .storyboardImage, .singleImage:
             return currentSingleImageIndex
         case .pageCurlBook:
             return currentBookPageIndex
@@ -1401,7 +1425,7 @@ private struct HomeSocialFeedCard: View {
 
     private var imageLayerZIndex: Double {
         switch presentation {
-        case .singleImage:
+        case .storyboardImage, .singleImage:
             return 0
         case .pageCurlBook, .swipeCardStack, .fanCardStack:
             return 3

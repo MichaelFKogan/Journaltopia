@@ -122,6 +122,14 @@ struct BottomNavigationBar: View {
                 ) {
                     selectedPage = .home
                 }
+                NavItem(
+                    title: "Entries",
+                    systemName: selectedPage == .entries ? "doc.text.fill" : "doc.text",
+                    isSelected: selectedPage == .entries,
+                    selectedColor: .homeAccent
+                ) {
+                    selectedPage = .entries
+                }
                 CreateNavItem(isSelected: selectedPage == .create, selectedColor: .homeAccent) {
                     withAnimation(.snappy(duration: 0.32)) {
                         selectedPage = .create
@@ -154,6 +162,9 @@ struct BottomNavigationBar: View {
                     .frame(height: 1),
                 alignment: .top
             )
+            .transaction { transaction in
+                transaction.animation = nil
+            }
         }
     }
 }
@@ -181,6 +192,7 @@ struct NavItem: View {
             .frame(height: 44)
         }
         .frame(maxWidth: .infinity)
+        .buttonStyle(.plain)
     }
 }
 
@@ -191,13 +203,20 @@ struct CreateNavItem: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "plus.circle.fill")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundStyle(selectedColor)
+            ZStack {
+                Circle()
+                    .fill(selectedColor)
+                    .frame(width: 38, height: 38)
+
+                Image(systemName: "plus")
+                    .font(.system(size: 25, weight: .regular))
+                    .foregroundStyle(Color.white)
+            }
             .frame(maxWidth: .infinity)
             .frame(height: 44)
         }
         .frame(maxWidth: .infinity)
+        .buttonStyle(.plain)
         .accessibilityLabel("Create")
     }
 }
