@@ -89,31 +89,31 @@ struct JournalView: View {
                 Color.homePageBackground
                     .ignoresSafeArea()
 
-                VStack(alignment: .leading, spacing: 10) {
-                    header
-                        .padding(.horizontal, 16)
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        header
+                            .padding(.horizontal, 16)
 
-                    if isCoverSyncInProgress || pendingCoverSync != nil {
-                        JournalCoverSyncNotice(
-                            isInProgress: isCoverSyncInProgress,
-                            message: pendingCoverSync?.message,
-                            onRetry: retryPendingCoverSync
-                        )
-                        .padding(.horizontal, 16)
-                    }
+                        if isCoverSyncInProgress || pendingCoverSync != nil {
+                            JournalCoverSyncNotice(
+                                isInProgress: isCoverSyncInProgress,
+                                message: pendingCoverSync?.message,
+                                onRetry: retryPendingCoverSync
+                            )
+                            .padding(.horizontal, 16)
+                        }
 
-                    if selectedJournalLayout == .list {
-                        chapterList
-                    } else {
-                        journalGridScroll
+                        journalPageContent
                     }
+                    .padding(.bottom, showsPrototypeData ? 140 : 118)
                 }
+                .background(Color.homePageBackground)
 
                 BottomNavigationBar(selectedPage: $selectedPage)
 
                 floatingAddButton
                     .padding(.trailing, 20)
-                    .padding(.bottom, 0)
+                    .padding(.bottom, 84)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .zIndex(2)
 
@@ -226,7 +226,7 @@ struct JournalView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 14) {
-                Text("My Journals")
+                Text("Journals")
                     .font(.system(size: 24, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
                     .lineLimit(1)
@@ -234,17 +234,9 @@ struct JournalView: View {
 
                 Spacer()
 
-                journalCreditBalanceButton
-
-                journalProfileButton
-            }
-
-            HStack(alignment: .center) {
                 journalSelectButton
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.homeAccent)
-
-                Spacer()
 
                 journalLayoutSwitcher
             }
@@ -258,10 +250,10 @@ struct JournalView: View {
                 editMode = editMode == .active ? .inactive : .active
             }
         } label: {
-            Text(editMode == .active ? "Done" : "Select")
+            Text(editMode == .active ? "Done" : "Edit")
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(editMode == .active ? "Done selecting journals" : "Select journals")
+        .accessibilityLabel(editMode == .active ? "Done selecting journals" : "Edit journals")
     }
 
     private var journalLayoutSwitcher: some View {
@@ -318,35 +310,6 @@ struct JournalView: View {
         .accessibilityLabel("Create a new journal")
     }
 
-    private var journalProfileButton: some View {
-        Button {
-            journalNavigationPath.append(.profile)
-        } label: {
-            Image(systemName: "person.crop.circle")
-                .font(.system(size: 27, weight: .regular))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(Color.storyInk)
-                .frame(width: 32, height: 32)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Profile")
-    }
-
-    private var journalCreditBalanceButton: some View {
-        Button {
-            journalNavigationPath.append(.credits)
-        } label: {
-            CreditBalanceBadge(
-                balance: generationCreditStore.balance,
-                isRefreshing: generationCreditStore.isRefreshing
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Generation credits")
-        .accessibilityValue(generationCreditStore.balance.map { "\($0) credits" } ?? "Loading")
-        .accessibilityHint("Opens credits")
-    }
-
     private var floatingAddButton: some View {
         Button {
             playJournalFloatingButtonHaptic()
@@ -363,14 +326,19 @@ struct JournalView: View {
         .accessibilityLabel("Add")
     }
 
-    private var journalGridScroll: some View {
-        ScrollView(showsIndicators: false) {
-            journalGrid
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .padding(.bottom, showsPrototypeData ? 140 : 118)
+    @ViewBuilder
+    private var journalPageContent: some View {
+        if selectedJournalLayout == .list {
+            chapterList
+        } else {
+            journalGridContent
         }
-        .background(Color.homePageBackground)
+    }
+
+    private var journalGridContent: some View {
+        journalGrid
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
     }
 
     private var journalGrid: some View {
@@ -473,35 +441,23 @@ struct JournalView: View {
     }
 
     private var chapterList: some View {
-        List {
-            Section {
-                if chapters.isEmpty {
-                    noSearchResults
-                        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
-                        .listRowBackground(Color.clear)
-                } else {
-                    journalRows
-                }
+        LazyVStack(alignment: .leading, spacing: 0) {
+            if chapters.isEmpty {
+                noSearchResults
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            } else {
+                journalRows
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(Color.homePageBackground)
-        .safeAreaInset(edge: .bottom) {
-            Color.clear.frame(height: 150)
-        }
+        .padding(.top, 4)
     }
 
     private var journalRows: some View {
         ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
             journalListRow(for: chapter, at: index)
-            .listRowInsets(EdgeInsets(
-                top: 0,
-                leading: JournalChapterListMetrics.horizontalInset,
-                bottom: 0,
-                trailing: JournalChapterListMetrics.trailingInset
-            ))
-            .listRowBackground(Color.homePageBackground)
+            .padding(.leading, JournalChapterListMetrics.horizontalInset)
+            .padding(.trailing, JournalChapterListMetrics.trailingInset)
             .modifier(JournalDragModifier(
                 chapter: chapter,
                 isEnabled: true,
@@ -8488,7 +8444,7 @@ struct EntriesView: View {
     private let cloudEntriesPageSize = 30
     @AppStorage("StorytopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedEntriesTab") private var selectedEntryTabRawValue = EntriesTab.all.rawValue
-    @AppStorage("StorytopiaSelectedEntrySort") private var selectedEntrySortRawValue = EntrySortOption.entryDate.rawValue
+    @AppStorage("StorytopiaSelectedEntrySort") private var selectedEntrySortRawValue = EntrySortOption.cloudCreated.rawValue
 
     private var selectedEntryLayout: JournalEntryLayout {
         get {
@@ -8510,7 +8466,7 @@ struct EntriesView: View {
 
     private var selectedEntrySort: EntrySortOption {
         get {
-            EntrySortOption(rawValue: selectedEntrySortRawValue) ?? .entryDate
+            EntrySortOption(rawValue: selectedEntrySortRawValue)?.availableEntriesSelection ?? .cloudCreated
         }
         nonmutating set {
             selectedEntrySortRawValue = newValue.rawValue
@@ -8560,9 +8516,7 @@ struct EntriesView: View {
     private var entriesScreenWithLifecycle: some View {
         entriesScreen
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(.visible, for: .navigationBar)
-            .toolbarBackground(Color.homePageBackground, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 loadEntriesForCurrentPageIfNeeded()
             }
@@ -8594,28 +8548,37 @@ struct EntriesView: View {
             Color.homePageBackground
                 .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 10) {
-                header
-                    .padding(.horizontal, 16)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    header
+                        .padding(.horizontal, 16)
 
-                tabSwitcher
-                    .padding(.horizontal, 16)
+                    tabSwitcher
+                        .padding(.horizontal, 16)
 
-                layoutSwitcherRow
-                    .padding(.horizontal, 16)
+                    layoutSwitcherRow
+                        .padding(.horizontal, 16)
 
-                cloudEntriesNotice
+                    cloudEntriesNotice
 
-                if selectedEntryLayout == .list {
-                    entryList
-                } else if selectedEntryTab == .completed {
-                    completedEntryGrid
-                } else {
-                    entryGrid
+                    entriesPageContent
                 }
+                .padding(.bottom, 104)
+            }
+            .background(Color.homePageBackground)
+            .refreshable {
+                refreshEntriesFromCloud()
             }
 
             BottomNavigationBar(selectedPage: $selectedPage)
+
+            if editMode != .active {
+                entriesFloatingEditButton
+                    .padding(.trailing, 20)
+                    .padding(.bottom, entriesFloatingEditButtonBottomPadding)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .zIndex(2)
+            }
 
             bottomPrototypeNotice
 
@@ -8630,6 +8593,27 @@ struct EntriesView: View {
                     .zIndex(4)
             }
         }
+    }
+
+    private var entriesFloatingEditButton: some View {
+        Button {
+            playJournalFloatingButtonHaptic()
+            openCreateEntryFromEntries()
+        } label: {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 60, height: 60)
+                .offset(x: 0, y: -2)
+                .background(Color.black, in: Circle())
+                .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Write")
+    }
+
+    private var entriesFloatingEditButtonBottomPadding: CGFloat {
+        showsSampleEntries ? 148 : 84
     }
 
     private var addSelectedEntriesToJournalDestination: some View {
@@ -8680,6 +8664,14 @@ struct EntriesView: View {
                 await deletePendingEntries(entriesToDelete)
             }
         }
+    }
+
+    private func openCreateEntryFromEntries() {
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
+        activeDraftID = nil
+        selectedPage = .create
     }
 
     private func handleSelectedPageChange(_ newPage: StoryPage) {
@@ -8750,7 +8742,7 @@ struct EntriesView: View {
 
             Spacer()
 
-            Button(editMode == .active ? "Done" : "Select") {
+            Button(editMode == .active ? "Done" : "Edit") {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     if editMode == .active {
                         editMode = .inactive
@@ -8763,10 +8755,6 @@ struct EntriesView: View {
             .font(.system(size: 14, weight: .bold))
             .foregroundStyle(Color.homeAccent)
             .disabled(showsSampleEntries)
-
-            entryRefreshButton
-
-            entryCreateButton
         }
         .padding(.top, 12)
     }
@@ -8856,6 +8844,7 @@ struct EntriesView: View {
     private var entryLayoutSwitcher: some View {
         HStack(spacing: 4) {
             entryLayoutButton(.grid)
+            entryLayoutButton(.grid3x3)
             entryLayoutButton(.list)
         }
         .padding(4)
@@ -8917,39 +8906,6 @@ struct EntriesView: View {
         case .completed:
             return authStore.userID == nil ? completedEntryItems.count : cloudEntryCounts?.completed ?? completedEntryItems.count
         }
-    }
-
-    private var entryCreateButton: some View {
-        Button {
-            isOpeningEntryFromEntries = false
-            isOpeningCompletedEntryFromEntries = false
-            completedEntryOpenedStoryboardImage = nil
-            activeDraftID = nil
-            selectedPage = .create
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 21, weight: .bold))
-                .foregroundStyle(Color.storyInk)
-                .frame(width: 34, height: 34)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Create a new entry")
-    }
-
-    private var entryRefreshButton: some View {
-        Button {
-            refreshEntriesFromCloud()
-        } label: {
-            Image(systemName: "arrow.clockwise")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(isLoadingCloudEntries ? Color.homeMutedText.opacity(0.5) : Color.homeAccent)
-                .frame(width: 34, height: 34)
-                .rotationEffect(.degrees(isLoadingCloudEntries ? 180 : 0))
-                .animation(.easeInOut(duration: 0.22), value: isLoadingCloudEntries)
-        }
-        .buttonStyle(.plain)
-        .disabled(authStore.userID == nil || isLoadingCloudEntries || isLoadingMoreCloudEntries)
-        .accessibilityLabel("Refresh entries from Storytopia cloud")
     }
 
     @ViewBuilder
@@ -9067,30 +9023,30 @@ struct EntriesView: View {
         }
     }
 
+    @ViewBuilder
+    private var entriesPageContent: some View {
+        if selectedEntryLayout == .list {
+            entryList
+        } else if selectedEntryTab == .completed {
+            completedEntryGrid
+        } else {
+            entryGrid
+        }
+    }
+
     private var entryList: some View {
-        List {
-            Section {
-                if showsCloudLoadingPlaceholder {
-                    entryLoadingRows
-                } else if filteredEntryItems.isEmpty {
-                    emptyEntriesState
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                } else {
-                    entryRows
-                }
+        LazyVStack(alignment: .leading, spacing: 0) {
+            if showsCloudLoadingPlaceholder {
+                entryLoadingRows
+            } else if filteredEntryItems.isEmpty {
+                emptyEntriesState
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            } else {
+                entryRows
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(Color.homePageBackground)
-        .safeAreaInset(edge: .bottom) {
-            Color.clear.frame(height: 104)
-        }
-        .refreshable {
-            refreshEntriesFromCloud()
-        }
+        .padding(.top, 12)
     }
 
     @ViewBuilder
@@ -9112,13 +9068,8 @@ struct EntriesView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(
-                    top: 0,
-                    leading: JournalChapterListMetrics.horizontalInset,
-                    bottom: 0,
-                    trailing: JournalChapterListMetrics.trailingInset
-                ))
-                .listRowBackground(Color.homePageBackground)
+                .padding(.leading, JournalChapterListMetrics.horizontalInset)
+                .padding(.trailing, JournalChapterListMetrics.trailingInset)
             }
         } else {
             ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
@@ -9150,13 +9101,8 @@ struct EntriesView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(openingEntryPreview != nil)
-                .listRowInsets(EdgeInsets(
-                    top: 0,
-                    leading: JournalChapterListMetrics.horizontalInset,
-                    bottom: 0,
-                    trailing: JournalChapterListMetrics.trailingInset
-                ))
-                .listRowBackground(Color.homePageBackground)
+                .padding(.leading, JournalChapterListMetrics.horizontalInset)
+                .padding(.trailing, JournalChapterListMetrics.trailingInset)
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
                     loadCloudThumbnailIfNeeded(for: item)
@@ -9196,13 +9142,8 @@ struct EntriesView: View {
 
             if isLoadingMoreCloudEntries {
                 EntryListLoadingRow()
-                    .listRowInsets(EdgeInsets(
-                        top: 0,
-                        leading: JournalChapterListMetrics.horizontalInset,
-                        bottom: 0,
-                        trailing: JournalChapterListMetrics.trailingInset
-                    ))
-                    .listRowBackground(Color.homePageBackground)
+                    .padding(.leading, JournalChapterListMetrics.horizontalInset)
+                    .padding(.trailing, JournalChapterListMetrics.trailingInset)
             }
         }
     }
@@ -9211,146 +9152,131 @@ struct EntriesView: View {
     private var entryLoadingRows: some View {
         ForEach(0..<4, id: \.self) { _ in
             EntryListLoadingRow()
-                .listRowInsets(EdgeInsets(
-                    top: 0,
-                    leading: JournalChapterListMetrics.horizontalInset,
-                    bottom: 0,
-                    trailing: JournalChapterListMetrics.trailingInset
-                ))
-                .listRowBackground(Color.homePageBackground)
+                .padding(.leading, JournalChapterListMetrics.horizontalInset)
+                .padding(.trailing, JournalChapterListMetrics.trailingInset)
         }
     }
 
     private var entryGrid: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if showsCloudLoadingPlaceholder {
-                    entryGridLoadingPlaceholders
-                } else if filteredEntryItems.isEmpty {
-                    emptyEntriesState
-                        .padding(.horizontal, 16)
-                } else {
-                    LazyVGrid(columns: entryGridColumns, spacing: 14) {
-                        if showsSampleEntries {
-                            ForEach(filteredEntries) { entry in
-                                sampleEntryGridCard(for: entry)
-                            }
-                        } else {
-                            ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
-                                let displayEntry = entryForDisplay(item)
-
-                                entryGridCard(for: item, displayEntry: displayEntry)
-                                    .onAppear {
-                                        loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
-                                        loadCloudThumbnailIfNeeded(for: item)
-                                    }
-                                    .onDrag {
-                                        draggingEntryID = item.id
-                                        return NSItemProvider(object: item.id.uuidString as NSString)
-                                    }
-                                    .onDrop(
-                                        of: [UTType.text],
-                                        delegate: EntryDropDelegate(
-                                            item: item,
-                                            items: filteredEntryItems,
-                                            draggingEntryID: $draggingEntryID,
-                                            isEnabled: selectedEntrySort == .manual,
-                                            onReorder: moveEntryItem
-                                        )
-                                    )
-                            }
-                        }
-
-                        if isLoadingMoreCloudEntries {
-                            EntryGridLoadingCard(seed: filteredEntryItems.count)
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 14) {
+            if showsCloudLoadingPlaceholder {
+                entryGridLoadingPlaceholders
+            } else if filteredEntryItems.isEmpty {
+                emptyEntriesState
                     .padding(.horizontal, 16)
-                }
+            } else {
+                entryGridContent
+                    .padding(.horizontal, 16)
             }
-            .padding(.top, 12)
         }
-        .background(Color.homePageBackground)
-        .safeAreaInset(edge: .bottom) {
-            Color.clear.frame(height: 104)
-        }
-        .refreshable {
-            refreshEntriesFromCloud()
-        }
+        .padding(.top, 12)
     }
 
     private var entryGridColumns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 14),
-            GridItem(.flexible(), spacing: 14)
-        ]
+        Array(
+            repeating: GridItem(.flexible(), spacing: 14),
+            count: selectedEntryLayout.gridColumnCount
+        )
+    }
+
+    private var entryGridContent: some View {
+        LazyVGrid(columns: entryGridColumns, spacing: 14) {
+            if showsSampleEntries {
+                ForEach(filteredEntries) { entry in
+                    sampleEntryGridCard(for: entry)
+                }
+            } else {
+                ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
+                    let displayEntry = entryForDisplay(item)
+
+                    entryGridCard(for: item, displayEntry: displayEntry)
+                        .onAppear {
+                            loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
+                            loadCloudThumbnailIfNeeded(for: item)
+                        }
+                        .onDrag {
+                            draggingEntryID = item.id
+                            return NSItemProvider(object: item.id.uuidString as NSString)
+                        }
+                        .onDrop(
+                            of: [UTType.text],
+                            delegate: EntryDropDelegate(
+                                item: item,
+                                items: filteredEntryItems,
+                                draggingEntryID: $draggingEntryID,
+                                isEnabled: selectedEntrySort == .manual,
+                                onReorder: moveEntryItem
+                            )
+                        )
+                }
+            }
+
+            if isLoadingMoreCloudEntries {
+                EntryGridLoadingCard(seed: filteredEntryItems.count)
+            }
+        }
     }
 
     private var completedEntryGrid: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if showsCloudLoadingPlaceholder {
-                    entryGridLoadingPlaceholders
-                } else if completedEntryItems.isEmpty {
-                    emptyEntriesState
-                        .padding(.horizontal, 16)
-                } else {
-                    LazyVGrid(columns: entryGridColumns, spacing: 14) {
-                        ForEach(Array(completedEntryItems.enumerated()), id: \.element.id) { index, item in
-                            let displayEntry = entryForDisplay(item)
+        VStack(alignment: .leading, spacing: 14) {
+            if showsCloudLoadingPlaceholder {
+                entryGridLoadingPlaceholders
+            } else if completedEntryItems.isEmpty {
+                emptyEntriesState
+                    .padding(.horizontal, 16)
+            } else {
+                completedEntryGridContent
+                    .padding(.horizontal, 16)
+            }
+        }
+        .padding(.top, 12)
+    }
 
-                            CompletedEntryGridCard(
-                                entry: displayEntry,
-                                title: entryDisplayTitle(displayEntry),
-                                sortOption: selectedEntrySort,
-                                storyboardImage: storyboardImage(for: item, fallbackIndex: index),
-                                storyboardCount: storyboardCount(for: item),
-                                isOpening: openingEntryPreview?.id == item.id,
-                                isSelecting: editMode == .active && !showsSampleEntries,
-                                isSelected: selectedEntryIDs.contains(item.id),
-                                onOpen: {
-                                    if editMode == .active {
-                                        toggleEntrySelection(item.id)
-                                    } else {
-                                        openEntryItem(item, asCompleted: true, storyboardImage: storyboardUIImage(for: item, fallbackIndex: index))
-                                    }
-                                }
-                            )
-                            .onAppear {
-                                loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
-                                loadCloudThumbnailIfNeeded(for: item)
-                            }
-                            .onDrag {
-                                draggingEntryID = item.id
-                                return NSItemProvider(object: item.id.uuidString as NSString)
-                            }
-                            .onDrop(
-                                of: [UTType.text],
-                                delegate: EntryDropDelegate(
-                                    item: item,
-                                    items: completedEntryItems,
-                                    draggingEntryID: $draggingEntryID,
-                                    isEnabled: selectedEntrySort == .manual,
-                                    onReorder: moveEntryItem
-                                )
-                            )
-                        }
+    private var completedEntryGridContent: some View {
+        LazyVGrid(columns: entryGridColumns, spacing: 14) {
+            ForEach(Array(completedEntryItems.enumerated()), id: \.element.id) { index, item in
+                let displayEntry = entryForDisplay(item)
 
-                        if isLoadingMoreCloudEntries {
-                            EntryGridLoadingCard(seed: completedEntryItems.count)
+                CompletedEntryGridCard(
+                    entry: displayEntry,
+                    title: entryDisplayTitle(displayEntry),
+                    sortOption: selectedEntrySort,
+                    storyboardImage: storyboardImage(for: item, fallbackIndex: index),
+                    storyboardCount: storyboardCount(for: item),
+                    isOpening: openingEntryPreview?.id == item.id,
+                    isSelecting: editMode == .active && !showsSampleEntries,
+                    isSelected: selectedEntryIDs.contains(item.id),
+                    onOpen: {
+                        if editMode == .active {
+                            toggleEntrySelection(item.id)
+                        } else {
+                            openEntryItem(item, asCompleted: true, storyboardImage: storyboardUIImage(for: item, fallbackIndex: index))
                         }
                     }
-                    .padding(.horizontal, 16)
+                )
+                .onAppear {
+                    loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
+                    loadCloudThumbnailIfNeeded(for: item)
                 }
+                .onDrag {
+                    draggingEntryID = item.id
+                    return NSItemProvider(object: item.id.uuidString as NSString)
+                }
+                .onDrop(
+                    of: [UTType.text],
+                    delegate: EntryDropDelegate(
+                        item: item,
+                        items: completedEntryItems,
+                        draggingEntryID: $draggingEntryID,
+                        isEnabled: selectedEntrySort == .manual,
+                        onReorder: moveEntryItem
+                    )
+                )
             }
-            .padding(.top, 12)
-        }
-        .background(Color.homePageBackground)
-        .safeAreaInset(edge: .bottom) {
-            Color.clear.frame(height: 104)
-        }
-        .refreshable {
-            refreshEntriesFromCloud()
+
+            if isLoadingMoreCloudEntries {
+                EntryGridLoadingCard(seed: completedEntryItems.count)
+            }
         }
     }
 
@@ -12153,7 +12079,7 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
     case updated
     case updatedOldest
 
-    static let menuOptions: [EntrySortOption] = [.manual, .entryDate, .cloudCreated, .updated]
+    static let menuOptions: [EntrySortOption] = [.manual, .cloudCreated, .updated]
 
     var id: String {
         rawValue
@@ -12289,6 +12215,15 @@ private enum EntrySortOption: String, CaseIterable, Identifiable {
             return .updatedOldest
         case .updatedOldest:
             return .updated
+        }
+    }
+
+    var availableEntriesSelection: EntrySortOption {
+        switch self {
+        case .entryDate, .entryDateOldest:
+            return .cloudCreated
+        case .manual, .cloudCreated, .cloudCreatedOldest, .updated, .updatedOldest:
+            return self
         }
     }
 

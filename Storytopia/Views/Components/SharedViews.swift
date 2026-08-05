@@ -1,6 +1,6 @@
 import SwiftUI
 
-private let isBottomNavigationVisible = false
+private let isBottomNavigationVisible = true
 
 struct SectionTitle: View {
     let title: String
@@ -191,16 +191,9 @@ struct CreateNavItem: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: isSelected ? "plus.circle.fill" : "plus.circle")
-                    .font(.system(size: 21, weight: isSelected ? .bold : .regular))
-
-                Text("Create")
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-            .foregroundStyle(isSelected ? selectedColor : Color.storyInk.opacity(0.82))
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(selectedColor)
             .frame(maxWidth: .infinity)
             .frame(height: 44)
         }

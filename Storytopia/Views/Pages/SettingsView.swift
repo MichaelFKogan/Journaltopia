@@ -96,30 +96,6 @@ struct SettingsView: View {
                     .enableInteractivePopGesture()
                 }
             }
-
-            Section("More Pages") {
-                SettingsRow(
-                    systemName: "doc.text",
-                    title: "Entries",
-                    subtitle: "Open your saved drafts and completed stories"
-                ) {
-                    selectedPage = .entries
-                    dismiss()
-                }
-
-                SettingsNavigationRow(
-                    systemName: "safari",
-                    title: "Explore",
-                    subtitle: "Open the explore feed",
-                    accessibilityLabel: "Open explore"
-                ) {
-                    ExploreView(
-                        selectedPage: $selectedPage,
-                        showsBottomNavigation: false
-                    )
-                    .enableInteractivePopGesture()
-                }
-            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)

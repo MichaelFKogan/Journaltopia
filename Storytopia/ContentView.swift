@@ -132,10 +132,6 @@ struct ContentView: View {
             DaybookView(selectedPage: pageSelection)
                 .transition(.identity)
                 .zIndex(0)
-        case .explore:
-            ExploreView(selectedPage: pageSelection)
-                .transition(.identity)
-                .zIndex(0)
         case .entries:
             EntriesView(
                 selectedPage: pageSelection,
