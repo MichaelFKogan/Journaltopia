@@ -245,12 +245,14 @@ private struct GuardedInteractivePopGestureEnabler: UIViewControllerRepresentabl
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         context.coordinator.shouldAllowPop = shouldAllowPop
         context.coordinator.onBlockedPop = onBlockedPop
+        context.coordinator.hostViewController = uiViewController
 
         DispatchQueue.main.async {
             guard let navigationController = uiViewController.navigationController else {
                 return
             }
 
+            context.coordinator.navigationController = navigationController
             navigationController.interactivePopGestureRecognizer?.isEnabled = true
             navigationController.interactivePopGestureRecognizer?.delegate = context.coordinator
         }
@@ -259,6 +261,8 @@ private struct GuardedInteractivePopGestureEnabler: UIViewControllerRepresentabl
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var shouldAllowPop: () -> Bool
         var onBlockedPop: () -> Void
+        weak var hostViewController: UIViewController?
+        weak var navigationController: UINavigationController?
 
         init(shouldAllowPop: @escaping () -> Bool, onBlockedPop: @escaping () -> Void) {
             self.shouldAllowPop = shouldAllowPop
@@ -266,6 +270,16 @@ private struct GuardedInteractivePopGestureEnabler: UIViewControllerRepresentabl
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard
+                let navigationController,
+                navigationController.viewControllers.count > 1,
+                let hostViewController,
+                let topViewController = navigationController.topViewController,
+                isViewController(hostViewController, descendedFrom: topViewController)
+            else {
+                return false
+            }
+
             guard !shouldAllowPop() else {
                 return true
             }
@@ -273,6 +287,20 @@ private struct GuardedInteractivePopGestureEnabler: UIViewControllerRepresentabl
             DispatchQueue.main.async {
                 self.onBlockedPop()
             }
+            return false
+        }
+
+        private func isViewController(_ viewController: UIViewController, descendedFrom ancestor: UIViewController) -> Bool {
+            var current: UIViewController? = viewController
+
+            while let viewController = current {
+                if viewController === ancestor {
+                    return true
+                }
+
+                current = viewController.parent
+            }
+
             return false
         }
     }

@@ -234,16 +234,16 @@ struct JournalView: View {
 
                 Spacer()
 
-                journalSelectButton
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.homeAccent)
-
                 journalCreditBalanceButton
 
                 journalProfileButton
             }
 
             HStack(alignment: .center) {
+                journalSelectButton
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.homeAccent)
+
                 Spacer()
 
                 journalLayoutSwitcher
@@ -4323,9 +4323,17 @@ private struct JournalStoryboardComicReaderView: View {
             )
         }
         .fullScreenCover(isPresented: $isShowingVerticalView) {
-            StoryboardImageViewer(
+            JournalStoryboardVerticalComicViewer(
                 storyboards: storyboards,
-                initialIndex: verticalStoryboardInitialIndex
+                currentPageIndex: $currentPageIndex,
+                journalTitle: journalTitle,
+                journalColor: journalColor,
+                coverImage: coverImage,
+                remoteCoverURL: remoteCoverURL,
+                fallbackCoverImageName: fallbackCoverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: storyboardCountText,
+                readerPageAspectRatio: readerPageAspectRatio
             )
         }
     }
@@ -4352,6 +4360,19 @@ private struct JournalStoryboardComicReaderView: View {
                 .foregroundStyle(.white.opacity(0.92))
 
             Spacer()
+
+            Button {
+                isShowingVerticalView = true
+            } label: {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.white.opacity(0.14), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open vertical comic view")
+            .accessibilityHint("Shows the journal comic as a vertical scroll")
 
             Menu {
                 Button {
@@ -4689,10 +4710,6 @@ private struct JournalStoryboardComicReaderView: View {
 
     private var storyboardImages: [UIImage] {
         storyboards.map(\.image)
-    }
-
-    private var verticalStoryboardInitialIndex: Int {
-        min(max(currentPageIndex - 1, 0), max(storyboards.count - 1, 0))
     }
 
     private var totalPageCount: Int {
@@ -5033,6 +5050,200 @@ private struct JournalStoryboardComicReaderView: View {
 
     private func rubberBandDistance(_ distance: CGFloat) -> CGFloat {
         (1 - (1 / ((distance * 0.008) + 1))) * 120
+    }
+}
+
+private struct JournalStoryboardVerticalComicViewer: View {
+    let storyboards: [GeneratedStoryboard]
+    @Binding var currentPageIndex: Int
+    let journalTitle: String
+    let journalColor: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackCoverImageName: String?
+    let pageCountText: String
+    let storyboardCountText: String
+    let readerPageAspectRatio: CGFloat
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var visiblePageIndex: Int
+
+    init(
+        storyboards: [GeneratedStoryboard],
+        currentPageIndex: Binding<Int>,
+        journalTitle: String,
+        journalColor: Color,
+        coverImage: UIImage?,
+        remoteCoverURL: URL?,
+        fallbackCoverImageName: String?,
+        pageCountText: String,
+        storyboardCountText: String,
+        readerPageAspectRatio: CGFloat
+    ) {
+        self.storyboards = storyboards
+        _currentPageIndex = currentPageIndex
+        self.journalTitle = journalTitle
+        self.journalColor = journalColor
+        self.coverImage = coverImage
+        self.remoteCoverURL = remoteCoverURL
+        self.fallbackCoverImageName = fallbackCoverImageName
+        self.pageCountText = pageCountText
+        self.storyboardCountText = storyboardCountText
+        self.readerPageAspectRatio = readerPageAspectRatio
+        _visiblePageIndex = State(initialValue: currentPageIndex.wrappedValue)
+    }
+
+    var body: some View {
+        GeometryReader { viewport in
+            ZStack(alignment: .top) {
+                Color.black
+                    .ignoresSafeArea()
+
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 0) {
+                            Color.black
+                                .frame(height: 64)
+
+                            verticalCoverPage
+                                .id(0)
+                                .background(pagePositionReader(index: 0))
+
+                            ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                                let pageIndex = index + 1
+
+                                pageBoundary(pageIndex: pageIndex)
+
+                                Image(uiImage: storyboard.image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity)
+                                    .background(Color.black)
+                                    .id(pageIndex)
+                                    .background(pagePositionReader(index: pageIndex))
+                            }
+
+                            Color.black
+                                .frame(height: 44)
+                        }
+                    }
+                    .coordinateSpace(name: "journalVerticalComicScroll")
+                    .background(Color.black)
+                    .onAppear {
+                        visiblePageIndex = clampedPageIndex(currentPageIndex)
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(visiblePageIndex, anchor: .center)
+                        }
+                    }
+                    .onPreferenceChange(JournalVerticalComicPagePositionPreferenceKey.self) { positions in
+                        updateVisiblePageIndex(from: positions, viewportHeight: viewport.size.height)
+                    }
+                }
+
+                verticalTopBar
+            }
+        }
+        .preferredColorScheme(.dark)
+        .statusBarHidden()
+    }
+
+    private var verticalTopBar: some View {
+        HStack {
+            Spacer()
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(.black.opacity(0.62), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close vertical comic view")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+    }
+
+    private var verticalCoverPage: some View {
+        JournalStoryboardReaderCoverPage(
+            title: journalTitle,
+            color: journalColor,
+            coverImage: coverImage,
+            remoteCoverURL: remoteCoverURL,
+            fallbackImageName: fallbackCoverImageName,
+            pageCountText: pageCountText,
+            storyboardCountText: storyboardCountText
+        )
+        .aspectRatio(readerPageAspectRatio, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .background(Color.black)
+    }
+
+    private func pageBoundary(pageIndex: Int) -> some View {
+        ZStack {
+            Color(white: 0.035)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.86))
+                .frame(height: 1)
+                .padding(.horizontal, 28)
+
+            Text("\(pageIndex) / \(storyboards.count)")
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .frame(height: 24)
+                .background(Color(white: 0.035), in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                )
+        }
+        .frame(height: 42)
+    }
+
+    private func pagePositionReader(index: Int) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: JournalVerticalComicPagePositionPreferenceKey.self,
+                value: [index: proxy.frame(in: .named("journalVerticalComicScroll")).midY]
+            )
+        }
+    }
+
+    private func updateVisiblePageIndex(from positions: [Int: CGFloat], viewportHeight: CGFloat) {
+        guard let closest = positions.min(by: { left, right in
+            abs(left.value - (viewportHeight / 2)) < abs(right.value - (viewportHeight / 2))
+        })?.key else {
+            return
+        }
+
+        let nextIndex = clampedPageIndex(closest)
+        guard nextIndex != visiblePageIndex else {
+            return
+        }
+
+        visiblePageIndex = nextIndex
+        currentPageIndex = nextIndex
+    }
+
+    private func clampedPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, totalPageCount - 1))
+    }
+
+    private var totalPageCount: Int {
+        storyboards.count + 1
+    }
+}
+
+private struct JournalVerticalComicPagePositionPreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
     }
 }
 
@@ -13023,21 +13234,21 @@ private struct PrototypeChapterDetailView: View {
 
     private func journalDetailLowerBannerBackground(proxy: GeometryProxy) -> some View {
         let metrics = journalHeroMetrics(toolbarBottomOffset: proxy.safeAreaInsets.top + 44)
-        let primaryHeight = metrics.backdropHeight
-        let mirroredHeight = max(0, proxy.size.height - primaryHeight + proxy.safeAreaInsets.bottom)
 
         return VStack(spacing: 0) {
             journalDetailBannerBackdrop
                 .frame(maxWidth: .infinity)
-                .frame(height: primaryHeight)
+                .frame(height: metrics.backdropHeight)
 
-            // Reuse one mirrored continuation instead of painting the cover three times.
             journalDetailBannerBackdrop
                 .frame(maxWidth: .infinity)
-                .frame(height: mirroredHeight)
-                .scaleEffect(x: 1, y: -1, anchor: .top)
-                .frame(height: mirroredHeight, alignment: .top)
-                .clipped()
+                .frame(height: metrics.backdropHeight)
+                .scaleEffect(x: 1, y: -1, anchor: .center)
+
+            journalDetailBannerBackdrop
+                .frame(maxWidth: .infinity)
+                .frame(height: max(0, proxy.size.height - (metrics.backdropHeight * 2) + proxy.safeAreaInsets.bottom))
+                .scaleEffect(x: 1, y: -1, anchor: .center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea(edges: [.top, .bottom])
@@ -13158,6 +13369,9 @@ private struct PrototypeChapterDetailView: View {
         }
         .coordinateSpace(name: JournalDetailScrollCoordinate.spaceName)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
         .ignoresSafeArea(edges: .top)
     }
 
@@ -13619,9 +13833,7 @@ private struct PrototypeChapterDetailView: View {
         HStack(spacing: 0) {
             ForEach(sections, id: \.self) { section in
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        selectedSection = section
-                    }
+                    selectedSection = section
                 } label: {
                     VStack(spacing: 8) {
                         Text(section)

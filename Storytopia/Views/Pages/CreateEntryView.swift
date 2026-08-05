@@ -295,20 +295,14 @@ private final class EntrySpeechTranscriber: ObservableObject {
         let currentText = currentTextProvider?() ?? lastRenderedText
         let updatedText: String
 
-        if lastTranscript.isEmpty {
+        if trimmedTranscript == lastTranscript {
+            return
+        } else if lastTranscript.isEmpty {
             updatedText = appendingDictation(trimmedTranscript, to: currentText)
-        } else if trimmedTranscript.hasPrefix(lastTranscript) {
-            let delta = String(trimmedTranscript.dropFirst(lastTranscript.count))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !delta.isEmpty else {
-                return
-            }
-
-            updatedText = appendingDictation(delta, to: currentText)
-        } else if currentText == lastRenderedText {
-            updatedText = appendingDictation(trimmedTranscript, to: baselineText)
         } else if let previousTranscriptRange = currentText.range(of: lastTranscript, options: .backwards) {
             updatedText = currentText.replacingCharacters(in: previousTranscriptRange, with: trimmedTranscript)
+        } else if currentText == lastRenderedText {
+            updatedText = appendingDictation(trimmedTranscript, to: baselineText)
         } else {
             updatedText = appendingDictation(trimmedTranscript, to: currentText)
         }
@@ -323,6 +317,8 @@ private final class EntrySpeechTranscriber: ObservableObject {
         if currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             separator = ""
         } else if currentText.last?.isWhitespace == true {
+            separator = ""
+        } else if dictatedText.startsWithAttachedPunctuation {
             separator = ""
         } else {
             separator = " "
@@ -345,6 +341,16 @@ private final class EntrySpeechTranscriber: ObservableObject {
                 continuation.resume(returning: isGranted)
             }
         }
+    }
+}
+
+private extension String {
+    var startsWithAttachedPunctuation: Bool {
+        guard let first else {
+            return false
+        }
+
+        return [".", ",", "!", "?", ";", ":", ")", "]", "}", "%"].contains(first)
     }
 }
 
