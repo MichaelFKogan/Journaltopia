@@ -28,6 +28,8 @@ struct JournalView: View {
     @State private var renamedJournalTitle = ""
     @State private var journalsPendingDeletion: [PrototypeChapter] = []
     @State private var journalBeingCustomized: PrototypeChapter?
+    @State private var isShowingJournalBackgroundPicker = false
+    @State private var journalPageBackground = JournalPageBackgroundStore.load()
     @State private var pendingCoverSync: PendingJournalCoverSync?
     @State private var isCoverSyncInProgress = false
     @State private var journalEntryText = ""
@@ -55,7 +57,7 @@ struct JournalView: View {
 
     private var columns: [GridItem] {
         Array(
-            repeating: GridItem(.flexible(), spacing: 14),
+            repeating: GridItem(.flexible(), spacing: selectedJournalLayout == .grid2x2 ? 24 : 14),
             count: selectedJournalLayout.gridColumnCount
         )
     }
@@ -86,8 +88,7 @@ struct JournalView: View {
     var body: some View {
         NavigationStack(path: $journalNavigationPath) {
             ZStack(alignment: .bottom) {
-                Color.homePageBackground
-                    .ignoresSafeArea()
+                journalPageBackgroundView
 
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 10) {
@@ -107,7 +108,7 @@ struct JournalView: View {
                     }
                     .padding(.bottom, showsPrototypeData ? 140 : 118)
                 }
-                .background(Color.homePageBackground)
+                .background(Color.clear)
 
                 BottomNavigationBar(selectedPage: $selectedPage)
 
@@ -160,6 +161,8 @@ struct JournalView: View {
             }
         }
         .onChange(of: authStore.userID) { userID in
+            journalPageBackground = JournalPageBackgroundStore.load()
+
             guard userID != nil else {
                 resetJournalSessionState()
                 return
@@ -222,6 +225,31 @@ struct JournalView: View {
                 onSave: applyJournalCustomization
             )
         }
+        .sheet(isPresented: $isShowingJournalBackgroundPicker) {
+            JournalPageBackgroundSheet(
+                initialBackground: journalPageBackground,
+                onSave: applyJournalPageBackground
+            )
+        }
+    }
+
+    private var journalPageBackgroundView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.homePageBackground
+
+                if let remoteCoverURL = journalPageBackground.remoteCover?.imageNSURL {
+                    RemoteCoverImage(url: remoteCoverURL, placeholderColor: Color.homeCardGray)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+
+                    Color.black.opacity(0.46)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 
     private var header: some View {
@@ -229,20 +257,28 @@ struct JournalView: View {
             HStack(alignment: .center, spacing: 14) {
                 Text("Journals")
                     .font(.system(size: 24, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
+                    .foregroundStyle(hasJournalPageBackground ? Color.white : Color.storyInk)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
+                    .shadow(color: hasJournalPageBackground ? Color.black.opacity(0.28) : Color.clear, radius: 4, y: 2)
 
                 Spacer()
 
                 journalSelectButton
                     .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.homeAccent)
+                    .foregroundStyle(hasJournalPageBackground ? Color.white : Color.homeAccent)
+                    .shadow(color: hasJournalPageBackground ? Color.black.opacity(0.22) : Color.clear, radius: 3, y: 1)
+
+                journalBackgroundButton
 
                 journalLayoutSwitcher
             }
         }
         .padding(.top, 12)
+    }
+
+    private var hasJournalPageBackground: Bool {
+        journalPageBackground.remoteCover != nil
     }
 
     private var journalSelectButton: some View {
@@ -255,6 +291,24 @@ struct JournalView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(editMode == .active ? "Done selecting journals" : "Edit journals")
+    }
+
+    private var journalBackgroundButton: some View {
+        Button {
+            isShowingJournalBackgroundPicker = true
+        } label: {
+            Image(systemName: hasJournalPageBackground ? "photo.fill.on.rectangle.fill" : "photo.on.rectangle")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(hasJournalPageBackground ? Color.storyInk : Color.homeMutedText)
+                .frame(width: 34, height: 34)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.homeBorder, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(hasJournalPageBackground ? "Change journals background" : "Set journals background")
     }
 
     private var journalLayoutSwitcher: some View {
@@ -344,12 +398,12 @@ struct JournalView: View {
                 journalGrid
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 4)
+        .padding(.horizontal, selectedJournalLayout == .grid2x2 ? 26 : 16)
+        .padding(.top, selectedJournalLayout == .grid2x2 ? 12 : 4)
     }
 
     private var journalGrid: some View {
-        LazyVGrid(columns: columns, spacing: 14) {
+        LazyVGrid(columns: columns, spacing: selectedJournalLayout == .grid2x2 ? 26 : 14) {
             ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                 JournalCoverCard(
                     chapter: chapter,
@@ -357,6 +411,8 @@ struct JournalView: View {
                     remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
                     fallbackImageName: fallbackCoverImageName(for: chapter, at: index),
                     isEditing: editMode == .active,
+                    hidesBorder: true,
+                    usesWideGridStyle: selectedJournalLayout == .grid2x2,
                     onCustomize: { beginCustomizing(chapter) },
                     onRename: { beginRenaming(chapter) },
                     onDelete: { requestDeleteJournals([chapter]) }
@@ -633,6 +689,11 @@ struct JournalView: View {
             uploadsStoredCover: customization.storedCoverImage != nil,
             clearsStoredCover: customization.clearsStoredCover
         ))
+    }
+
+    private func applyJournalPageBackground(_ customization: JournalPageBackgroundCustomization) {
+        journalPageBackground = JournalPageBackground(remoteCover: customization.remoteCover)
+        JournalPageBackgroundStore.save(journalPageBackground)
     }
 
     private func retryPendingCoverSync() {
@@ -1484,6 +1545,8 @@ private struct JournalCoverCard: View {
     let remoteCoverURL: URL?
     let fallbackImageName: String?
     let isEditing: Bool
+    let hidesBorder: Bool
+    let usesWideGridStyle: Bool
     let onCustomize: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
@@ -1545,13 +1608,22 @@ private struct JournalCoverCard: View {
                 .accessibilityLabel("Journal options for \(chapter.title)")
             }
         }
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.homeBorder, lineWidth: 1)
+        .background(
+            usesWideGridStyle ? Color.clear : Color.white,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
-        .shadow(color: Color.storyInk.opacity(0.13), radius: 10, y: 5)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            if !hidesBorder {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            }
+        }
+        .shadow(
+            color: Color.storyInk.opacity(usesWideGridStyle ? 0.28 : 0.13),
+            radius: usesWideGridStyle ? 20 : 10,
+            y: usesWideGridStyle ? 12 : 5
+        )
     }
 
     private var journalTitleScrim: some View {
@@ -1663,6 +1735,429 @@ private struct JournalCustomization {
     let remoteCover: JournalRemoteCover?
     let storedCoverImage: UIImage?
     let clearsStoredCover: Bool
+}
+
+private struct JournalPageBackground: Codable, Equatable {
+    let remoteCover: JournalRemoteCover?
+
+    static let empty = JournalPageBackground(remoteCover: nil)
+}
+
+private struct JournalPageBackgroundCustomization {
+    let remoteCover: JournalRemoteCover?
+}
+
+private enum JournalPageBackgroundStore {
+    private static let storageKey = "StorytopiaJournalPageBackground"
+
+    static func load() -> JournalPageBackground {
+        migrateLegacyValueIfNeeded()
+
+        guard
+            let data = UserDefaults.standard.data(forKey: scopedStorageKey),
+            let background = try? JSONDecoder().decode(JournalPageBackground.self, from: data)
+        else {
+            return .empty
+        }
+
+        return background
+    }
+
+    static func save(_ background: JournalPageBackground) {
+        guard let data = try? JSONEncoder().encode(background) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: scopedStorageKey)
+    }
+
+    private static var scopedStorageKey: String {
+        StorytopiaLocalAccountScope.scopedUserDefaultsKey(storageKey)
+    }
+
+    private static func migrateLegacyValueIfNeeded() {
+        let targetKey = scopedStorageKey
+        guard UserDefaults.standard.data(forKey: targetKey) == nil,
+              let legacyData = UserDefaults.standard.data(forKey: storageKey) else {
+            return
+        }
+
+        UserDefaults.standard.set(legacyData, forKey: targetKey)
+    }
+}
+
+private struct JournalPageBackgroundSheet: View {
+    let initialBackground: JournalPageBackground
+    let onSave: (JournalPageBackgroundCustomization) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedRemoteCover: JournalRemoteCover?
+    @State private var unsplashQuery = ""
+    @State private var unsplashPhotos: [UnsplashCoverPhoto] = []
+    @State private var unsplashResultsCache: [String: [UnsplashCoverPhoto]] = [:]
+    @State private var isSearchingUnsplash = false
+    @State private var unsplashErrorMessage: String?
+    @FocusState private var isUnsplashSearchFocused: Bool
+    private let unsplashService = UnsplashCoverService()
+
+    init(
+        initialBackground: JournalPageBackground,
+        onSave: @escaping (JournalPageBackgroundCustomization) -> Void
+    ) {
+        self.initialBackground = initialBackground
+        self.onSave = onSave
+        _selectedRemoteCover = State(initialValue: initialBackground.remoteCover)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        preview
+                        stockPhotoSection
+                    }
+                    .padding(18)
+                    .padding(.bottom, isUnsplashSearchFocused ? 180 : 24)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .background {
+                    Color.homePageBackground
+                        .onTapGesture {
+                            isUnsplashSearchFocused = false
+                        }
+                }
+                .onChange(of: isUnsplashSearchFocused) { isFocused in
+                    guard isFocused else {
+                        return
+                    }
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo("journal-background-search-field", anchor: .center)
+                        }
+                    }
+                }
+            }
+            .background(Color.homePageBackground)
+            .navigationTitle("Journals Background")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveCurrentSelection()
+                        dismiss()
+                    }
+                    .fontWeight(.bold)
+                }
+
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+
+                    Button {
+                        isUnsplashSearchFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .fontWeight(.bold)
+                    .accessibilityLabel("Dismiss keyboard")
+                }
+            }
+        }
+    }
+
+    private var preview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Background")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyInk)
+
+            ZStack(alignment: .topLeading) {
+                GeometryReader { proxy in
+                    ZStack {
+                        if let remoteCoverURL = selectedRemoteCover?.thumbnailNSURL ?? selectedRemoteCover?.imageNSURL {
+                            RemoteCoverImage(url: remoteCoverURL, placeholderColor: Color.homeCardGray)
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .clipped()
+                        } else {
+                            Color.homePageBackground
+                        }
+
+                        LinearGradient(
+                            colors: [
+                                Color.black.opacity(selectedRemoteCover == nil ? 0 : 0.08),
+                                Color.black.opacity(selectedRemoteCover == nil ? 0 : 0.16)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 178)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Journals")
+                            .font(.system(size: 19, weight: .bold, design: .serif))
+                            .foregroundStyle(selectedRemoteCover == nil ? Color.storyInk : Color.white)
+                            .shadow(color: selectedRemoteCover == nil ? Color.clear : Color.black.opacity(0.22), radius: 3, y: 1)
+
+                        Spacer()
+
+                        previewControlIcon("square.grid.2x2.fill")
+                        previewControlIcon("square.grid.3x3.fill")
+                    }
+
+                    HStack(spacing: 12) {
+                        previewJournalCard(color: Color.storyPurple)
+                        previewJournalCard(color: Color.storyInk)
+                        Spacer(minLength: 0)
+                    }
+                }
+                .padding(12)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+
+            HStack {
+                if
+                    let attributionName = selectedRemoteCover?.attributionName,
+                    let attributionURL = selectedRemoteCover?.attributionURL,
+                    let url = URL(string: attributionURL)
+                {
+                    Link("Photo by \(attributionName) on Unsplash", destination: url)
+                        .foregroundStyle(Color.homeAccent)
+                } else {
+                    Text("No background selected")
+                        .foregroundStyle(Color.homeMutedText)
+                }
+
+                Spacer()
+
+                Button("Remove") {
+                    selectedRemoteCover = nil
+                }
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.storyRose)
+                .disabled(selectedRemoteCover == nil)
+            }
+            .font(.system(size: 12, weight: .semibold))
+        }
+    }
+
+    private func previewControlIcon(_ systemImage: String) -> some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Color.storyInk)
+            .frame(width: 30, height: 26)
+            .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private func previewJournalCard(color: Color) -> some View {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(color)
+            .frame(width: 74, height: 104)
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.white.opacity(0.9))
+                        .frame(width: 54, height: 7)
+
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.white.opacity(0.72))
+                        .frame(width: 34, height: 5)
+                }
+                .padding(10)
+            }
+            .shadow(color: Color.storyInk.opacity(0.16), radius: 8, y: 4)
+    }
+
+    private var stockPhotoSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Stock Photos")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyInk)
+
+            HStack(spacing: 8) {
+                TextField("Search background photos", text: $unsplashQuery)
+                    .focused($isUnsplashSearchFocused)
+                    .textInputAutocapitalization(.words)
+                    .submitLabel(.search)
+                    .onSubmit {
+                        searchUnsplash()
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 40)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.homeBorder, lineWidth: 1)
+                    )
+
+                Button {
+                    searchUnsplash()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 40)
+                        .background(Color.homeAccent, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSearchingUnsplash)
+                .accessibilityLabel("Search stock photos")
+            }
+            .frame(height: 40)
+            .id("journal-background-search-field")
+
+            if isSearchingUnsplash {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+            } else if let unsplashErrorMessage {
+                Text(unsplashErrorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.storyRose)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if unsplashPhotos.isEmpty {
+                Text("Search stock photos when you're ready to browse background photos.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.homeMutedText)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                    ForEach(unsplashPhotos) { photo in
+                        Button {
+                            selectUnsplashPhoto(photo)
+                        } label: {
+                            let isSelected = selectedRemoteCover?.imageURL == photo.imageURL
+
+                            CoverPhotoTile(isSelected: isSelected) {
+                                Group {
+                                    if let thumbnailURL = URL(string: photo.thumbnailURL) {
+                                        RemoteCoverImage(url: thumbnailURL, placeholderColor: Color.homeCardGray)
+                                    } else {
+                                        Color.homeCardGray
+                                    }
+                                }
+                            }
+                            .overlay(alignment: .bottomLeading) {
+                                Text(photo.attributionName)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .lineLimit(1)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.black.opacity(0.38))
+                            }
+                            .overlay(alignment: .topTrailing) {
+                                if isSelected {
+                                    selectedBackgroundBadge
+                                        .padding(6)
+                                }
+                            }
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Use Unsplash photo by \(photo.attributionName)")
+                    }
+                }
+                .padding(.top, 2)
+            }
+
+            Color.clear
+                .frame(height: 160)
+        }
+    }
+
+    private var selectedBackgroundBadge: some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 11, weight: .heavy))
+            .foregroundStyle(.white)
+            .frame(width: 24, height: 24)
+            .background(Color.homeAccent, in: Circle())
+            .overlay(
+                Circle()
+                    .stroke(Color.white, lineWidth: 2)
+            )
+            .shadow(color: Color.storyInk.opacity(0.22), radius: 4, y: 2)
+    }
+
+    private func saveCurrentSelection() {
+        let remoteCover = selectedRemoteCover
+        onSave(JournalPageBackgroundCustomization(remoteCover: remoteCover))
+        if let downloadLocation = remoteCover?.downloadLocation {
+            Task {
+                try? await unsplashService.trackDownload(downloadLocation: downloadLocation)
+            }
+        }
+    }
+
+    private func searchUnsplash() {
+        let query = unsplashQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, !isSearchingUnsplash else {
+            return
+        }
+        isUnsplashSearchFocused = false
+        let cacheKey = normalizedUnsplashQuery(query)
+
+        if let cachedPhotos = unsplashResultsCache[cacheKey] {
+            unsplashPhotos = cachedPhotos
+            unsplashErrorMessage = nil
+            return
+        }
+
+        isSearchingUnsplash = true
+        unsplashErrorMessage = nil
+
+        Task {
+            do {
+                let photos = try await unsplashService.search(query: query)
+                await MainActor.run {
+                    unsplashPhotos = photos
+                    unsplashResultsCache[cacheKey] = photos
+                    isSearchingUnsplash = false
+                }
+            } catch {
+                await MainActor.run {
+                    unsplashErrorMessage = error.localizedDescription
+                    isSearchingUnsplash = false
+                }
+            }
+        }
+    }
+
+    private func normalizedUnsplashQuery(_ query: String) -> String {
+        query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func selectUnsplashPhoto(_ photo: UnsplashCoverPhoto) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            selectedRemoteCover = JournalRemoteCover(
+                source: .unsplash,
+                imageURL: photo.imageURL,
+                thumbnailURL: photo.thumbnailURL,
+                attributionName: photo.attributionName,
+                attributionURL: photo.attributionURL,
+                downloadLocation: photo.downloadLocation
+            )
+        }
+    }
 }
 
 private struct PendingJournalCoverSync: Identifiable {
