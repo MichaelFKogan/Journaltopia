@@ -8835,6 +8835,7 @@ private enum EntriesSessionMemoryCache {
     struct Snapshot {
         let entries: [CreateEntryDraft]
         let sampleEntries: [CreateEntryDraft]
+        let sampleStoryboardsByEntryID: [UUID: [GeneratedStoryboard]]
         let completedStoryboards: [GeneratedStoryboard]
         let storyboardCountsByClientEntryID: [UUID: Int]
         let cloudEntries: [JournalEntry]
@@ -8925,6 +8926,7 @@ struct EntriesView: View {
     @State private var showsPrototypeData = true
     @State private var entries: [CreateEntryDraft] = []
     @State private var sampleEntries: [CreateEntryDraft] = []
+    @State private var sampleStoryboardsByEntryID: [UUID: [GeneratedStoryboard]] = [:]
     @State private var completedStoryboards: [GeneratedStoryboard] = []
     @State private var storyboardCountsByClientEntryID: [UUID: Int] = [:]
     @State private var cloudStoryboardClientIDs: Set<UUID> = []
@@ -8932,7 +8934,7 @@ struct EntriesView: View {
     @State private var editMode: EditMode = .inactive
     @State private var entryBeingRenamed: CreateEntryDraft?
     @State private var renamedEntryTitle = ""
-    @State private var sampleEntryBeingPreviewed: CreateEntryDraft?
+    @State private var temporaryOpenedSampleEntryID: UUID?
     @State private var entriesPendingDeletion: [EntryDisplayItem] = []
     @State private var entryDeleteErrorMessage: String?
     @State private var draggingEntryID: UUID?
@@ -8962,11 +8964,14 @@ struct EntriesView: View {
     @State private var entryThumbnailBackfillTask: Task<Void, Never>?
     @State private var cloudEntryThumbnailBackfillTask: Task<Void, Never>?
     @State private var completedStoryboardLoadTask: Task<Void, Never>?
+    @State private var sampleContentLoadTask: Task<Void, Never>?
     @State private var cloudThumbnailIDsBeingLoaded: Set<UUID> = []
     private let cloudEntriesPageSize = 30
     @AppStorage("StorytopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedEntriesTab") private var selectedEntryTabRawValue = EntriesTab.all.rawValue
     @AppStorage("StorytopiaSelectedEntrySort") private var selectedEntrySortRawValue = EntrySortOption.cloudCreated.rawValue
+    @AppStorage("StorytopiaEntriesSampleBannerDismissed") private var isSampleBannerDismissed = false
+    @AppStorage("StorytopiaEntriesSamplesCompleted") private var hasCompletedEntriesSamples = false
 
     private var selectedEntryLayout: JournalEntryLayout {
         get {
@@ -9023,9 +9028,6 @@ struct EntriesView: View {
 
     private var entriesScreenWithPresentation: some View {
         entriesScreenWithLifecycle
-            .sheet(item: $sampleEntryBeingPreviewed) { entry in
-                EntrySamplePreview(entry: entry)
-            }
             .sheet(isPresented: $isShowingAddSelectedEntriesToJournalSheet) {
                 NavigationStack {
                     addSelectedEntriesToJournalDestination
@@ -9083,6 +9085,8 @@ struct EntriesView: View {
 
                     cloudEntriesNotice
 
+                    entriesSampleBanner
+
                     entriesPageContent
                 }
                 .padding(.bottom, 104)
@@ -9101,8 +9105,6 @@ struct EntriesView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .zIndex(2)
             }
-
-            bottomPrototypeNotice
 
             selectedEntriesToolbar
 
@@ -9134,9 +9136,7 @@ struct EntriesView: View {
         .accessibilityLabel("Write")
     }
 
-    private var entriesFloatingEditButtonBottomPadding: CGFloat {
-        showsSampleEntries ? 148 : 84
-    }
+    private var entriesFloatingEditButtonBottomPadding: CGFloat { 84 }
 
     private var addSelectedEntriesToJournalDestination: some View {
         AddEntryToJournalPage(
@@ -9189,6 +9189,7 @@ struct EntriesView: View {
     }
 
     private func openCreateEntryFromEntries() {
+        removeTemporaryOpenedSampleEntryIfNeeded()
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil
@@ -9204,6 +9205,8 @@ struct EntriesView: View {
         }
 
         if newPage == .entries {
+            removeTemporaryOpenedSampleEntryIfNeeded()
+
             if let activeDraftID {
                 handleReturnToEntriesFromEditedDraft(activeDraftID)
             } else {
@@ -9214,6 +9217,14 @@ struct EntriesView: View {
 
     private func handleReturnToEntriesFromEditedDraft(_ draftID: UUID) {
         if let draft = CreateEntryDraftStore.load(id: draftID) {
+            guard !EntriesSampleData.contains(draft.id) else {
+                removeTemporaryOpenedSampleEntryIfNeeded()
+                loadEntriesForCurrentPageIfNeeded()
+                return
+            }
+
+            hasCompletedEntriesSamples = true
+            sampleEntries = []
             if let existingIndex = entries.firstIndex(where: { $0.id == draft.id }) {
                 entries[existingIndex] = draft
             } else {
@@ -9492,42 +9503,46 @@ struct EntriesView: View {
     }
 
     @ViewBuilder
-    private var bottomPrototypeNotice: some View {
-        if showsSampleEntries {
-            prototypeNotice
-                .padding(.horizontal, 16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, 82)
-        }
-    }
+    private var entriesSampleBanner: some View {
+        if showsSampleEntries && !isSampleBannerDismissed {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.homeAccent)
+                    .padding(.top, 1)
 
-    private var prototypeNotice: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "eye.fill")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color.homeAccent)
+                Text("Explore a few sample stories to see how Storytopia works. Your own entries will appear here once you begin writing.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineSpacing(2)
+                    .foregroundStyle(Color.homeMutedText)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text("Previewing sample entries")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.homeMutedText)
+                Spacer(minLength: 6)
 
-            Spacer()
-
-            Button("Show Empty") {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showsPrototypeData = false
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isSampleBannerDismissed = true
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.homeMutedText)
+                        .frame(width: 26, height: 26)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss sample stories message")
             }
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(Color.homeAccent)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 2)
+            .transition(.opacity.combined(with: .move(edge: .top)))
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.homeBorder, lineWidth: 1)
-        )
     }
 
     @ViewBuilder
@@ -9589,19 +9604,22 @@ struct EntriesView: View {
                 let category = categoryForSampleEntry(entry)
 
                 Button {
-                    sampleEntryBeingPreviewed = entry
+                    openSampleEntry(entry)
                 } label: {
+                    let isCompletedSample = entry.status == JournalEntryStatus.completed.rawValue
                     EntryListRow(
                         entry: entry,
                         sortOption: selectedEntrySort,
                         pageLabel: entryManualOrderLabel(for: index),
                         category: category,
-                        completedStoryboardImage: category == .completed
-                            ? .failed
+                        completedStoryboardImage: isCompletedSample
+                            ? sampleStoryboardImage(for: entry)
                             : nil,
+                        completedStoryboardCount: isCompletedSample ? sampleStoryboardCount(for: entry.id) : 0,
                         rowHeight: 52,
                         coverWidth: 34,
-                        coverHeight: 44
+                        coverHeight: 44,
+                        isSample: true
                     )
                 }
                 .buttonStyle(.plain)
@@ -9763,6 +9781,9 @@ struct EntriesView: View {
         VStack(alignment: .leading, spacing: 14) {
             if showsCloudLoadingPlaceholder {
                 entryGridLoadingPlaceholders
+            } else if showsSampleEntries {
+                entryGridContent
+                    .padding(.horizontal, 16)
             } else if completedEntryItems.isEmpty {
                 emptyEntriesState
                     .padding(.horizontal, 16)
@@ -9825,17 +9846,19 @@ struct EntriesView: View {
 
     @ViewBuilder
     private func sampleEntryGridCard(for entry: CreateEntryDraft, index: Int) -> some View {
-        if categoryForSampleEntry(entry) == .completed {
+        if entry.status == JournalEntryStatus.completed.rawValue {
             CompletedEntryGridCard(
                 entry: entry,
                 title: entryDisplayTitle(entry),
                 sortOption: selectedEntrySort,
                 pageLabel: entryManualOrderLabel(for: index),
-                storyboardImage: .failed,
+                storyboardImage: sampleStoryboardImage(for: entry),
+                storyboardCount: sampleStoryboardCount(for: entry.id),
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
+                isSample: true,
                 onOpen: {
-                    sampleEntryBeingPreviewed = entry
+                    openSampleEntry(entry)
                 }
             )
         } else {
@@ -9848,8 +9871,9 @@ struct EntriesView: View {
                 title: entryDisplayTitle(entry),
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
+                isSample: true,
                 onOpen: {
-                    sampleEntryBeingPreviewed = entry
+                    openSampleEntry(entry)
                 },
                 onDelete: {},
                 onRename: nil
@@ -9899,7 +9923,7 @@ struct EntriesView: View {
                 isSelected: selectedEntryIDs.contains(item.id),
                 onOpen: {
                     if showsSampleEntries {
-                        sampleEntryBeingPreviewed = displayEntry
+                        openSampleEntry(displayEntry)
                     } else if editMode == .active {
                         toggleEntrySelection(item.id)
                     } else {
@@ -9935,6 +9959,10 @@ struct EntriesView: View {
 
     private var completedEntries: [CreateEntryDraft] {
         let sourceEntries = showsSampleEntries ? sampleEntries : entries
+        if showsSampleEntries {
+            return sourceEntries.filter { $0.status == JournalEntryStatus.completed.rawValue }
+        }
+
         guard !sourceEntries.isEmpty else {
             return []
         }
@@ -9944,12 +9972,192 @@ struct EntriesView: View {
 
     private var draftEntries: [CreateEntryDraft] {
         let sourceEntries = showsSampleEntries ? sampleEntries : entries
+        if showsSampleEntries {
+            return sourceEntries.filter { $0.status != JournalEntryStatus.completed.rawValue }
+        }
+
         let completedIDs = Set(completedEntries.map(\.id))
         return sourceEntries.filter { !completedIDs.contains($0.id) }
     }
 
     private func completedEntryCount(for entryCount: Int) -> Int {
         min(max(entryCount / 3, 1), 4)
+    }
+
+    private func sampleStoryboardImage(for entry: CreateEntryDraft) -> CompletedStoryboardImage {
+        if let storyboard = sampleStoryboards(for: entry).first {
+            return .uiImage(storyboard.image)
+        }
+
+        guard let imageName = EntriesSampleData.storyboardImages(for: entry.id).first else {
+            return .failed
+        }
+
+        return .asset(imageName)
+    }
+
+    private func sampleStoryboardCount(for entryID: UUID) -> Int {
+        let remoteCount = sampleStoryboardsByEntryID[entryID]?.count ?? 0
+        return max(remoteCount, EntriesSampleData.storyboardCount(for: entryID))
+    }
+
+    private func sampleStoryboards(for entry: CreateEntryDraft) -> [GeneratedStoryboard] {
+        if let storyboards = sampleStoryboardsByEntryID[entry.id], !storyboards.isEmpty {
+            return storyboards
+        }
+
+        return EntriesSampleData.storyboardImages(for: entry.id).enumerated().compactMap { index, imageName in
+            guard
+                let image = UIImage(named: imageName),
+                let id = EntriesSampleData.storyboardID(for: entry.id, pageIndex: index)
+            else {
+                return nil
+            }
+
+            return GeneratedStoryboard(
+                id: id,
+                clientEntryID: entry.id,
+                image: image,
+                promptText: entry.text,
+                artStyle: entry.artStyle,
+                sourcePhotoCount: 0,
+                isPrimary: index == 0
+            )
+        }
+    }
+
+    private func openSampleEntry(_ entry: CreateEntryDraft) {
+        removeStaleSampleRecordsIfNeeded()
+
+        let persistedSampleID = CreateEntryDraftStore.save(
+            id: entry.id,
+            title: entry.title,
+            text: entry.text,
+            richText: entry.richText,
+            referencePhotos: [],
+            characters: [],
+            artStyle: entry.artStyle,
+            location: entry.location,
+            date: entry.date,
+            datePrecision: entry.datePrecision,
+            savesDraft: entry.savesDraft,
+            isPrivate: entry.isPrivate,
+            status: JournalEntryStatus(rawValue: entry.status) ?? .draft,
+            fontChoiceRawValue: entry.fontChoiceRawValue,
+            textColorIndex: entry.textColorIndex,
+            textSize: entry.textSize,
+            paperStyleRawValue: entry.paperStyleRawValue,
+            paperColorIndex: entry.paperColorIndex,
+            isBold: entry.isBold,
+            isItalic: entry.isItalic,
+            isUnderlined: entry.isUnderlined,
+            isStrikethrough: entry.isStrikethrough,
+            isHighlighted: entry.isHighlighted,
+            textAlignmentRawValue: entry.textAlignmentRawValue,
+            thumbnail: entry.thumbnail
+        )
+
+        guard persistedSampleID != nil else {
+            return
+        }
+
+        temporaryOpenedSampleEntryID = entry.id
+        let storyboardImage = persistTemporarySampleStoryboards(for: entry)
+        openEntryItem(
+            .local(entry, cloudEntry: nil),
+            asCompleted: entry.status == JournalEntryStatus.completed.rawValue,
+            storyboardImage: storyboardImage
+        )
+    }
+
+    @discardableResult
+    private func persistTemporarySampleStoryboards(for entry: CreateEntryDraft) -> UIImage? {
+        let sampleStoryboards = sampleStoryboards(for: entry)
+        guard !sampleStoryboards.isEmpty else {
+            return nil
+        }
+
+        var persistedStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+            storyboard.clientEntryID != entry.id && !EntriesSampleData.contains(storyboard.clientEntryID)
+        }
+        var firstImage: UIImage?
+
+        for (index, sampleStoryboard) in sampleStoryboards.enumerated() {
+            if firstImage == nil {
+                firstImage = sampleStoryboard.image
+            }
+
+            guard
+                let storyboard = try? GeneratedStoryboardStore.persistedStoryboard(
+                    image: sampleStoryboard.image,
+                    clientEntryID: entry.id,
+                    promptText: sampleStoryboard.promptText,
+                    artStyle: sampleStoryboard.artStyle,
+                    generationQuality: sampleStoryboard.generationQuality,
+                    panelLayout: sampleStoryboard.panelLayout,
+                    sourcePhotoCount: sampleStoryboard.sourcePhotoCount,
+                    id: sampleStoryboard.id,
+                    storagePath: sampleStoryboard.storagePath,
+                    cloudSyncState: sampleStoryboard.cloudSyncState,
+                    isPrimary: sampleStoryboard.isPrimary || index == 0
+                )
+            else {
+                continue
+            }
+
+            persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
+        }
+
+        GeneratedStoryboardStore.save(persistedStoryboards)
+        return firstImage
+    }
+
+    private func removeTemporaryOpenedSampleEntryIfNeeded() {
+        guard let temporaryOpenedSampleEntryID else {
+            return
+        }
+
+        CreateEntryDraftStore.delete(id: temporaryOpenedSampleEntryID)
+        let sampleStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+            storyboard.clientEntryID == temporaryOpenedSampleEntryID
+                || EntriesSampleData.contains(storyboard.clientEntryID)
+        }
+        if !sampleStoryboards.isEmpty {
+            GeneratedStoryboardStore.delete(sampleStoryboards)
+            GeneratedStoryboardStore.save(
+                GeneratedStoryboardStore.load().filter { storyboard in
+                    storyboard.clientEntryID != temporaryOpenedSampleEntryID
+                        && !EntriesSampleData.contains(storyboard.clientEntryID)
+                }
+            )
+        }
+        self.temporaryOpenedSampleEntryID = nil
+        if activeDraftID == temporaryOpenedSampleEntryID {
+            activeDraftID = nil
+        }
+        completedEntryOpenedStoryboardImage = nil
+    }
+
+    private func removeStaleSampleRecordsIfNeeded() {
+        for sampleID in EntriesSampleData.allIDs where sampleID != temporaryOpenedSampleEntryID {
+            CreateEntryDraftStore.delete(id: sampleID)
+        }
+
+        let staleSampleStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+            EntriesSampleData.contains(storyboard.clientEntryID)
+                && storyboard.clientEntryID != temporaryOpenedSampleEntryID
+        }
+        guard !staleSampleStoryboards.isEmpty else {
+            return
+        }
+
+        GeneratedStoryboardStore.delete(staleSampleStoryboards)
+        GeneratedStoryboardStore.save(
+            GeneratedStoryboardStore.load().filter { storyboard in
+                !EntriesSampleData.contains(storyboard.clientEntryID)
+                    || storyboard.clientEntryID == temporaryOpenedSampleEntryID
+            }
+        )
     }
 
     private func generatedStoryboard(for item: EntryDisplayItem) -> GeneratedStoryboard? {
@@ -10303,7 +10511,7 @@ struct EntriesView: View {
     }
 
     private var showsSampleEntries: Bool {
-        authStore.userID != nil
+        !hasCompletedEntriesSamples
             && entries.isEmpty
             && cloudEntries.isEmpty
             && !isLoadingCloudEntries
@@ -10675,6 +10883,8 @@ struct EntriesView: View {
     }
 
     private func loadEntriesForCurrentPageIfNeeded() {
+        removeStaleSampleRecordsIfNeeded()
+
         guard let userID = authStore.userID else {
             refreshEntries()
             return
@@ -10715,6 +10925,7 @@ struct EntriesView: View {
 
         entries = snapshot.entries
         sampleEntries = snapshot.sampleEntries
+        sampleStoryboardsByEntryID = snapshot.sampleStoryboardsByEntryID
         completedStoryboards = snapshot.completedStoryboards
         storyboardCountsByClientEntryID = snapshot.storyboardCountsByClientEntryID
         cloudEntries = snapshot.cloudEntries
@@ -10744,6 +10955,7 @@ struct EntriesView: View {
             EntriesSessionMemoryCache.Snapshot(
                 entries: entries,
                 sampleEntries: sampleEntries,
+                sampleStoryboardsByEntryID: sampleStoryboardsByEntryID,
                 completedStoryboards: completedStoryboards,
                 storyboardCountsByClientEntryID: storyboardCountsByClientEntryID,
                 cloudEntries: cloudEntries,
@@ -10790,13 +11002,47 @@ struct EntriesView: View {
         cloudEntryThumbnailBackfillTask = nil
         completedStoryboardLoadTask?.cancel()
         completedStoryboardLoadTask = nil
+        sampleContentLoadTask?.cancel()
+        sampleContentLoadTask = nil
+    }
+
+    private func loadRemoteSampleContentIfNeeded() {
+        guard
+            !hasCompletedEntriesSamples,
+            showsPrototypeData,
+            entries.isEmpty,
+            cloudEntries.isEmpty
+        else {
+            return
+        }
+
+        sampleContentLoadTask?.cancel()
+        sampleContentLoadTask = Task {
+            guard let pack = try? await SupabaseSampleStoryService().loadActivePack() else {
+                return
+            }
+
+            guard
+                !Task.isCancelled,
+                !hasCompletedEntriesSamples,
+                entries.isEmpty,
+                cloudEntries.isEmpty
+            else {
+                return
+            }
+
+            sampleEntries = pack.entries
+            sampleStoryboardsByEntryID = pack.storyboardsByEntryID
+            storeCurrentEntriesSessionSnapshot()
+        }
     }
 
     private func refreshEntries(forceCloudReload: Bool = false) {
         guard let userID = authStore.userID else {
             resetEntriesSessionState()
             entries = []
-            sampleEntries = []
+            sampleEntries = hasCompletedEntriesSamples ? [] : EntriesSampleData.entries()
+            sampleStoryboardsByEntryID = [:]
             completedStoryboards = []
             storyboardCountsByClientEntryID = [:]
             cloudEntries = []
@@ -10812,6 +11058,7 @@ struct EntriesView: View {
             hasMoreCloudEntries = false
             nextCloudEntryOffset = 0
             isDraftSaved = false
+            loadRemoteSampleContentIfNeeded()
             return
         }
 
@@ -10822,9 +11069,10 @@ struct EntriesView: View {
         entries = []
         completedStoryboards = GeneratedStoryboardStore.load()
         scheduleCompletedStoryboardLoad()
-        if entries.isEmpty && showsPrototypeData && sampleEntries.isEmpty {
+        if entries.isEmpty && showsPrototypeData && !hasCompletedEntriesSamples && sampleEntries.isEmpty {
             sampleEntries = EntriesSampleData.entries()
         }
+        loadRemoteSampleContentIfNeeded()
         scheduleEntryThumbnailBackfill()
         scheduleCloudEntryThumbnailBackfill()
         isDraftSaved = false
@@ -10853,6 +11101,7 @@ struct EntriesView: View {
         if cloudEntries != cachedEntries.entries {
             cloudEntries = cachedEntries.entries
         }
+        updateEntriesSamplesCompletion()
         if let cachedCounts = cachedEntries.counts, cloudEntryCounts != cachedCounts {
             cloudEntryCounts = cachedCounts
         }
@@ -10893,6 +11142,7 @@ struct EntriesView: View {
             if cloudEntries != cachedEntries.entries {
                 cloudEntries = cachedEntries.entries
             }
+            updateEntriesSamplesCompletion()
             if let cachedCounts = cachedEntries.counts {
                 if cloudEntryCounts != cachedCounts {
                     cloudEntryCounts = cachedCounts
@@ -10930,6 +11180,7 @@ struct EntriesView: View {
                 }
                 unjournaledEntryIDs = currentUnjournaledEntryIDs
                 cloudEntries = page
+                updateEntriesSamplesCompletion()
                 if let counts, cloudEntryCounts != counts {
                     cloudEntryCounts = counts
                 }
@@ -10970,6 +11221,7 @@ struct EntriesView: View {
             if cloudEntries != page {
                 cloudEntries = page
             }
+            updateEntriesSamplesCompletion()
             if let counts, cloudEntryCounts != counts {
                 cloudEntryCounts = counts
             }
@@ -11032,6 +11284,7 @@ struct EntriesView: View {
             let existingIDs = Set(cloudEntries.map(\.clientEntryID))
             let newEntries = page.filter { !existingIDs.contains($0.clientEntryID) }
             cloudEntries.append(contentsOf: newEntries)
+            updateEntriesSamplesCompletion()
             restoreCachedCloudEntryThumbnails()
             hasMoreCloudEntries = page.count == cloudEntriesPageSize
             nextCloudEntryOffset += page.count
@@ -11565,6 +11818,13 @@ struct EntriesView: View {
             textAlignmentRawValue: entry.textAlignmentRawValue
         )
     }
+
+    private func updateEntriesSamplesCompletion() {
+        if !entries.isEmpty || !cloudEntries.isEmpty {
+            hasCompletedEntriesSamples = true
+            sampleEntries = []
+        }
+    }
 }
 
 private enum EntriesSampleData {
@@ -11574,10 +11834,50 @@ private enum EntriesSampleData {
         let text: String
         let daysAgo: Int
         let location: String
+        let isCompleted: Bool
+        let storyboardImageStartIndex: Int
+        let storyboardImageCount: Int
         let paperStyleRawValue: String
         let paperColorIndex: Int
         let textColorIndex: Int
         let textSize: Double
+    }
+
+    static func isCompleted(_ entryID: UUID) -> Bool {
+        sample(for: entryID)?.isCompleted == true
+    }
+
+    static var allIDs: [UUID] {
+        samples.compactMap { UUID(uuidString: $0.id) }
+    }
+
+    static func contains(_ entryID: UUID?) -> Bool {
+        guard let entryID else {
+            return false
+        }
+
+        return sample(for: entryID) != nil
+    }
+
+    static func storyboardImages(for entryID: UUID) -> [String] {
+        guard let sample = sample(for: entryID), sample.isCompleted else {
+            return []
+        }
+
+        return journalSampleImages(startIndex: sample.storyboardImageStartIndex, count: sample.storyboardImageCount)
+    }
+
+    static func storyboardCount(for entryID: UUID) -> Int {
+        storyboardImages(for: entryID).count
+    }
+
+    static func storyboardID(for entryID: UUID, pageIndex: Int) -> UUID? {
+        guard contains(entryID) else {
+            return nil
+        }
+
+        let suffix = String(format: "%012d", pageIndex + 1)
+        return UUID(uuidString: "20000000-0000-0000-0000-\(suffix)")
     }
 
     @MainActor
@@ -11614,7 +11914,7 @@ private enum EntriesSampleData {
                 datePrecision: .exact,
                 savesDraft: true,
                 isPrivate: index == 3,
-                status: JournalEntryStatus.draft.rawValue,
+                status: sample.isCompleted ? JournalEntryStatus.completed.rawValue : JournalEntryStatus.draft.rawValue,
                 fontChoiceRawValue: nil,
                 textColorIndex: sample.textColorIndex,
                 textSize: sample.textSize,
@@ -11634,13 +11934,20 @@ private enum EntriesSampleData {
         }
     }
 
+    private static func sample(for entryID: UUID) -> Sample? {
+        samples.first { $0.id.lowercased() == entryID.uuidString.lowercased() }
+    }
+
     private static let samples: [Sample] = [
         Sample(
             id: "10000000-0000-0000-0000-000000000001",
-            title: "Morning Light",
-            text: "The kitchen was quiet except for the kettle. I watched the first strip of sun reach the table and felt like the whole day was waiting politely.",
+            title: "My First Apartment",
+            text: "I ate noodles on the floor because the table had not arrived yet. The radiator clicked like it was thinking, and every box looked taller after sunset. Still, when I turned the key from the inside, the room felt like a promise I had made to myself.",
             daysAgo: 0,
-            location: "Home",
+            location: "Brooklyn",
+            isCompleted: true,
+            storyboardImageStartIndex: 0,
+            storyboardImageCount: 3,
             paperStyleRawValue: "collegeRuled",
             paperColorIndex: 1,
             textColorIndex: 1,
@@ -11648,10 +11955,13 @@ private enum EntriesSampleData {
         ),
         Sample(
             id: "10000000-0000-0000-0000-000000000002",
-            title: "Tiny Win",
-            text: "Finished the thing I kept avoiding. It only took twenty minutes, which is both hilarious and a little rude.",
+            title: "Coffee Shop in Kyoto",
+            text: "The cafe was barely wider than the counter. An older man in a navy apron drew a leaf into my latte and nodded when I whispered thank you. Outside, bicycles moved through the rain like quiet punctuation.",
             daysAgo: 1,
-            location: "Desk",
+            location: "Kyoto",
+            isCompleted: true,
+            storyboardImageStartIndex: 3,
+            storyboardImageCount: 2,
             paperStyleRawValue: "blank",
             paperColorIndex: 4,
             textColorIndex: 4,
@@ -11659,10 +11969,13 @@ private enum EntriesSampleData {
         ),
         Sample(
             id: "10000000-0000-0000-0000-000000000003",
-            title: "Rain Walk",
-            text: "Took the long way home after lunch. The sidewalks were shiny, the trees smelled awake, and nobody seemed in a rush.",
+            title: "Learning to Surf",
+            text: "I swallowed half the ocean before breakfast and still came up laughing. On the last try, the board lifted under me for maybe three seconds. It was not graceful, but it was mine.",
             daysAgo: 2,
-            location: "Maple Street",
+            location: "Montauk",
+            isCompleted: false,
+            storyboardImageStartIndex: 0,
+            storyboardImageCount: 0,
             paperStyleRawValue: "watercolorPaper",
             paperColorIndex: 0,
             textColorIndex: 2,
@@ -11670,10 +11983,13 @@ private enum EntriesSampleData {
         ),
         Sample(
             id: "10000000-0000-0000-0000-000000000004",
-            title: "What I Needed",
-            text: "A slow dinner, a charged phone left in another room, and a conversation that did not try to solve anything.",
+            title: "A Rainy Sunday",
+            text: "We canceled every plan and let the windows fog. I made pancakes too late for breakfast, you read the same paragraph three times, and the whole apartment smelled like butter and wet pavement.",
             daysAgo: 3,
-            location: "West Village",
+            location: "Home",
+            isCompleted: false,
+            storyboardImageStartIndex: 0,
+            storyboardImageCount: 0,
             paperStyleRawValue: "cottonPaper",
             paperColorIndex: 0,
             textColorIndex: 6,
@@ -11681,10 +11997,13 @@ private enum EntriesSampleData {
         ),
         Sample(
             id: "10000000-0000-0000-0000-000000000005",
-            title: "Saturday Errands",
-            text: "Bought flowers, returned the library book, remembered batteries, forgot basil. The list was almost victorious.",
+            title: "My Dog's Last Day",
+            text: "He slept with his chin on my shoe like he was keeping me from leaving. We sat in the afternoon sun and I told him every version of thank you I knew. His tail moved once when I said his name.",
             daysAgo: 5,
-            location: "Downtown",
+            location: "Backyard",
+            isCompleted: true,
+            storyboardImageStartIndex: 5,
+            storyboardImageCount: 3,
             paperStyleRawValue: "blank",
             paperColorIndex: 5,
             textColorIndex: 8,
@@ -11692,115 +12011,19 @@ private enum EntriesSampleData {
         ),
         Sample(
             id: "10000000-0000-0000-0000-000000000006",
-            title: "A Line to Keep",
-            text: "There are days that do not announce themselves as important until later. Today had that quiet shimmer.",
+            title: "Starting My First Business",
+            text: "The first order came through at 11:42 p.m. I stared at the screen so long it dimmed, then packed the box twice because the tissue paper kept looking crooked. Nobody tells you ambition can feel this tender.",
             daysAgo: 7,
-            location: "Park Bench",
+            location: "Kitchen Table",
+            isCompleted: false,
+            storyboardImageStartIndex: 0,
+            storyboardImageCount: 0,
             paperStyleRawValue: "recycledPaper",
             paperColorIndex: 0,
             textColorIndex: 5,
             textSize: 21
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000007",
-            title: "Coffee Notes",
-            text: "The cafe playlist was all old soul songs. I wrote three messy ideas and one good sentence.",
-            daysAgo: 9,
-            location: "Corner Cafe",
-            paperStyleRawValue: "collegeRuled",
-            paperColorIndex: 2,
-            textColorIndex: 3,
-            textSize: 18
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000008",
-            title: "Before Sleep",
-            text: "Grateful for clean sheets, a book with short chapters, and the particular relief of putting tomorrow down for a while.",
-            daysAgo: 12,
-            location: "Bedroom",
-            paperStyleRawValue: "blank",
-            paperColorIndex: 6,
-            textColorIndex: 7,
-            textSize: 19
         )
     ]
-}
-
-private struct EntrySamplePreview: View {
-    let entry: CreateEntryDraft
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    previewImage
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(entryDisplayTitle(entry))
-                            .font(.system(size: 26, weight: .bold, design: .serif))
-                            .foregroundStyle(Color.storyInk)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 8) {
-                            Text(entry.createdAt.formatted(date: .abbreviated, time: .omitted))
-
-                            if !entry.location.isEmpty {
-                                Text("•")
-                                Text(entry.location)
-                            }
-                        }
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-                    }
-
-                    Text(entry.text)
-                        .font(.system(size: 18, weight: .regular, design: .serif))
-                        .lineSpacing(5)
-                        .foregroundStyle(Color.storyInk)
-                        .padding(18)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.homeBorder, lineWidth: 1)
-                        )
-                }
-                .padding(18)
-            }
-            .background(Color.homePageBackground.ignoresSafeArea())
-            .navigationTitle("Sample Entry")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.homeAccent)
-                }
-            }
-        }
-        .onDisappear {
-            UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap(\.windows)
-                .first(where: \.isKeyWindow)?
-                .endEditing(true)
-        }
-        .preferredColorScheme(.light)
-    }
-
-    @ViewBuilder
-    private var previewImage: some View {
-        if let thumbnail = entry.thumbnail {
-            Image(uiImage: thumbnail)
-                .resizable()
-                .scaledToFit()
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
-        }
-    }
 }
 
 private struct EntryListRow: View {
@@ -11816,6 +12039,7 @@ private struct EntryListRow: View {
     var coverHeight = JournalChapterListMetrics.coverHeight
     var isSelecting = false
     var isSelected = false
+    var isSample = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -11840,6 +12064,11 @@ private struct EntryListRow: View {
 
             if let category {
                 EntryCategoryPill(category: category)
+                    .layoutPriority(1)
+            }
+
+            if isSample {
+                EntrySampleBadge()
                     .layoutPriority(1)
             }
 
@@ -11964,6 +12193,24 @@ private struct EntryCategoryPill: View {
                     .stroke(category.pillBorderColor, lineWidth: 1)
             )
             .accessibilityLabel(category.title)
+    }
+}
+
+private struct EntrySampleBadge: View {
+    var body: some View {
+        Text("Sample")
+            .font(.system(size: 10, weight: .heavy))
+            .foregroundStyle(Color.storyInk.opacity(0.78))
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .frame(height: 20)
+            .background(Color.white.opacity(0.94), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.storyInk.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.08), radius: 3, y: 1)
+            .accessibilityLabel("Sample")
     }
 }
 
@@ -12209,6 +12456,7 @@ private struct EntryGridPreviewCard: View {
     var isOpening = false
     var isSelecting = false
     var isSelected = false
+    var isSample = false
     let onOpen: () -> Void
     let onDelete: () -> Void
     var onRename: (() -> Void)?
@@ -12252,6 +12500,12 @@ private struct EntryGridPreviewCard: View {
                     EntryCategoryPill(category: category)
                         .padding(8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                }
+
+                if isSample {
+                    EntrySampleBadge()
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
 
@@ -12327,6 +12581,7 @@ private struct CompletedEntryGridCard: View {
     let isOpening: Bool
     let isSelecting: Bool
     let isSelected: Bool
+    let isSample: Bool
     let onOpen: () -> Void
     let accessibilityLabel: String
 
@@ -12341,6 +12596,7 @@ private struct CompletedEntryGridCard: View {
         isOpening: Bool = false,
         isSelecting: Bool = false,
         isSelected: Bool = false,
+        isSample: Bool = false,
         onOpen: @escaping () -> Void
     ) {
         self.entry = entry
@@ -12353,6 +12609,7 @@ private struct CompletedEntryGridCard: View {
         self.isOpening = isOpening
         self.isSelecting = isSelecting
         self.isSelected = isSelected
+        self.isSample = isSample
         self.onOpen = onOpen
         accessibilityLabel = "Completed \(title)"
     }
@@ -12378,6 +12635,13 @@ private struct CompletedEntryGridCard: View {
                         EntryCategoryPill(category: category)
                             .padding(8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                            .zIndex(2)
+                    }
+
+                    if isSample {
+                        EntrySampleBadge()
+                            .padding(8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .zIndex(2)
                     }
 
