@@ -8806,6 +8806,8 @@ private extension EntrySummaryStatusFilter {
             return "drafts"
         case .completed:
             return "completed"
+        case .addToJournal:
+            return "addToJournal"
         }
     }
 }
@@ -8834,6 +8836,7 @@ private enum EntriesSessionMemoryCache {
         let entries: [CreateEntryDraft]
         let sampleEntries: [CreateEntryDraft]
         let completedStoryboards: [GeneratedStoryboard]
+        let storyboardCountsByClientEntryID: [UUID: Int]
         let cloudEntries: [JournalEntry]
         let cloudEntryCounts: JournalEntrySummaryCounts?
         let cloudEntryThumbnails: [UUID: UIImage]
@@ -8923,6 +8926,7 @@ struct EntriesView: View {
     @State private var entries: [CreateEntryDraft] = []
     @State private var sampleEntries: [CreateEntryDraft] = []
     @State private var completedStoryboards: [GeneratedStoryboard] = []
+    @State private var storyboardCountsByClientEntryID: [UUID: Int] = [:]
     @State private var cloudStoryboardClientIDs: Set<UUID> = []
     @State private var failedCloudStoryboardClientIDs: Set<UUID> = []
     @State private var editMode: EditMode = .inactive
@@ -8943,6 +8947,7 @@ struct EntriesView: View {
     @State private var selectedEntriesJournalTitles: Set<String> = []
     @State private var cloudEntries: [JournalEntry] = []
     @State private var cloudEntryCounts: JournalEntrySummaryCounts?
+    @State private var unjournaledEntryIDs: Set<UUID> = []
     @State private var cloudEntryThumbnails: [UUID: UIImage] = [:]
     @State private var cloudEntryThumbnailVersions: [UUID: String] = [:]
     @State private var isLoadingCloudEntries = false
@@ -9277,40 +9282,47 @@ struct EntriesView: View {
     }
 
     private var tabSwitcher: some View {
-        HStack(spacing: 0) {
-            ForEach(EntriesTab.allCases) { tab in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        selectedEntryTab = tab
-                    }
-                } label: {
-                    Text(tabTitle(for: tab))
-                        .font(.system(size: 13, weight: .bold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .foregroundStyle(selectedEntryTab == tab ? Color.white : Color.storyInk.opacity(0.72))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 34)
-                        .background(
-                            Group {
-                                if selectedEntryTab == tab {
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(Color.homeAccent)
-                                }
-                            }
-                        )
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                ForEach(EntriesTab.primaryFilters) { tab in
+                    entryFilterPill(for: tab)
                 }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selectedEntryTab == tab ? .isSelected : [])
+            }
+
+            HStack(spacing: 6) {
+                ForEach(EntriesTab.secondaryFilters) { tab in
+                    entryFilterPill(for: tab)
+                }
             }
         }
-        .padding(3)
         .padding(.top, 2)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(Color.homeBorder, lineWidth: 1)
-        )
+    }
+
+    private func entryFilterPill(for tab: EntriesTab) -> some View {
+        let isSelected = selectedEntryTab == tab
+
+        return Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                selectedEntryTab = tab
+            }
+        } label: {
+            Text(filterTitle(for: tab))
+                .font(.system(size: 13, weight: .bold))
+                .lineLimit(1)
+                .foregroundStyle(isSelected ? Color.white : Color.storyInk.opacity(0.72))
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                        .fill(isSelected ? Color.homeAccent : Color.white)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                        .stroke(isSelected ? Color.homeAccent : Color.homeBorder, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var layoutSwitcherRow: some View {
@@ -9399,7 +9411,7 @@ struct EntriesView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private func tabTitle(for tab: EntriesTab) -> String {
+    private func filterTitle(for tab: EntriesTab) -> String {
         "\(tab.title) (\(entryCount(for: tab)))"
     }
 
@@ -9412,6 +9424,8 @@ struct EntriesView: View {
                 return draftEntries.count
             case .completed:
                 return completedEntries.count
+            case .addToJournal:
+                return sampleEntries.count
             }
         }
 
@@ -9422,6 +9436,8 @@ struct EntriesView: View {
             return authStore.userID == nil ? draftEntryItems.count : cloudEntryCounts?.drafts ?? draftEntryItems.count
         case .completed:
             return authStore.userID == nil ? completedEntryItems.count : cloudEntryCounts?.completed ?? completedEntryItems.count
+        case .addToJournal:
+            return authStore.userID == nil ? unjournaledEntryItems.count : unjournaledEntryIDs.count
         }
     }
 
@@ -9931,7 +9947,10 @@ struct EntriesView: View {
     }
 
     private func storyboardCount(for item: EntryDisplayItem) -> Int {
-        completedStoryboards.filter { $0.clientEntryID == item.id }.count
+        max(
+            storyboardCountsByClientEntryID[item.id] ?? 0,
+            completedStoryboards.filter { $0.clientEntryID == item.id }.count
+        )
     }
 
     private func storyboardImage(for item: EntryDisplayItem, fallbackIndex index: Int) -> CompletedStoryboardImage {
@@ -10003,6 +10022,8 @@ struct EntriesView: View {
             return draftEntries
         case .completed:
             return completedEntries
+        case .addToJournal:
+            return sampleEntries
         }
     }
 
@@ -10018,6 +10039,8 @@ struct EntriesView: View {
             return draftEntryItems
         case .completed:
             return completedEntryItems
+        case .addToJournal:
+            return unjournaledEntryItems
         }
     }
 
@@ -10114,6 +10137,16 @@ struct EntriesView: View {
         mergedEntryItems.filter { $0.status == JournalEntryStatus.completed.rawValue }
     }
 
+    private var unjournaledEntryItems: [EntryDisplayItem] {
+        if authStore.userID != nil {
+            return mergedEntryItems.filter { unjournaledEntryIDs.contains($0.id) }
+        }
+
+        return mergedEntryItems.filter { item in
+            journalTitles(for: item).isEmpty
+        }
+    }
+
     private func isCompletedEntryItem(_ item: EntryDisplayItem) -> Bool {
         item.status == JournalEntryStatus.completed.rawValue
     }
@@ -10160,6 +10193,7 @@ struct EntriesView: View {
 
         selectedEntriesJournalTitles = journalTitles
         selectedEntriesJournalTitle = journalTitles.sorted().first
+        selectedEntryIDs.forEach { unjournaledEntryIDs.remove($0) }
         selectedEntryIDs = []
         editMode = .inactive
         refreshEntries(forceCloudReload: true)
@@ -10181,9 +10215,7 @@ struct EntriesView: View {
 
     private func selectedJournalTitlesForAddSheet() -> Set<String> {
         let titleSets = selectedEntryItems.map { item in
-            let entry = entryForDisplay(item).prototypeEntry()
-            return StoryEntryStore.journalTitles(containing: entry)
-                .union(EntryJournalLinkStore.loadJournalTitles(for: item.id))
+            journalTitles(for: item)
         }
 
         guard let firstTitleSet = titleSets.first else {
@@ -10192,6 +10224,35 @@ struct EntriesView: View {
 
         return titleSets.dropFirst().reduce(firstTitleSet) { sharedTitles, titles in
             sharedTitles.intersection(titles)
+        }
+    }
+
+    private func journalTitles(for item: EntryDisplayItem) -> Set<String> {
+        let entry = entryForDisplay(item).prototypeEntry()
+        return StoryEntryStore.journalTitles(containing: entry)
+            .union(EntryJournalLinkStore.loadJournalTitles(for: item.id))
+    }
+
+    private func loadUnjournaledEntryIDs() async throws -> Set<UUID> {
+        let repository = SupabaseEntryRepository()
+        async let activeEntryIDsTask = repository.getActiveEntryClientIDs()
+        async let membershipsTask = SupabaseJournalRepository().getJournalEntryMemberships()
+        let activeEntryIDs = try await activeEntryIDsTask
+        let memberships = try await membershipsTask
+        let journaledEntryIDs = Set(memberships.map(\.clientEntryID))
+        return activeEntryIDs.subtracting(journaledEntryIDs)
+    }
+
+    private func refreshUnjournaledEntryIDs() async {
+        guard authStore.userID != nil else {
+            unjournaledEntryIDs = []
+            return
+        }
+
+        do {
+            unjournaledEntryIDs = try await loadUnjournaledEntryIDs()
+        } catch {
+            print("[Storytopia] Could not refresh unjournaled entry IDs.")
         }
     }
 
@@ -10620,8 +10681,9 @@ struct EntriesView: View {
 
         scheduleEntryThumbnailBackfill()
         scheduleCloudEntryThumbnailBackfill()
-        guard !EntriesCloudFetchCache.hasFreshEntrySummaries(for: queryKey) else {
+        if selectedEntryTab != .addToJournal, EntriesCloudFetchCache.hasFreshEntrySummaries(for: queryKey) {
             Task {
+                await refreshUnjournaledEntryIDs()
                 await loadCloudStoryboardsIfNeeded(userID: userID)
             }
             return
@@ -10643,6 +10705,7 @@ struct EntriesView: View {
         entries = snapshot.entries
         sampleEntries = snapshot.sampleEntries
         completedStoryboards = snapshot.completedStoryboards
+        storyboardCountsByClientEntryID = snapshot.storyboardCountsByClientEntryID
         cloudEntries = snapshot.cloudEntries
         cloudEntryCounts = snapshot.cloudEntryCounts
         cloudEntryThumbnails = snapshot.cloudEntryThumbnails
@@ -10671,6 +10734,7 @@ struct EntriesView: View {
                 entries: entries,
                 sampleEntries: sampleEntries,
                 completedStoryboards: completedStoryboards,
+                storyboardCountsByClientEntryID: storyboardCountsByClientEntryID,
                 cloudEntries: cloudEntries,
                 cloudEntryCounts: cloudEntryCounts,
                 cloudEntryThumbnails: cloudEntryThumbnails,
@@ -10689,6 +10753,8 @@ struct EntriesView: View {
         cancelThumbnailBackfills()
         hasLoadedEntriesForSession = false
         loadedEntryQueryKey = nil
+        storyboardCountsByClientEntryID = [:]
+        unjournaledEntryIDs = []
         cloudThumbnailIDsBeingLoaded = []
         cloudEntryThumbnailVersions = [:]
     }
@@ -10721,8 +10787,10 @@ struct EntriesView: View {
             entries = []
             sampleEntries = []
             completedStoryboards = []
+            storyboardCountsByClientEntryID = [:]
             cloudEntries = []
             cloudEntryCounts = nil
+            unjournaledEntryIDs = []
             cloudEntryThumbnails = [:]
             cloudEntryThumbnailVersions = [:]
             cloudEntriesErrorMessage = nil
@@ -10795,6 +10863,7 @@ struct EntriesView: View {
         guard let userID = authStore.userID else {
             cloudEntries = []
             cloudEntriesErrorMessage = nil
+            unjournaledEntryIDs = []
             isLoadingCloudEntries = false
             isLoadingMoreCloudEntries = false
             hasMoreCloudEntries = false
@@ -10807,7 +10876,9 @@ struct EntriesView: View {
             return
         }
 
-        if !forceReload, let cachedEntries = EntriesCloudFetchCache.entrySummaries(for: queryKey) {
+        if selectedEntryTab != .addToJournal,
+           !forceReload,
+           let cachedEntries = EntriesCloudFetchCache.entrySummaries(for: queryKey) {
             if cloudEntries != cachedEntries.entries {
                 cloudEntries = cachedEntries.entries
             }
@@ -10837,6 +10908,40 @@ struct EntriesView: View {
 
         do {
             let repository = SupabaseEntryRepository()
+            if selectedEntryTab == .addToJournal {
+                async let countsTask = repository.getEntrySummaryCounts()
+                let currentUnjournaledEntryIDs = try await loadUnjournaledEntryIDs()
+                let page = try await repository.getEntrySummaries(clientEntryIDs: currentUnjournaledEntryIDs)
+                let counts = try? await countsTask
+
+                guard queryKey == currentEntryQueryKey(userID: userID) else {
+                    return
+                }
+                unjournaledEntryIDs = currentUnjournaledEntryIDs
+                cloudEntries = page
+                if let counts, cloudEntryCounts != counts {
+                    cloudEntryCounts = counts
+                }
+                hasMoreCloudEntries = false
+                nextCloudEntryOffset = page.count
+                hasLoadedEntriesForSession = true
+                loadedEntryQueryKey = queryKey
+                restoreCachedCloudEntryThumbnails()
+                scheduleCloudEntryThumbnailBackfill()
+                EntriesCloudFetchCache.storeEntrySummaries(
+                    cloudEntries,
+                    counts: cloudEntryCounts,
+                    hasMore: hasMoreCloudEntries,
+                    nextOffset: nextCloudEntryOffset,
+                    for: queryKey
+                )
+                isDraftSaved = draftEntryItems.isEmpty == false
+                cloudEntriesErrorMessage = nil
+                storeCurrentEntriesSessionSnapshot()
+                return
+            }
+
+            await refreshUnjournaledEntryIDs()
             async let pageTask = repository.getEntrySummariesPage(
                 limit: cloudEntriesPageSize,
                 offset: 0,
@@ -10953,24 +11058,29 @@ struct EntriesView: View {
             return
         }
 
-        guard forceReload || EntriesCloudFetchCache.shouldLoadStoryboards(for: userID) else {
+        guard forceReload || selectedEntryTab == .addToJournal || EntriesCloudFetchCache.shouldLoadStoryboards(for: userID) else {
             return
         }
 
         guard !completedEntryItems.isEmpty else {
             cloudStoryboardClientIDs = []
             failedCloudStoryboardClientIDs = []
-            EntriesCloudFetchCache.markStoryboardsLoaded(for: userID)
             storeCurrentEntriesSessionSnapshot()
             return
         }
 
         do {
-            let primaryRows = try await SupabaseStoryboardService().loadPrimaryCompletedStoryboards()
             let completedEntryIDs = Set(completedEntryItems.map(\.id))
+            let storyboardRows = try await SupabaseStoryboardService().loadCompletedStoryboardRows(for: completedEntryIDs)
+            let storyboardCounts = Dictionary(grouping: storyboardRows, by: \.clientEntryID)
+                .mapValues(\.count)
+            storyboardCountsByClientEntryID.merge(storyboardCounts) { _, newValue in newValue }
+            completedEntryIDs
+                .subtracting(storyboardCounts.keys)
+                .forEach { storyboardCountsByClientEntryID[$0] = 0 }
             let localStoryboardIDs = Set(completedStoryboards.map(\.id))
-            var rowsToDownload = primaryRows.filter {
-                completedEntryIDs.contains($0.clientEntryID) && !localStoryboardIDs.contains($0.id)
+            var rowsToDownload = storyboardRows.filter {
+                !localStoryboardIDs.contains($0.id)
             }
             var mergedStoryboards = completedStoryboards
 
@@ -10990,7 +11100,9 @@ struct EntriesView: View {
 
             cloudStoryboardClientIDs = Set(rowsToDownload.map(\.clientEntryID))
             failedCloudStoryboardClientIDs = []
-            EntriesCloudFetchCache.markStoryboardsLoaded(for: userID)
+            if selectedEntryTab != .addToJournal {
+                EntriesCloudFetchCache.markStoryboardsLoaded(for: userID)
+            }
 
             guard !rowsToDownload.isEmpty else {
                 storeCurrentEntriesSessionSnapshot()
@@ -12523,6 +12635,10 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
     case all
     case drafts
     case completed
+    case addToJournal
+
+    static let primaryFilters: [EntriesTab] = [.all, .drafts, .completed]
+    static let secondaryFilters: [EntriesTab] = [.addToJournal]
 
     var id: String {
         rawValue
@@ -12536,6 +12652,8 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
             return "Drafts"
         case .completed:
             return "Completed"
+        case .addToJournal:
+            return "Add to Journal"
         }
     }
 
@@ -12547,6 +12665,8 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
             return "Draft"
         case .completed:
             return "Completed"
+        case .addToJournal:
+            return "Add to Journal"
         }
     }
 
@@ -12558,6 +12678,8 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
             return .drafts
         case .completed:
             return .completed
+        case .addToJournal:
+            return .addToJournal
         }
     }
 
@@ -12569,6 +12691,8 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
             return Color.homeAccent
         case .completed:
             return Color.white
+        case .addToJournal:
+            return Color.storyInk
         }
     }
 
@@ -12580,6 +12704,8 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
             return Color.homeAccent.opacity(0.11)
         case .completed:
             return Color.storyInk.opacity(0.88)
+        case .addToJournal:
+            return Color.homeAccent.opacity(0.11)
         }
     }
 
@@ -12591,6 +12717,8 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
             return Color.homeAccent.opacity(0.26)
         case .completed:
             return Color.storyInk.opacity(0.12)
+        case .addToJournal:
+            return Color.homeAccent.opacity(0.26)
         }
     }
 }
@@ -14540,6 +14668,7 @@ private struct PrototypeChapterDetailView: View {
                 image: storyboard.image.storytopiaDownsampled(maxDimension: 640),
                 promptText: storyboard.promptText,
                 artStyle: storyboard.artStyle,
+                generationQuality: storyboard.generationQuality,
                 panelLayout: storyboard.panelLayout,
                 sourcePhotoCount: storyboard.sourcePhotoCount,
                 createdAt: storyboard.createdAt,
@@ -15507,6 +15636,7 @@ private struct JournalDetailEntryBrowser: View {
                 image: storyboard.image.storytopiaDownsampled(maxDimension: 640),
                 promptText: storyboard.promptText,
                 artStyle: storyboard.artStyle,
+                generationQuality: storyboard.generationQuality,
                 panelLayout: storyboard.panelLayout,
                 sourcePhotoCount: storyboard.sourcePhotoCount,
                 createdAt: storyboard.createdAt,
@@ -15695,6 +15825,7 @@ private struct JournalDetailEntryBrowser: View {
                             image: storyboard.image.storytopiaDownsampled(maxDimension: 640),
                             promptText: storyboard.promptText,
                             artStyle: storyboard.artStyle,
+                            generationQuality: storyboard.generationQuality,
                             panelLayout: storyboard.panelLayout,
                             sourcePhotoCount: storyboard.sourcePhotoCount,
                             createdAt: storyboard.createdAt,

@@ -885,6 +885,9 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
                 multiplier: image.size.height / max(image.size.width, 1)
             ).isActive = true
             stackView.addArrangedSubview(imageView)
+            if storyboards.indices.contains(index) {
+                stackView.addArrangedSubview(makeMetadataView(for: storyboards[index]))
+            }
             return imageView
         }
 
@@ -893,6 +896,48 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         }
 
         return scrollView
+    }
+
+    private func makeMetadataView(for storyboard: GeneratedStoryboard) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .black
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        let artStyleLabel = metadataLabel(text: "Art Style: \(storyboard.artStyle)")
+        let qualityText = storyboard.generationQuality?.title ?? "Unavailable"
+        let qualityLabel = metadataLabel(text: "Quality: \(qualityText)")
+
+        stack.addArrangedSubview(artStyleLabel)
+        stack.addArrangedSubview(qualityLabel)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -18),
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -22)
+        ])
+
+        return container
+    }
+
+    private func metadataLabel(text: String) -> UILabel {
+        let label = UILabel()
+        label.text = text
+        label.textColor = UIColor.white.withAlphaComponent(0.82)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        label.adjustsFontSizeToFitWidth = true
+        label.minimumScaleFactor = 0.82
+        return label
     }
 
     private func makeStoryboardPicker(context: Context) -> UIView? {

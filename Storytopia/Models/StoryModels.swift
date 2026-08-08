@@ -130,6 +130,7 @@ struct GeneratedStoryboard: Identifiable {
     let image: UIImage
     let promptText: String
     let artStyle: String
+    let generationQuality: OpenAIImageGenerationQuality?
     let panelLayout: String?
     let sourcePhotoCount: Int
     let createdAt: Date
@@ -144,6 +145,7 @@ struct GeneratedStoryboard: Identifiable {
         image: UIImage,
         promptText: String,
         artStyle: String,
+        generationQuality: OpenAIImageGenerationQuality? = nil,
         panelLayout: String? = nil,
         sourcePhotoCount: Int,
         createdAt: Date = Date(),
@@ -157,6 +159,7 @@ struct GeneratedStoryboard: Identifiable {
         self.image = image
         self.promptText = promptText
         self.artStyle = artStyle
+        self.generationQuality = generationQuality
         self.panelLayout = panelLayout
         self.sourcePhotoCount = sourcePhotoCount
         self.createdAt = createdAt
@@ -173,6 +176,7 @@ struct GeneratedStoryboard: Identifiable {
             image: image,
             promptText: promptText,
             artStyle: artStyle,
+            generationQuality: generationQuality,
             panelLayout: panelLayout,
             sourcePhotoCount: sourcePhotoCount,
             createdAt: createdAt,
@@ -384,7 +388,7 @@ enum OpenAITestConfig {
     static let imageModel = "gpt-image-2"
 }
 
-enum OpenAIImageGenerationQuality: String, CaseIterable, Identifiable {
+enum OpenAIImageGenerationQuality: String, CaseIterable, Codable, Identifiable, Sendable {
     case standard = "low"
     case highDefinition = "medium"
 
@@ -1186,6 +1190,7 @@ enum GeneratedStoryboardStore {
                 image: image,
                 promptText: item.promptText,
                 artStyle: item.artStyle,
+                generationQuality: item.generationQuality,
                 panelLayout: item.panelLayout,
                 sourcePhotoCount: item.sourcePhotoCount,
                 createdAt: item.createdAt,
@@ -1210,6 +1215,7 @@ enum GeneratedStoryboardStore {
                 clientEntryID: storyboard.clientEntryID,
                 promptText: storyboard.promptText,
                 artStyle: storyboard.artStyle,
+                generationQuality: storyboard.generationQuality,
                 panelLayout: storyboard.panelLayout,
                 sourcePhotoCount: storyboard.sourcePhotoCount,
                 createdAt: storyboard.createdAt,
@@ -1244,6 +1250,7 @@ enum GeneratedStoryboardStore {
         clientEntryID: UUID,
         promptText: String,
         artStyle: String,
+        generationQuality: OpenAIImageGenerationQuality? = nil,
         panelLayout: String?,
         sourcePhotoCount: Int,
         id: UUID = UUID(),
@@ -1271,6 +1278,7 @@ enum GeneratedStoryboardStore {
             image: image,
             promptText: promptText,
             artStyle: artStyle,
+            generationQuality: generationQuality,
             panelLayout: panelLayout,
             sourcePhotoCount: sourcePhotoCount,
             imageFileName: imageFileName,
@@ -1294,6 +1302,7 @@ enum GeneratedStoryboardStore {
             clientEntryID: clientEntryID,
             promptText: storyboard.promptText,
             artStyle: storyboard.artStyle,
+            generationQuality: storyboard.generationQuality,
             panelLayout: storyboard.panelLayout,
             sourcePhotoCount: storyboard.sourcePhotoCount,
             id: storyboard.id,
@@ -1329,6 +1338,7 @@ enum GeneratedStoryboardStore {
                 image: existing.image,
                 promptText: existing.promptText,
                 artStyle: existing.artStyle,
+                generationQuality: existing.generationQuality,
                 panelLayout: existing.panelLayout,
                 sourcePhotoCount: existing.sourcePhotoCount,
                 createdAt: existing.createdAt,
@@ -1448,6 +1458,7 @@ struct GeneratedStoryboardMetadata: Codable {
     let clientEntryID: UUID?
     let promptText: String
     let artStyle: String
+    let generationQuality: OpenAIImageGenerationQuality?
     let panelLayout: String?
     let sourcePhotoCount: Int
     let createdAt: Date

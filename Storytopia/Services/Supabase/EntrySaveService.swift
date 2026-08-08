@@ -98,6 +98,7 @@ struct EntryStoryboard: Identifiable, Codable, Equatable, Sendable {
     let createdAt: Date
     let updatedAt: Date
     let artStyle: String?
+    let generationQuality: OpenAIImageGenerationQuality?
     let panelLayout: String?
     let prompt: String?
     let isPrimary: Bool
@@ -111,6 +112,7 @@ struct EntryStoryboard: Identifiable, Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case artStyle = "art_style"
+        case generationQuality = "generation_quality"
         case panelLayout = "panel_layout"
         case prompt
         case isPrimary = "is_primary"
@@ -124,6 +126,7 @@ private struct EntryStoryboardPayload: Encodable, Sendable {
     let clientEntryID: UUID
     let storagePath: String
     let artStyle: String?
+    let generationQuality: OpenAIImageGenerationQuality?
     let panelLayout: String?
     let prompt: String?
     let isPrimary: Bool
@@ -135,6 +138,7 @@ private struct EntryStoryboardPayload: Encodable, Sendable {
         case clientEntryID = "client_entry_id"
         case storagePath = "storage_path"
         case artStyle = "art_style"
+        case generationQuality = "generation_quality"
         case panelLayout = "panel_layout"
         case prompt
         case isPrimary = "is_primary"
@@ -342,6 +346,7 @@ struct SupabaseStoryboardService {
                         clientEntryID: clientEntryID,
                         storagePath: storagePath,
                         artStyle: trimmedOrNil(storyboard.artStyle),
+                        generationQuality: storyboard.generationQuality,
                         panelLayout: storyboard.panelLayout.flatMap { trimmedOrNil($0) },
                         prompt: nil,
                         isPrimary: true,
@@ -411,7 +416,7 @@ struct SupabaseStoryboardService {
         do {
             return try await client
                 .from("entry_storyboards")
-                .select("id,user_id,client_entry_id,storage_path,created_at,updated_at,art_style,panel_layout,prompt,is_primary,generation_status")
+                .select("id,user_id,client_entry_id,storage_path,created_at,updated_at,art_style,generation_quality,panel_layout,prompt,is_primary,generation_status")
                 .eq("is_primary", value: true)
                 .eq("generation_status", value: "completed")
                 .order("created_at", ascending: false)
@@ -526,6 +531,7 @@ struct SupabaseStoryboardService {
                     image: fullImage,
                     promptText: row.prompt ?? "",
                     artStyle: row.artStyle ?? "Anime",
+                    generationQuality: row.generationQuality,
                     panelLayout: row.panelLayout,
                     sourcePhotoCount: 0,
                     createdAt: row.createdAt,
@@ -543,6 +549,7 @@ struct SupabaseStoryboardService {
                         image: cardImage,
                         promptText: row.prompt ?? "",
                         artStyle: row.artStyle ?? "Anime",
+                        generationQuality: row.generationQuality,
                         panelLayout: row.panelLayout,
                         sourcePhotoCount: 0,
                         createdAt: row.createdAt,
@@ -611,6 +618,7 @@ struct SupabaseStoryboardService {
                         image: image,
                         promptText: row.prompt ?? "",
                         artStyle: row.artStyle ?? "Anime",
+                        generationQuality: row.generationQuality,
                         panelLayout: row.panelLayout,
                         sourcePhotoCount: 0,
                         createdAt: row.createdAt,

@@ -2458,6 +2458,7 @@ struct CreateEntryView: View {
                     clientEntryID: prepareResult.localDraftID,
                     promptText: entryText,
                     artStyle: selectedArtStyle,
+                    generationQuality: generationQuality,
                     panelLayout: nil,
                     sourcePhotoCount: min(photoImages.count + entryCharacters.count, EntryCharacterRules.maxGenerationImageCount)
                 )
@@ -2475,6 +2476,7 @@ struct CreateEntryView: View {
                         image: storyboard.image,
                         promptText: storyboard.promptText,
                         artStyle: storyboard.artStyle,
+                        generationQuality: storyboard.generationQuality,
                         panelLayout: storyboard.panelLayout,
                         sourcePhotoCount: storyboard.sourcePhotoCount,
                         createdAt: storyboard.createdAt,
@@ -2490,6 +2492,7 @@ struct CreateEntryView: View {
                         image: storyboard.image,
                         promptText: storyboard.promptText,
                         artStyle: storyboard.artStyle,
+                        generationQuality: storyboard.generationQuality,
                         panelLayout: storyboard.panelLayout,
                         sourcePhotoCount: storyboard.sourcePhotoCount,
                         createdAt: storyboard.createdAt,

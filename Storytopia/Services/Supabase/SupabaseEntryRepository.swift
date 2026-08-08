@@ -72,6 +72,14 @@ struct JournalEntrySummaryCounts: Codable, Equatable, Sendable {
     let completed: Int
 }
 
+private struct EntryClientIDRow: Decodable, Sendable {
+    let clientEntryID: UUID
+
+    private enum CodingKeys: String, CodingKey {
+        case clientEntryID = "client_entry_id"
+    }
+}
+
 struct JournalEntryPayload: Encodable, Sendable {
     let userID: UUID
     let clientEntryID: UUID
@@ -995,7 +1003,7 @@ struct SupabaseEntryRepository {
             .neq("status", value: JournalEntryStatus.archived.rawValue)
 
         switch statusFilter {
-        case .all:
+        case .all, .addToJournal:
             break
         case .drafts:
             query = query.neq("status", value: JournalEntryStatus.completed.rawValue)
@@ -1072,6 +1080,23 @@ struct SupabaseEntryRepository {
                 drafts: draftCount,
                 completed: completedCount
             )
+        } catch {
+            throw JournalEntryRepositoryError.operationFailed
+        }
+    }
+
+    func getActiveEntryClientIDs() async throws -> Set<UUID> {
+        let userID = try await authenticatedUserID()
+
+        do {
+            let rows: [EntryClientIDRow] = try await client
+                .from("entries")
+                .select("client_entry_id")
+                .eq("user_id", value: userID)
+                .neq("status", value: JournalEntryStatus.archived.rawValue)
+                .execute()
+                .value
+            return Set(rows.map(\.clientEntryID))
         } catch {
             throw JournalEntryRepositoryError.operationFailed
         }
@@ -1337,7 +1362,7 @@ struct SupabaseEntryRepository {
             .neq("status", value: JournalEntryStatus.archived.rawValue)
 
         switch statusFilter {
-        case .all:
+        case .all, .addToJournal:
             break
         case .drafts:
             query = query.neq("status", value: JournalEntryStatus.completed.rawValue)
@@ -1365,6 +1390,7 @@ enum EntrySummaryStatusFilter: Sendable, Hashable {
     case all
     case drafts
     case completed
+    case addToJournal
 }
 
 private extension String {
