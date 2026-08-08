@@ -904,37 +904,38 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         container.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = UIStackView()
-        stack.axis = .vertical
+        stack.axis = .horizontal
         stack.alignment = .center
-        stack.spacing = 6
+        stack.distribution = .equalSpacing
+        stack.spacing = 18
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
 
-        let artStyleLabel = metadataLabel(text: "Art Style: \(storyboard.artStyle)")
-        let qualityText = storyboard.generationQuality?.title ?? "Unavailable"
-        let qualityLabel = metadataLabel(text: "Quality: \(qualityText)")
+        let artStyleLabel = metadataLabel(text: "Art Style: \(storyboard.artStyle)", alignment: .left)
 
         stack.addArrangedSubview(artStyleLabel)
-        stack.addArrangedSubview(qualityLabel)
+        if let qualityText = storyboard.generationQuality?.title {
+            let qualityLabel = metadataLabel(text: "Quality: \(qualityText)", alignment: .right)
+            stack.addArrangedSubview(qualityLabel)
+        }
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 18),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -18),
-            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -22)
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2)
         ])
 
         return container
     }
 
-    private func metadataLabel(text: String) -> UILabel {
+    private func metadataLabel(text: String, alignment: NSTextAlignment) -> UILabel {
         let label = UILabel()
         label.text = text
-        label.textColor = UIColor.white.withAlphaComponent(0.82)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.textAlignment = .center
-        label.numberOfLines = 0
+        label.textColor = UIColor(white: 0.68, alpha: 1)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textAlignment = alignment
+        label.numberOfLines = 1
         label.adjustsFontSizeToFitWidth = true
         label.minimumScaleFactor = 0.82
         return label
@@ -962,7 +963,7 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         let container = UIView()
         container.backgroundColor = UIColor(white: 0.035, alpha: 1)
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.heightAnchor.constraint(equalToConstant: 29).isActive = true
+        container.heightAnchor.constraint(equalToConstant: 6).isActive = true
 
         return container
     }
