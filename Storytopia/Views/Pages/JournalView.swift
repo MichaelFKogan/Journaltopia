@@ -9585,7 +9585,7 @@ struct EntriesView: View {
     @ViewBuilder
     private var entryRows: some View {
         if showsSampleEntries {
-            ForEach(filteredEntries) { entry in
+            ForEach(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
                 let category = categoryForSampleEntry(entry)
 
                 Button {
@@ -9594,6 +9594,7 @@ struct EntriesView: View {
                     EntryListRow(
                         entry: entry,
                         sortOption: selectedEntrySort,
+                        pageLabel: entryManualOrderLabel(for: index),
                         category: category,
                         completedStoryboardImage: category == .completed
                             ? .failed
@@ -9627,6 +9628,7 @@ struct EntriesView: View {
                     EntryListRow(
                         entry: displayEntry,
                         sortOption: selectedEntrySort,
+                        pageLabel: entryManualOrderLabel(for: index),
                         category: categoryForEntryItem(item),
                         completedStoryboardImage: isCompleted ? storyboardImage(for: item, fallbackIndex: completedFallbackIndex) : nil,
                         completedStoryboardCount: isCompleted ? storyboardCount(for: item) : 0,
@@ -9722,14 +9724,14 @@ struct EntriesView: View {
     private var entryGridContent: some View {
         LazyVGrid(columns: entryGridColumns, spacing: 14) {
             if showsSampleEntries {
-                ForEach(filteredEntries) { entry in
-                    sampleEntryGridCard(for: entry)
+                ForEach(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
+                    sampleEntryGridCard(for: entry, index: index)
                 }
             } else {
                 ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
                     let displayEntry = entryForDisplay(item)
 
-                    entryGridCard(for: item, displayEntry: displayEntry)
+                    entryGridCard(for: item, displayEntry: displayEntry, index: index)
                         .onAppear {
                             loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
                             loadCloudThumbnailIfNeeded(for: item)
@@ -9781,6 +9783,7 @@ struct EntriesView: View {
                     entry: displayEntry,
                     title: entryDisplayTitle(displayEntry),
                     sortOption: selectedEntrySort,
+                    pageLabel: entryManualOrderLabel(for: index),
                     storyboardImage: storyboardImage(for: item, fallbackIndex: index),
                     storyboardCount: storyboardCount(for: item),
                     isOpening: openingEntryPreview?.id == item.id,
@@ -9821,12 +9824,13 @@ struct EntriesView: View {
     }
 
     @ViewBuilder
-    private func sampleEntryGridCard(for entry: CreateEntryDraft) -> some View {
+    private func sampleEntryGridCard(for entry: CreateEntryDraft, index: Int) -> some View {
         if categoryForSampleEntry(entry) == .completed {
             CompletedEntryGridCard(
                 entry: entry,
                 title: entryDisplayTitle(entry),
                 sortOption: selectedEntrySort,
+                pageLabel: entryManualOrderLabel(for: index),
                 storyboardImage: .failed,
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
@@ -9838,6 +9842,7 @@ struct EntriesView: View {
             EntryGridPreviewCard(
                 entry: entry,
                 sortOption: selectedEntrySort,
+                pageLabel: entryManualOrderLabel(for: index),
                 isEditing: false,
                 showsActions: false,
                 title: entryDisplayTitle(entry),
@@ -9853,7 +9858,7 @@ struct EntriesView: View {
     }
 
     @ViewBuilder
-    private func entryGridCard(for item: EntryDisplayItem, displayEntry: CreateEntryDraft) -> some View {
+    private func entryGridCard(for item: EntryDisplayItem, displayEntry: CreateEntryDraft, index: Int) -> some View {
         if isCompletedEntryItem(item) {
             let fallbackIndex = completedStoryboardFallbackIndex(for: item)
 
@@ -9861,6 +9866,7 @@ struct EntriesView: View {
                 entry: displayEntry,
                 title: entryDisplayTitle(displayEntry),
                 sortOption: selectedEntrySort,
+                pageLabel: entryManualOrderLabel(for: index),
                 storyboardImage: storyboardImage(for: item, fallbackIndex: fallbackIndex),
                 storyboardCount: storyboardCount(for: item),
                 category: categoryForEntryItem(item),
@@ -9883,6 +9889,7 @@ struct EntriesView: View {
             EntryGridPreviewCard(
                 entry: displayEntry,
                 sortOption: selectedEntrySort,
+                pageLabel: entryManualOrderLabel(for: index),
                 isEditing: false,
                 showsActions: !showsSampleEntries,
                 title: entryDisplayTitle(displayEntry),
@@ -9911,6 +9918,10 @@ struct EntriesView: View {
                 }
             )
         }
+    }
+
+    private func entryManualOrderLabel(for index: Int) -> String? {
+        selectedEntrySort == .manual ? "\(index + 1)" : nil
     }
 
     private var entryGridLoadingPlaceholders: some View {
