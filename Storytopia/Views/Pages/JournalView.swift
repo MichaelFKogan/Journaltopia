@@ -9581,7 +9581,10 @@ struct EntriesView: View {
                         category: category,
                         completedStoryboardImage: category == .completed
                             ? .failed
-                            : nil
+                            : nil,
+                        rowHeight: 52,
+                        coverWidth: 34,
+                        coverHeight: 44
                     )
                 }
                 .buttonStyle(.plain)
@@ -9611,6 +9614,10 @@ struct EntriesView: View {
                         category: categoryForEntryItem(item),
                         completedStoryboardImage: isCompleted ? storyboardImage(for: item, fallbackIndex: completedFallbackIndex) : nil,
                         completedStoryboardCount: isCompleted ? storyboardCount(for: item) : 0,
+                        showsCompletedStoryboardCount: false,
+                        rowHeight: 52,
+                        coverWidth: 34,
+                        coverHeight: 44,
                         isSelecting: editMode == .active,
                         isSelected: selectedEntryIDs.contains(item.id)
                     )
@@ -9839,6 +9846,7 @@ struct EntriesView: View {
                 title: entryDisplayTitle(displayEntry),
                 sortOption: selectedEntrySort,
                 storyboardImage: storyboardImage(for: item, fallbackIndex: fallbackIndex),
+                storyboardCount: storyboardCount(for: item),
                 category: categoryForEntryItem(item),
                 isOpening: openingEntryPreview?.id == item.id,
                 isSelecting: editMode == .active && !showsSampleEntries,
