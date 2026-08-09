@@ -1797,6 +1797,10 @@ struct CreateEntryView: View {
     @State private var previewedStoryboardPhoto: UIImage?
     @State private var entryCharacters: [EntryCharacter] = []
     @State private var characterEditorSession: CharacterEditorSession?
+    @State private var isShowingReusableCharactersSheet = false
+    @State private var reusableCharacters: [EntryCharacter] = []
+    @State private var isLoadingReusableCharacters = false
+    @State private var reusableCharactersErrorMessage: String?
     @State private var isPreviewingCompletedStoryboard = false
     @State private var selectedEntryStoryboardIndex: Int?
     @State private var completedEntryStoryboardDragOffset: CGSize = .zero
@@ -2181,6 +2185,18 @@ struct CreateEntryView: View {
         editorWithPhotoSourceSheet
             .sheet(isPresented: isCharacterEditorSheetPresented) {
                 characterEditorSheetContent()
+            }
+            .sheet(isPresented: $isShowingReusableCharactersSheet) {
+                ReusableCharactersSheet(
+                    characters: availableReusableCharacters,
+                    isLoading: isLoadingReusableCharacters,
+                    errorMessage: reusableCharactersErrorMessage,
+                    onSelect: addReusableCharacter,
+                    onRefresh: refreshReusableCharacters
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Color.homePageBackground)
             }
     }
 
@@ -6193,16 +6209,34 @@ struct CreateEntryView: View {
     }
 
     private var characterStripHeader: some View {
-        HStack(alignment: .center, spacing: 6) {
-            Image(systemName: "person.crop.circle")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.storyInk.opacity(0.84))
-                .frame(width: 20, height: 20)
+        HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.84))
+                    .frame(width: 20, height: 20)
 
-            Text("Characters")
-                .font(.system(size: 14, weight: .semibold, design: .serif))
-                .foregroundStyle(Color.storyInk)
+                Text("Characters")
+                    .font(.system(size: 14, weight: .semibold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+            }
+
+            Spacer(minLength: 8)
+
+            myCharactersButton
         }
+    }
+
+    private var myCharactersButton: some View {
+        Button {
+            openReusableCharactersSheet()
+        } label: {
+            Text("My Characters")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("My Characters")
     }
 
     private var referencePhotoExplainerText: some View {
@@ -6908,6 +6942,89 @@ struct CreateEntryView: View {
     private func saveCharacter(_ character: EntryCharacter) {
         entryCharacters = EntryCharacterRules.applyingSingleMainCharacter(character, to: entryCharacters)
         characterEditorSession = nil
+    }
+
+    private var availableReusableCharacters: [EntryCharacter] {
+        let attachedNames = Set(entryCharacters.map { EntryCharacterRules.normalizedName($0.name) })
+        return reusableCharacters.filter { character in
+            let normalizedName = EntryCharacterRules.normalizedName(character.name)
+            return !normalizedName.isEmpty && !attachedNames.contains(normalizedName)
+        }
+    }
+
+    private func openReusableCharactersSheet() {
+        dismissKeyboard()
+        isShowingReusableCharactersSheet = true
+        reusableCharacters = mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
+        refreshReusableCharacters()
+    }
+
+    private func refreshReusableCharacters() {
+        let localCharacters = localReusableCharacters()
+        reusableCharacters = mergedReusableCharacters(localCharacters, reusableCharacters)
+        reusableCharactersErrorMessage = nil
+
+        guard let userID = authStore.userID else {
+            isLoadingReusableCharacters = false
+            return
+        }
+
+        isLoadingReusableCharacters = true
+        Task {
+            do {
+                let cloudCharacters = try await SupabaseEntryCharacterService().loadAllCharacters(userID: userID)
+                await MainActor.run {
+                    reusableCharacters = mergedReusableCharacters(cloudCharacters, localCharacters)
+                    isLoadingReusableCharacters = false
+                }
+            } catch {
+                await MainActor.run {
+                    reusableCharacters = localCharacters
+                    reusableCharactersErrorMessage = localCharacters.isEmpty ? "Could not load your saved characters." : nil
+                    isLoadingReusableCharacters = false
+                }
+            }
+        }
+    }
+
+    private func addReusableCharacter(_ character: EntryCharacter) {
+        let now = Date()
+        let reusableCharacter = EntryCharacter(
+            name: character.name,
+            role: character.role,
+            image: character.image,
+            createdAt: now,
+            updatedAt: now
+        )
+        saveCharacter(reusableCharacter)
+        isShowingReusableCharactersSheet = false
+    }
+
+    private func localReusableCharacters() -> [EntryCharacter] {
+        CreateEntryDraftStore.loadAll().flatMap(\.characters)
+    }
+
+    private func mergedReusableCharacters(_ characterGroups: [EntryCharacter]...) -> [EntryCharacter] {
+        var seenNames: Set<String> = []
+        var mergedCharacters: [EntryCharacter] = []
+
+        for character in characterGroups.flatMap({ $0 }) {
+            let normalizedName = EntryCharacterRules.normalizedName(character.name)
+            guard !normalizedName.isEmpty, !seenNames.contains(normalizedName) else {
+                continue
+            }
+
+            seenNames.insert(normalizedName)
+            mergedCharacters.append(character)
+        }
+
+        return mergedCharacters.sorted {
+            if $0.updatedAt != $1.updatedAt {
+                return $0.updatedAt > $1.updatedAt
+            }
+
+            return $0.createdAt > $1.createdAt
+        }
     }
 
     private func deleteCharacter(_ character: EntryCharacter) {
@@ -10059,6 +10176,7 @@ struct CharacterStripThumbnail: View {
 private struct EntryDetailsCharactersCard: View {
     let characters: [EntryCharacter]
     let onAddCharacter: () -> Void
+    let onMyCharacters: () -> Void
     let onEditCharacter: (EntryCharacter) -> Void
     let onDeleteCharacter: (EntryCharacter) -> Void
 
@@ -10097,6 +10215,14 @@ private struct EntryDetailsCharactersCard: View {
                 .foregroundStyle(Color.storyInk)
 
             Spacer(minLength: 0)
+
+            Button(action: onMyCharacters) {
+                Text("My Characters")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("My Characters")
         }
         .padding(.horizontal, 16)
     }
@@ -10171,6 +10297,161 @@ private struct EntryDetailsCharactersCard: View {
                 }
             }
         }
+    }
+}
+
+private struct ReusableCharactersSheet: View {
+    let characters: [EntryCharacter]
+    let isLoading: Bool
+    let errorMessage: String?
+    let onSelect: (EntryCharacter) -> Void
+    let onRefresh: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if characters.isEmpty && !isLoading {
+                    emptyState
+                } else {
+                    characterList
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Color.homePageBackground.ignoresSafeArea())
+            .navigationTitle("My Characters")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                    .foregroundStyle(Color.storyPurple)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        onRefresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .foregroundStyle(Color.storyPurple)
+                    .disabled(isLoading)
+                    .accessibilityLabel("Refresh characters")
+                }
+            }
+        }
+    }
+
+    private var characterList: some View {
+        ScrollView {
+            LazyVStack(spacing: 10) {
+                if isLoading {
+                    loadingRow
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.red.opacity(0.86))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                }
+
+                ForEach(characters) { character in
+                    Button {
+                        onSelect(character)
+                    } label: {
+                        reusableCharacterRow(character)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .tint(Color.storyPurple)
+
+            Text("Loading characters")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.68))
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 52)
+        .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "person.crop.circle.badge.questionmark")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(Color.storyPurple.opacity(0.9))
+
+            Text("No saved characters yet")
+                .font(.system(size: 17, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.red.opacity(0.86))
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("Characters you add to entries will appear here.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.storyInk.opacity(0.62))
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 30)
+    }
+
+    private func reusableCharacterRow(_ character: EntryCharacter) -> some View {
+        HStack(spacing: 12) {
+            Image(uiImage: character.image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 58, height: 58)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(character.name)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Text(character.role.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.58))
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 76)
+        .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
     }
 }
 

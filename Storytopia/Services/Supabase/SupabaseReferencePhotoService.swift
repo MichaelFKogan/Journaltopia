@@ -493,34 +493,25 @@ struct SupabaseEntryCharacterService {
             let rows = try await existingCharacters(entryID: entryID)
                 .sorted { $0.sortOrder < $1.sortOrder }
 
-            var characters: [EntryCharacter] = []
-            for row in rows {
-                let data: Data
-                if let cachedData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: row.storagePath) {
-                    data = cachedData
-                } else {
-                    data = try await client.storage
-                        .from(bucketName)
-                        .download(path: row.storagePath)
-                    SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: row.storagePath)
-                }
-                guard let image = UIImage(data: data) else {
-                    continue
-                }
-                characters.append(
-                    EntryCharacter(
-                        id: row.id,
-                        name: row.name,
-                        role: row.role,
-                        sourcePhotoID: row.sourcePhotoID,
-                        image: image,
-                        createdAt: row.createdAt,
-                        updatedAt: row.updatedAt
-                    )
-                )
-            }
+            let characters = try await loadCharacters(from: rows)
 
             return EntryCharacterRules.orderedCharacters(characters)
+        } catch {
+            throw SupabaseEntryCharacterError.syncFailed
+        }
+    }
+
+    func loadAllCharacters(userID: UUID) async throws -> [EntryCharacter] {
+        do {
+            let rows: [EntryCharacterPhoto] = try await client
+                .from("entry_characters")
+                .select()
+                .eq("user_id", value: userID)
+                .order("updated_at", ascending: false)
+                .execute()
+                .value
+
+            return try await loadCharacters(from: rows)
         } catch {
             throw SupabaseEntryCharacterError.syncFailed
         }
@@ -555,6 +546,37 @@ struct SupabaseEntryCharacterService {
             .eq("client_entry_id", value: clientEntryID)
             .execute()
             .value
+    }
+
+    private func loadCharacters(from rows: [EntryCharacterPhoto]) async throws -> [EntryCharacter] {
+        var characters: [EntryCharacter] = []
+        for row in rows {
+            let data: Data
+            if let cachedData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: row.storagePath) {
+                data = cachedData
+            } else {
+                data = try await client.storage
+                    .from(bucketName)
+                    .download(path: row.storagePath)
+                SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: row.storagePath)
+            }
+            guard let image = UIImage(data: data) else {
+                continue
+            }
+            characters.append(
+                EntryCharacter(
+                    id: row.id,
+                    name: row.name,
+                    role: row.role,
+                    sourcePhotoID: row.sourcePhotoID,
+                    image: image,
+                    createdAt: row.createdAt,
+                    updatedAt: row.updatedAt
+                )
+            )
+        }
+
+        return characters
     }
 
     private func deleteCloudCharacter(_ character: EntryCharacterPhoto) async throws {
