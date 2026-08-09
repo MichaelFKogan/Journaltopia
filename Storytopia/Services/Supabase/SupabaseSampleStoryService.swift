@@ -20,6 +20,7 @@ struct SampleJournal: Identifiable {
     let colorHex: String?
     let symbol: String?
     let coverImageName: String?
+    let coverStoragePath: String?
     let remoteCover: JournalRemoteCover?
     let kind: String
     let isFavorite: Bool
@@ -315,6 +316,7 @@ struct SupabaseSampleStoryService {
                     colorHex: "#3D2678",
                     symbol: "book.closed.fill",
                     coverImageName: nil,
+                    coverStoragePath: nil,
                     remoteCover: nil,
                     kind: "journal",
                     isFavorite: false,
@@ -337,6 +339,7 @@ struct SupabaseSampleStoryService {
                     colorHex: journal.colorHex,
                     symbol: journal.symbol,
                     coverImageName: journal.coverImageName,
+                    coverStoragePath: journal.coverStoragePath,
                     remoteCover: journal.remoteCover,
                     kind: journal.kind,
                     isFavorite: journal.isFavorite,
@@ -346,6 +349,36 @@ struct SupabaseSampleStoryService {
             )
             .execute()
         SampleStoryPackCache.clear()
+    }
+
+    func uploadSampleJournalCover(_ image: UIImage, journalID: UUID) async throws -> String {
+        let storagePath = [
+            authoringPackSlug,
+            "journals",
+            journalID.uuidString.lowercased(),
+            "cover.jpg"
+        ].joined(separator: "/")
+
+        try await uploadSampleImage(image, storagePath: storagePath)
+        return storagePath
+    }
+
+    func downloadSampleJournalCover(storagePath: String) async throws -> UIImage {
+        let data: Data
+        if let cachedData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: storagePath) {
+            data = cachedData
+        } else {
+            data = try await client.storage
+                .from(bucketName)
+                .download(path: storagePath)
+            SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: storagePath)
+        }
+
+        guard let image = UIImage(data: data) else {
+            throw SupabaseStoryboardError.invalidImage
+        }
+
+        return image
     }
 
     func deleteSampleJournal(id: UUID) async throws {
@@ -378,6 +411,7 @@ struct SupabaseSampleStoryService {
                         colorHex: journal.colorHex,
                         symbol: journal.symbol,
                         coverImageName: journal.coverImageName,
+                        coverStoragePath: journal.coverStoragePath,
                         remoteCover: journal.remoteCover,
                         kind: journal.kind,
                         isFavorite: journal.isFavorite,
@@ -472,6 +506,7 @@ struct SupabaseSampleStoryService {
                 colorHex: journal.colorHex,
                 symbol: journal.symbol,
                 coverImageName: journal.coverImageName,
+                coverStoragePath: journal.coverStoragePath,
                 remoteCover: journal.remoteCover,
                 kind: journal.kind,
                 isFavorite: journal.isFavorite,
@@ -688,6 +723,7 @@ struct SupabaseSampleStoryService {
                     colorHex: "#3D2678",
                     symbol: "sparkles",
                     coverImageName: nil,
+                    coverStoragePath: nil,
                     remoteCover: nil,
                     kind: "journal",
                     isFavorite: true,
@@ -1189,6 +1225,7 @@ private struct SampleJournalRow: Codable {
     let colorHex: String?
     let symbol: String?
     let coverImageName: String?
+    let coverStoragePath: String?
     let remoteCover: JournalRemoteCover?
     let kind: String
     let isFavorite: Bool
@@ -1204,6 +1241,7 @@ private struct SampleJournalRow: Codable {
         case colorHex = "color_hex"
         case symbol
         case coverImageName = "cover_image_name"
+        case coverStoragePath = "cover_storage_path"
         case remoteCover = "remote_cover"
         case kind
         case isFavorite = "is_favorite"
@@ -1429,6 +1467,7 @@ private struct SampleJournalUpsert: Encodable {
     let colorHex: String?
     let symbol: String?
     let coverImageName: String?
+    let coverStoragePath: String?
     let remoteCover: JournalRemoteCover?
     let kind: String
     let isFavorite: Bool
@@ -1442,6 +1481,7 @@ private struct SampleJournalUpsert: Encodable {
         case colorHex = "color_hex"
         case symbol
         case coverImageName = "cover_image_name"
+        case coverStoragePath = "cover_storage_path"
         case remoteCover = "remote_cover"
         case kind
         case isFavorite = "is_favorite"
@@ -1600,6 +1640,7 @@ private struct CachedSampleJournal: Codable {
     let colorHex: String?
     let symbol: String?
     let coverImageName: String?
+    let coverStoragePath: String?
     let remoteCover: JournalRemoteCover?
     let kind: String
     let isFavorite: Bool
@@ -1616,6 +1657,7 @@ private struct CachedSampleJournal: Codable {
         colorHex = journal.colorHex
         symbol = journal.symbol
         coverImageName = journal.coverImageName
+        coverStoragePath = journal.coverStoragePath
         remoteCover = journal.remoteCover
         kind = journal.kind
         isFavorite = journal.isFavorite
@@ -1635,6 +1677,7 @@ private struct CachedSampleJournal: Codable {
             colorHex: colorHex,
             symbol: symbol,
             coverImageName: coverImageName,
+            coverStoragePath: coverStoragePath,
             remoteCover: remoteCover,
             kind: kind,
             isFavorite: isFavorite,

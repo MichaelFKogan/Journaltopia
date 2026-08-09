@@ -776,7 +776,11 @@ struct JournalView: View {
 
         chapters[index] = updatedChapter
         if isSampleAuthorMode {
-            updateSampleJournal(updatedChapter)
+            updateSampleJournal(
+                updatedChapter,
+                storedCoverImage: customization.storedCoverImage,
+                clearsStoredCover: customization.clearsStoredCover
+            )
             journalBeingCustomized = nil
             return
         }
@@ -1081,7 +1085,8 @@ struct JournalView: View {
             storyboardGenerationStatus: $storyboardGenerationStatus,
             onCreateEntryRequested: openFreshEntryFromJournalDetail,
             onChapterUpdated: updateChapterFromDetail,
-            onOpenExistingEntry: openExistingEntryFromJournalDetail
+            onOpenExistingEntry: openExistingEntryFromJournalDetail,
+            isSampleAuthorMode: isSampleAuthorMode
         ) { entry in
             guard let chapterIndex = chapters.firstIndex(where: { $0.id == chapter.id }) else {
                 return
@@ -1249,6 +1254,12 @@ struct JournalView: View {
                 return
             }
 
+            await reconcileSampleJournalCovers(
+                pack.journals,
+                service: service,
+                preservesLocalCoversWithoutRemotePath: isSampleAuthorMode
+            )
+
             await MainActor.run {
                 seedSampleDraftsForJournals(pack.entries)
                 let storyboardsByEntryID = sampleStoryboardsByMergingLocalFallbacks(
@@ -1282,11 +1293,50 @@ struct JournalView: View {
         )
     }
 
-    private func updateSampleJournal(_ chapter: PrototypeChapter) {
+    private func reconcileSampleJournalCovers(
+        _ journals: [SampleJournal],
+        service: SupabaseSampleStoryService,
+        preservesLocalCoversWithoutRemotePath: Bool
+    ) async {
+        for journal in journals {
+            guard
+                journal.remoteCover == nil,
+                journal.coverImageName?.trimmedOrNil == nil,
+                let storagePath = journal.coverStoragePath?.trimmedOrNil
+            else {
+                if !preservesLocalCoversWithoutRemotePath || journal.remoteCover != nil || journal.coverImageName?.trimmedOrNil != nil {
+                    await MainActor.run {
+                        JournalCoverStore.delete(journalID: journal.id, legacyTitle: journal.title)
+                    }
+                }
+                continue
+            }
+
+            do {
+                let image = try await service.downloadSampleJournalCover(storagePath: storagePath)
+                await MainActor.run {
+                    JournalCoverStore.save(image, journalID: journal.id, legacyTitle: journal.title)
+                }
+            } catch {
+                print("[Storytopia] Sample journal cover load failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func updateSampleJournal(
+        _ chapter: PrototypeChapter,
+        storedCoverImage: UIImage? = nil,
+        clearsStoredCover: Bool = false
+    ) {
         guard let existingJournal = sampleJournalsByID[chapter.id] else {
             return
         }
 
+        let preservesStoredCover = storedCoverImage == nil
+            && !clearsStoredCover
+            && chapter.remoteCover == nil
+            && chapter.coverImageName?.trimmedOrNil == nil
+        let coverStoragePath = preservesStoredCover ? existingJournal.coverStoragePath : nil
         let updatedJournal = SampleJournal(
             id: existingJournal.id,
             packID: existingJournal.packID,
@@ -1295,6 +1345,7 @@ struct JournalView: View {
             colorHex: JournalColorOption.hexString(for: chapter.color),
             symbol: chapter.symbol,
             coverImageName: chapter.coverImageName,
+            coverStoragePath: coverStoragePath,
             remoteCover: chapter.remoteCover,
             kind: chapter.kind == .storyboard ? "storyboard" : "journal",
             isFavorite: chapter.isFavorite,
@@ -1306,7 +1357,42 @@ struct JournalView: View {
 
         sampleJournalsByID[chapter.id] = updatedJournal
         Task {
-            try? await SupabaseSampleStoryService().updateSampleJournal(updatedJournal)
+            let service = SupabaseSampleStoryService()
+            var storedCoverPath = updatedJournal.coverStoragePath
+            if let storedCoverImage {
+                do {
+                    storedCoverPath = try await service.uploadSampleJournalCover(storedCoverImage, journalID: chapter.id)
+                } catch {
+                    print("[Storytopia] Sample journal cover upload failed: \(error.localizedDescription)")
+                    return
+                }
+            }
+
+            let persistedJournal = SampleJournal(
+                id: updatedJournal.id,
+                packID: updatedJournal.packID,
+                title: updatedJournal.title,
+                subtitle: updatedJournal.subtitle,
+                colorHex: updatedJournal.colorHex,
+                symbol: updatedJournal.symbol,
+                coverImageName: updatedJournal.coverImageName,
+                coverStoragePath: storedCoverPath,
+                remoteCover: updatedJournal.remoteCover,
+                kind: updatedJournal.kind,
+                isFavorite: updatedJournal.isFavorite,
+                displayOrder: updatedJournal.displayOrder,
+                entries: updatedJournal.entries,
+                createdAt: updatedJournal.createdAt,
+                updatedAt: Date()
+            )
+            do {
+                try await service.updateSampleJournal(persistedJournal)
+                await MainActor.run {
+                    sampleJournalsByID[chapter.id] = persistedJournal
+                }
+            } catch {
+                print("[Storytopia] Sample journal update failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -8352,6 +8438,7 @@ enum DailyJournalData {
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
+        isSampleAuthorMode: Bool = false,
         onAddEntry: @escaping (PrototypeEntry) -> Void
     ) -> some View {
         let datedChapter = dateTitledChapter(from: chapter, dayOffset: dayOffset)
@@ -8365,6 +8452,7 @@ enum DailyJournalData {
             onCreateEntryRequested: onCreateEntryRequested,
             onChapterUpdated: onChapterUpdated,
             onOpenExistingEntry: onOpenExistingEntry,
+            isSampleAuthorMode: isSampleAuthorMode,
             onCreateStory: onAddEntry
         )
     }
@@ -13932,6 +14020,7 @@ private struct PrototypeChapterDetailView: View {
     let onCreateEntryRequested: ((CreateEntryPresentation) -> Void)?
     let onChapterUpdated: (PrototypeChapter) -> Void
     let onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)?
+    let isSampleAuthorMode: Bool
     let entryDate: Date
     let presentation: Presentation
 
@@ -14037,6 +14126,15 @@ private struct PrototypeChapterDetailView: View {
             storedCoverImage: customization.storedCoverImage,
             force: customization.storedCoverImage != nil || customization.clearsStoredCover
         )
+        if isSampleAuthorMode {
+            syncSampleJournalCoverCustomization(
+                updatedChapter,
+                storedCoverImage: customization.storedCoverImage,
+                clearsStoredCover: customization.clearsStoredCover
+            )
+            return
+        }
+
         UserChapterStore.updateAppearance(
             id: updatedChapter.id,
             color: updatedChapter.color,
@@ -14048,6 +14146,55 @@ private struct PrototypeChapterDetailView: View {
             uploadsStoredCover: customization.storedCoverImage != nil,
             clearsStoredCover: customization.clearsStoredCover
         ))
+    }
+
+    private func syncSampleJournalCoverCustomization(
+        _ updatedChapter: PrototypeChapter,
+        storedCoverImage: UIImage?,
+        clearsStoredCover: Bool
+    ) {
+        Task {
+            let service = SupabaseSampleStoryService()
+            do {
+                let pack = try await service.loadAuthoringPack()
+                guard let existingJournal = pack.journals.first(where: { $0.id == updatedChapter.id }) else {
+                    return
+                }
+
+                let preservesStoredCover = storedCoverImage == nil
+                    && !clearsStoredCover
+                    && updatedChapter.remoteCover == nil
+                    && updatedChapter.coverImageName?.trimmedOrNil == nil
+                var coverStoragePath = preservesStoredCover ? existingJournal.coverStoragePath : nil
+                if let storedCoverImage {
+                    coverStoragePath = try await service.uploadSampleJournalCover(
+                        storedCoverImage,
+                        journalID: updatedChapter.id
+                    )
+                }
+
+                let sampleJournal = SampleJournal(
+                    id: existingJournal.id,
+                    packID: existingJournal.packID,
+                    title: updatedChapter.title,
+                    subtitle: updatedChapter.subtitle,
+                    colorHex: JournalColorOption.hexString(for: updatedChapter.color),
+                    symbol: updatedChapter.symbol,
+                    coverImageName: updatedChapter.coverImageName,
+                    coverStoragePath: coverStoragePath,
+                    remoteCover: updatedChapter.remoteCover,
+                    kind: updatedChapter.kind == .storyboard ? "storyboard" : "journal",
+                    isFavorite: updatedChapter.isFavorite,
+                    displayOrder: existingJournal.displayOrder,
+                    entries: existingJournal.entries,
+                    createdAt: existingJournal.createdAt,
+                    updatedAt: Date()
+                )
+                try await service.updateSampleJournal(sampleJournal)
+            } catch {
+                print("[Storytopia] Sample journal detail cover sync failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func retryPendingCoverSync() {
@@ -14103,6 +14250,7 @@ private struct PrototypeChapterDetailView: View {
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
+        isSampleAuthorMode: Bool = false,
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         let initialMembershipSnapshot = JournalDetailMembershipSnapshot.make(for: chapter)
@@ -14121,6 +14269,7 @@ private struct PrototypeChapterDetailView: View {
         self.onCreateEntryRequested = onCreateEntryRequested
         self.onChapterUpdated = onChapterUpdated
         self.onOpenExistingEntry = onOpenExistingEntry
+        self.isSampleAuthorMode = isSampleAuthorMode
         self.onCreateStory = onCreateStory
     }
 
