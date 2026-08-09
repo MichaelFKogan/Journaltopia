@@ -26,6 +26,7 @@ struct ContentView: View {
     @State private var openedStoryboardGenerationImage: UIImage?
     @State private var isOpeningEntryFromEntries: Bool
     @State private var isOpeningCompletedEntryFromEntries: Bool
+    @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
 
     init() {
         _entryText = State(initialValue: "")
@@ -76,6 +77,12 @@ struct ContentView: View {
         }
         .onChange(of: selectedPage) { _ in
             endWindowEditing()
+        }
+        .onChange(of: isSampleAuthorModeEnabled) { _ in
+            if selectedPage == .create {
+                dismissCreatePage()
+            }
+            reloadScopedLocalState()
         }
     }
 
@@ -138,7 +145,8 @@ struct ContentView: View {
                 activeDraftID: $activeDraftID,
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
-                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries
+                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -152,14 +160,16 @@ struct ContentView: View {
                 isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
                 generatedStoryboards: $generatedStoryboards,
-                storyboardGenerationStatus: $storyboardGenerationStatus
+                storyboardGenerationStatus: $storyboardGenerationStatus,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
             )
                 .transition(.identity)
                 .zIndex(0)
         case .profile:
             ProfileView(
                 selectedPage: pageSelection,
-                generatedStoryboards: $generatedStoryboards
+                generatedStoryboards: $generatedStoryboards,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
             )
             .transition(.identity)
             .zIndex(0)
@@ -209,6 +219,7 @@ struct ContentView: View {
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
             storyboardGenerationStatus: $storyboardGenerationStatus,
+            authoringMode: isSampleAuthorModeEnabled && authStore.userID != nil ? .sampleStudio : .user,
             dismissCreate: {
                 dismissCreatePage()
             }

@@ -15,12 +15,25 @@ Recommended paths:
 
 ## Tables
 
-Create content in this order:
+Use Settings -> Extra -> Sample Studio in the app to author samples through the normal Create Entry flow. Sample Studio writes to these sample tables and uploads images to `sample-story-assets`, not to real user data.
+
+Before using Sample Studio, add your signed-in Supabase account to `sample_story_admins` once:
+
+```sql
+insert into public.sample_story_admins (user_id, email)
+values ('YOUR_AUTH_USER_ID', 'you@example.com')
+on conflict (user_id) do update
+set email = excluded.email;
+```
+
+You can still create content manually in this order:
 
 1. `sample_story_packs`
-2. `sample_entries`
-3. `sample_storyboard_pages`
-4. `sample_entry_assets`
+2. `sample_journals`
+3. `sample_entries`
+4. `sample_journal_entries`
+5. `sample_storyboard_pages`
+6. `sample_entry_assets`
 
 Only one pack per locale should usually have `is_active = true`.
 
@@ -49,6 +62,26 @@ Only one pack per locale should usually have `is_active = true`.
 - `art_style`
 - `onboarding_callouts`
 - `display_order`
+
+## Journal Control
+
+`sample_journals` controls the mock Journals page:
+
+- `title`
+- `subtitle`
+- `color_hex`
+- `symbol`
+- `cover_image_name`
+- `remote_cover`
+- `kind`: `journal` or `storyboard`
+- `is_favorite`
+- `display_order`
+
+`sample_journal_entries` controls which sample entries appear in each sample journal:
+
+- `sample_journal_id`
+- `sample_entry_id`
+- `position`
 
 ## Storyboard Control
 

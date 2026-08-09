@@ -134,6 +134,15 @@ enum CreateEntryPresentation {
     }
 }
 
+enum CreateEntryAuthoringMode: Equatable {
+    case user
+    case sampleStudio
+
+    var isSampleStudio: Bool {
+        self == .sampleStudio
+    }
+}
+
 @MainActor
 private final class EntrySpeechTranscriber: ObservableObject {
     enum RecordingState: Equatable {
@@ -1392,12 +1401,40 @@ private enum CreateFormattingPalette {
 }
 
 private enum CreateEntryTextSize {
-    static let defaultSliderValue: Double = 0.25
+    static let defaultSliderValue: Double = 0.5
+    static let legacyDefaultSliderValue: Double = 0.25
     static let minimumFontSize: CGFloat = 14
-    static let fontSizeRange: CGFloat = 8
+    static let defaultFontSize: CGFloat = 16
+    static let maximumFontSize: CGFloat = 22
+    static let snapThreshold: Double = 0.035
 
     static func fontSize(for sliderValue: Double) -> CGFloat {
-        minimumFontSize + CGFloat(sliderValue) * fontSizeRange
+        let normalizedValue = normalizedSliderValue(for: sliderValue)
+        if normalizedValue <= defaultSliderValue {
+            let progress = CGFloat(normalizedValue / defaultSliderValue)
+            return minimumFontSize + progress * (defaultFontSize - minimumFontSize)
+        }
+
+        let progress = CGFloat((normalizedValue - defaultSliderValue) / (1 - defaultSliderValue))
+        return defaultFontSize + progress * (maximumFontSize - defaultFontSize)
+    }
+
+    static func normalizedSliderValue(for sliderValue: Double?) -> Double {
+        guard let sliderValue else {
+            return defaultSliderValue
+        }
+
+        if abs(sliderValue - legacyDefaultSliderValue) < 0.0001 {
+            return defaultSliderValue
+        }
+
+        return min(max(sliderValue, 0), 1)
+    }
+
+    static func snappedSliderValue(for sliderValue: Double) -> Double {
+        abs(sliderValue - defaultSliderValue) <= snapThreshold
+            ? defaultSliderValue
+            : min(max(sliderValue, 0), 1)
     }
 }
 
@@ -1422,7 +1459,7 @@ enum DraftThumbnailRenderer {
     ) -> UIImage? {
         let fontChoice = CreateFontChoice.savedValue(fontChoiceRawValue)
         let normalizedTextColorIndex = min(max(textColorIndex ?? 0, 0), CreateFormattingPalette.textColors.count - 1)
-        let normalizedTextSize = min(max(textSize ?? CreateEntryTextSize.defaultSliderValue, 0), 1)
+        let normalizedTextSize = CreateEntryTextSize.normalizedSliderValue(for: textSize)
         let paperStyle = paperStyleRawValue.flatMap(CreatePaperStyleChoice.init(rawValue:)) ?? .defaultChoice
         let normalizedPaperColorIndex = min(max(paperColorIndex ?? 0, 0), CreateFormattingPalette.paperColors.count - 1)
         let paperColor = CreateFormattingPalette.paperColors[normalizedPaperColorIndex]
@@ -1706,6 +1743,7 @@ struct CreateEntryView: View {
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
+    var authoringMode: CreateEntryAuthoringMode = .user
     var existingEntryStartsReadOnly = false
     let dismissCreate: () -> Void
     var onJournalEntryCreated: (String, PrototypeEntry) -> Void = { _, _ in }
@@ -2395,13 +2433,23 @@ struct CreateEntryView: View {
 
         Task {
             do {
-                let prepareResult = try await EntrySaveService().prepareEntryForGeneration(
-                    payload: generationPayload,
-                    isSignedIn: authStore.userID != nil,
-                    currentStatus: currentEntryStatus,
-                    requiresSave: requiresEntrySave,
-                    syncReferencePhotos: requiresReferencePhotoSync
-                )
+                let prepareResult: EntrySaveResult
+                if authoringMode.isSampleStudio {
+                    prepareResult = try await SupabaseSampleStoryService().prepareSampleEntryForGeneration(
+                        payload: generationPayload,
+                        currentStatus: currentEntryStatus,
+                        requiresSave: requiresEntrySave,
+                        syncReferencePhotos: requiresReferencePhotoSync
+                    )
+                } else {
+                    prepareResult = try await EntrySaveService().prepareEntryForGeneration(
+                        payload: generationPayload,
+                        isSignedIn: authStore.userID != nil,
+                        currentStatus: currentEntryStatus,
+                        requiresSave: requiresEntrySave,
+                        syncReferencePhotos: requiresReferencePhotoSync
+                    )
+                }
                 activeDraftID = prepareResult.localDraftID
                 setStoryboardGenerationGlobalStatus(
                     kind: .running,
@@ -2415,7 +2463,10 @@ struct CreateEntryView: View {
                 if case .photoUploadFailed(let message) = prepareResult.state {
                     throw StoryboardGenerationError.openAIMessage(message)
                 }
-                if authStore.userID != nil, requiresEntrySave, prepareResult.cloudEntry == nil {
+                if !authoringMode.isSampleStudio,
+                   authStore.userID != nil,
+                   requiresEntrySave,
+                   prepareResult.cloudEntry == nil {
                     throw StoryboardGenerationError.openAIMessage("Could not prepare this entry in Storytopia cloud.")
                 }
 
@@ -2460,7 +2511,8 @@ struct CreateEntryView: View {
                     artStyle: selectedArtStyle,
                     generationQuality: generationQuality,
                     panelLayout: nil,
-                    sourcePhotoCount: min(photoImages.count + entryCharacters.count, EntryCharacterRules.maxGenerationImageCount)
+                    sourcePhotoCount: min(photoImages.count + entryCharacters.count, EntryCharacterRules.maxGenerationImageCount),
+                    isSampleContent: authoringMode.isSampleStudio
                 )
                 print("[Storytopia] Storyboard saved.")
 
@@ -2468,39 +2520,65 @@ struct CreateEntryView: View {
                 GeneratedStoryboardStore.save(storyboardsAfterLocalSave)
 
                 let storyboardForCompletion: GeneratedStoryboard
-                do {
-                    let cloudStoryboard = try await SupabaseStoryboardService().persistPrimaryStoryboard(storyboard)
-                    storyboardForCompletion = GeneratedStoryboard(
-                        id: storyboard.id,
-                        clientEntryID: storyboard.clientEntryID,
-                        image: storyboard.image,
-                        promptText: storyboard.promptText,
-                        artStyle: storyboard.artStyle,
-                        generationQuality: storyboard.generationQuality,
-                        panelLayout: storyboard.panelLayout,
-                        sourcePhotoCount: storyboard.sourcePhotoCount,
-                        createdAt: storyboard.createdAt,
-                        imageFileName: storyboard.imageFileName,
-                        storagePath: cloudStoryboard.storagePath,
-                        cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
-                        isPrimary: true
-                    )
-                } catch {
-                    storyboardForCompletion = GeneratedStoryboard(
-                        id: storyboard.id,
-                        clientEntryID: storyboard.clientEntryID,
-                        image: storyboard.image,
-                        promptText: storyboard.promptText,
-                        artStyle: storyboard.artStyle,
-                        generationQuality: storyboard.generationQuality,
-                        panelLayout: storyboard.panelLayout,
-                        sourcePhotoCount: storyboard.sourcePhotoCount,
-                        createdAt: storyboard.createdAt,
-                        imageFileName: storyboard.imageFileName,
-                        storagePath: storyboard.storagePath,
-                        cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
-                        isPrimary: storyboard.isPrimary
-                    )
+                if authoringMode.isSampleStudio {
+                    do {
+                        storyboardForCompletion = try await SupabaseSampleStoryService().persistSampleStoryboard(storyboard)
+                    } catch {
+                        print("[Storytopia] Sample storyboard cloud sync failed after local save: \(error.localizedDescription)")
+                        storyboardForCompletion = GeneratedStoryboard(
+                            id: storyboard.id,
+                            clientEntryID: storyboard.clientEntryID,
+                            image: storyboard.image,
+                            promptText: storyboard.promptText,
+                            artStyle: storyboard.artStyle,
+                            generationQuality: storyboard.generationQuality,
+                            panelLayout: storyboard.panelLayout,
+                            sourcePhotoCount: storyboard.sourcePhotoCount,
+                            createdAt: storyboard.createdAt,
+                            imageFileName: storyboard.imageFileName,
+                            storagePath: storyboard.storagePath,
+                            cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
+                            isPrimary: storyboard.isPrimary,
+                            isSampleContent: storyboard.isSampleContent
+                        )
+                    }
+                } else {
+                    do {
+                        let cloudStoryboard = try await SupabaseStoryboardService().persistPrimaryStoryboard(storyboard)
+                        storyboardForCompletion = GeneratedStoryboard(
+                            id: storyboard.id,
+                            clientEntryID: storyboard.clientEntryID,
+                            image: storyboard.image,
+                            promptText: storyboard.promptText,
+                            artStyle: storyboard.artStyle,
+                            generationQuality: storyboard.generationQuality,
+                            panelLayout: storyboard.panelLayout,
+                            sourcePhotoCount: storyboard.sourcePhotoCount,
+                            createdAt: storyboard.createdAt,
+                            imageFileName: storyboard.imageFileName,
+                            storagePath: cloudStoryboard.storagePath,
+                            cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                            isPrimary: true,
+                            isSampleContent: storyboard.isSampleContent
+                        )
+                    } catch {
+                        storyboardForCompletion = GeneratedStoryboard(
+                            id: storyboard.id,
+                            clientEntryID: storyboard.clientEntryID,
+                            image: storyboard.image,
+                            promptText: storyboard.promptText,
+                            artStyle: storyboard.artStyle,
+                            generationQuality: storyboard.generationQuality,
+                            panelLayout: storyboard.panelLayout,
+                            sourcePhotoCount: storyboard.sourcePhotoCount,
+                            createdAt: storyboard.createdAt,
+                            imageFileName: storyboard.imageFileName,
+                            storagePath: storyboard.storagePath,
+                            cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
+                            isPrimary: storyboard.isPrimary,
+                            isSampleContent: storyboard.isSampleContent
+                        )
+                    }
                 }
                 storyboardsAfterLocalSave = GeneratedStoryboardStore.merging(storyboardForCompletion, into: storyboardsAfterLocalSave)
                 GeneratedStoryboardStore.save(storyboardsAfterLocalSave)
@@ -2544,10 +2622,23 @@ struct CreateEntryView: View {
                     )
                 }
 
-                let completionResult = try await EntrySaveService().markEntryCompletedAfterStoryboardSaved(
-                    payload: completionPayload,
-                    isSignedIn: authStore.userID != nil
-                )
+                let completionResult: EntrySaveResult
+                if authoringMode.isSampleStudio {
+                    completionResult = try await SupabaseSampleStoryService().markSampleEntryCompletedAfterStoryboardSaved(
+                        payload: completionPayload
+                    )
+                    if case .failed(let message) = completionResult.state {
+                        throw StoryboardGenerationError.openAIMessage(message)
+                    }
+                    if case .photoUploadFailed(let message) = completionResult.state {
+                        throw StoryboardGenerationError.openAIMessage(message)
+                    }
+                } else {
+                    completionResult = try await EntrySaveService().markEntryCompletedAfterStoryboardSaved(
+                        payload: completionPayload,
+                        isSignedIn: authStore.userID != nil
+                    )
+                }
                 print("[Storytopia] Entry completion succeeded.")
 
                 await MainActor.run {
@@ -3421,11 +3512,19 @@ struct CreateEntryView: View {
         setCloudSaveState(payload.photos.isEmpty ? .saving : .uploadingPhotos)
 
         do {
-            let result = try await EntrySaveService().saveEntryPreservingStatus(
-                payload: payload,
-                isSignedIn: authStore.userID != nil,
-                status: currentEntryStatus
-            )
+            let result: EntrySaveResult
+            if authoringMode.isSampleStudio {
+                result = try await SupabaseSampleStoryService().saveSampleEntry(
+                    payload: payload,
+                    status: currentEntryStatus
+                )
+            } else {
+                result = try await EntrySaveService().saveEntryPreservingStatus(
+                    payload: payload,
+                    isSignedIn: authStore.userID != nil,
+                    status: currentEntryStatus
+                )
+            }
             activeDraftID = result.localDraftID
             isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
             recentEntryLocations = EntryLocationRecentStore.all
@@ -3575,7 +3674,7 @@ struct CreateEntryView: View {
         isPrivateEntry = draft.isPrivate
         selectedFontChoice = CreateFontChoice.savedValue(draft.fontChoiceRawValue)
         selectedTextColorIndex = min(max(draft.textColorIndex ?? 0, 0), CreateFormattingPalette.textColors.count - 1)
-        previewTextSize = min(max(draft.textSize ?? CreateEntryTextSize.defaultSliderValue, 0), 1)
+        previewTextSize = CreateEntryTextSize.normalizedSliderValue(for: draft.textSize)
         selectedPaperStyleChoice = draft.paperStyleRawValue.flatMap(CreatePaperStyleChoice.init(rawValue:)) ?? .defaultChoice
         selectedPaperColorIndex = min(max(draft.paperColorIndex ?? 0, 0), CreateFormattingPalette.paperColors.count - 1)
         loadedDraftSnapshot = currentDraftSnapshot(id: draft.id)
@@ -5685,11 +5784,19 @@ struct CreateEntryView: View {
                 )
             }
 
-            let result = try? await EntrySaveService().saveEntryPreservingStatus(
-                payload: payload,
-                isSignedIn: authStore.userID != nil,
-                status: currentEntryStatus
-            )
+            let result: EntrySaveResult?
+            if authoringMode.isSampleStudio {
+                result = try? await SupabaseSampleStoryService().saveSampleEntry(
+                    payload: payload,
+                    status: currentEntryStatus
+                )
+            } else {
+                result = try? await EntrySaveService().saveEntryPreservingStatus(
+                    payload: payload,
+                    isSignedIn: authStore.userID != nil,
+                    status: currentEntryStatus
+                )
+            }
 
             guard let result else {
                 setCloudSaveState(.failed("Could not save this entry locally."))
@@ -5768,11 +5875,19 @@ struct CreateEntryView: View {
                 for: entry.id
             )
 
-            let result = try? await EntrySaveService().saveEntryPreservingStatus(
-                payload: payload,
-                isSignedIn: authStore.userID != nil,
-                status: currentEntryStatus
-            )
+            let result: EntrySaveResult?
+            if authoringMode.isSampleStudio {
+                result = try? await SupabaseSampleStoryService().saveSampleEntry(
+                    payload: payload,
+                    status: currentEntryStatus
+                )
+            } else {
+                result = try? await EntrySaveService().saveEntryPreservingStatus(
+                    payload: payload,
+                    isSignedIn: authStore.userID != nil,
+                    status: currentEntryStatus
+                )
+            }
             if let result {
                 setCloudSaveState(result.state)
                 activeDraftID = result.localDraftID
@@ -6540,7 +6655,8 @@ struct CreateEntryView: View {
                     promptText: entryText,
                     artStyle: selectedArtStyle,
                     sourcePhotoCount: 0,
-                    isPrimary: true
+                    isPrimary: true,
+                    isSampleContent: authoringMode.isSampleStudio
                 )
             )
         }
@@ -6572,7 +6688,8 @@ struct CreateEntryView: View {
                     promptText: entryText,
                     artStyle: selectedArtStyle,
                     sourcePhotoCount: 0,
-                    isPrimary: true
+                    isPrimary: true,
+                    isSampleContent: authoringMode.isSampleStudio
                 )
             ]
             : storyboards
@@ -7605,10 +7722,7 @@ private struct StoryboardGenerationProgressScreen: View {
                         .foregroundStyle(Color.storyInk)
                         .multilineTextAlignment(.center)
 
-                    Text(phase.progressTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-                        .multilineTextAlignment(.center)
+                    StoryboardGenerationStatusRotator(phase: phase)
                 }
 
                 StoryboardGenerationProgressBar(phase: phase)
@@ -7683,6 +7797,46 @@ private struct AnimatedStoryboardSparkleIcon: View {
 
 }
 
+private struct StoryboardGenerationStatusRotator: View {
+    let phase: StoryboardGenerationPhase
+
+    @State private var statusIndex = 0
+
+    private let statusMessages = [
+        "Sending your image details...",
+        "Generating your image...",
+        "Building storyboard panels...",
+        "Adding finishing touches...",
+        "Still in progress..."
+    ]
+
+    private var statusText: String {
+        switch phase {
+        case .completed, .failed:
+            return phase.progressTitle
+        default:
+            return statusMessages[statusIndex % statusMessages.count]
+        }
+    }
+
+    var body: some View {
+        Text(statusText)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.homeMutedText)
+            .multilineTextAlignment(.center)
+            .frame(minHeight: 18)
+            .contentTransition(.opacity)
+            .animation(.easeInOut(duration: 0.28), value: statusText)
+            .onReceive(Timer.publish(every: 3.0, on: .main, in: .common).autoconnect()) { _ in
+                guard phase != .completed, phase != .failed else {
+                    return
+                }
+
+                statusIndex = (statusIndex + 1) % statusMessages.count
+            }
+    }
+}
+
 private struct StoryboardGenerationProgressBar: View {
     let phase: StoryboardGenerationPhase
 
@@ -7734,105 +7888,101 @@ private struct StoryboardGenerationProgressFillBar: View {
     let isActive: Bool
 
     @State private var isAnimating = false
+    @State private var startedAt = Date()
 
-    private var progress: CGFloat {
-        switch phase {
-        case .ready:
-            return 0.12
-        case .preparingEntry:
-            return 0.26
-        case .uploadingReferencePhotos:
-            return 0.42
-        case .generating:
-            return 0.74
-        case .savingResult:
-            return 0.9
-        case .completed:
-            return 1
-        case .failed:
+    private func progress(at date: Date) -> CGFloat {
+        guard isActive else {
             return 0.18
         }
+
+        let elapsed = max(0, date.timeIntervalSince(startedAt))
+        let estimatedDuration: TimeInterval = 110
+        let normalizedProgress = min(elapsed / estimatedDuration, 1)
+        return 0.08 + (0.88 * CGFloat(normalizedProgress))
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let fillWidth = max(width * progress, 12)
-            let highlightWidth = max(fillWidth * 0.28, 22)
+        TimelineView(.animation) { timeline in
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                let progress = progress(at: timeline.date)
+                let fillWidth = max(width * progress, 12)
+                let highlightWidth = max(fillWidth * 0.28, 22)
 
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.storyPurple.opacity(0.14))
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.storyPurple.opacity(0.14))
 
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.storyPurple.opacity(0.78),
-                                Color.storyPurple,
-                                Color.storyPurple.opacity(0.86)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: fillWidth)
-                    .overlay(alignment: .leading) {
-                        if isActive {
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(0),
-                                            Color.white.opacity(0.48),
-                                            Color.white.opacity(0)
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                                .frame(width: highlightWidth)
-                                .offset(x: isAnimating ? fillWidth : -highlightWidth)
-                                .mask(Capsule().frame(width: fillWidth))
-                        }
-                    }
-                    .animation(.easeInOut(duration: 0.45), value: progress)
-
-                if phase == .failed {
                     Capsule()
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.storyPurple.opacity(0.44),
-                                    Color.storyPurple.opacity(0.24)
+                                    Color.storyPurple.opacity(0.78),
+                                    Color.storyPurple,
+                                    Color.storyPurple.opacity(0.86)
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             )
                         )
-                        .frame(width: width)
-                }
-            }
-            .clipShape(Capsule())
-            .onAppear {
-                guard isActive else {
-                    return
-                }
+                        .frame(width: fillWidth)
+                        .overlay(alignment: .leading) {
+                            if isActive {
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color.white.opacity(0),
+                                                Color.white.opacity(0.48),
+                                                Color.white.opacity(0)
+                                            ],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                                    .frame(width: highlightWidth)
+                                    .offset(x: isAnimating ? fillWidth : -highlightWidth)
+                                    .mask(Capsule().frame(width: fillWidth))
+                            }
+                        }
 
-                isAnimating = false
-                withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
-                    isAnimating = true
+                    if phase == .failed {
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.storyPurple.opacity(0.44),
+                                        Color.storyPurple.opacity(0.24)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(width: width)
+                    }
                 }
-            }
-            .onChange(of: isActive) { newValue in
-                guard newValue else {
+                .clipShape(Capsule())
+                .onAppear {
+                    startedAt = Date()
+                    guard isActive else {
+                        return
+                    }
+
                     isAnimating = false
-                    return
+                    withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+                        isAnimating = true
+                    }
                 }
+                .onChange(of: isActive) { newValue in
+                    guard newValue else {
+                        isAnimating = false
+                        return
+                    }
 
-                isAnimating = false
-                withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
-                    isAnimating = true
+                    isAnimating = false
+                    withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+                        isAnimating = true
+                    }
                 }
             }
         }
@@ -9312,6 +9462,13 @@ private struct CreateFormattingSheet: View {
         CreateEntryTextSize.fontSize(for: previewTextSize)
     }
 
+    private var snappingPreviewTextSize: Binding<Double> {
+        Binding(
+            get: { previewTextSize },
+            set: { previewTextSize = CreateEntryTextSize.snappedSliderValue(for: $0) }
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
@@ -9366,6 +9523,8 @@ private struct CreateFormattingSheet: View {
 
     private var fontStyleContent: some View {
         VStack(alignment: .leading, spacing: 22) {
+            fontSizeControl
+
             LazyVGrid(
                 columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2),
                 spacing: 12
@@ -9382,6 +9541,43 @@ private struct CreateFormattingSheet: View {
                 }
             }
             .padding(.top, 1)
+        }
+    }
+
+    private var fontSizeControl: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sheetSectionTitle("Font Size")
+
+            HStack(spacing: 14) {
+                Text("A")
+                    .font(selectedFont.swiftUIFont(size: 17, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.68))
+                    .frame(width: 18, alignment: .center)
+
+                ZStack {
+                    Slider(value: snappingPreviewTextSize, in: 0...1)
+                        .tint(Color.storyPurple)
+                        .accessibilityLabel("Font Size")
+
+                    Rectangle()
+                        .fill(Color.storyPurple.opacity(0.52))
+                        .frame(width: 2, height: 18)
+                        .clipShape(Capsule())
+                        .allowsHitTesting(false)
+                }
+
+                Text("A")
+                    .font(selectedFont.swiftUIFont(size: 31, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.82))
+                    .frame(width: 28, alignment: .center)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 56)
+            .background(Color.homeInputGray.opacity(0.56), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.storyBorder.opacity(0.46), lineWidth: 1)
+            )
         }
     }
 

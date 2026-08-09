@@ -4,12 +4,19 @@ import UIKit
 struct ProfileView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     var embedsInNavigationStack = true
+    var isSampleAuthorMode = false
 
     @State private var selectedStoryboardIndex: Int?
+    @State private var isProfileComicReaderPresented = false
+    @State private var profileComicPageIndex = 0
+    @State private var profileBookOpenHintProgress: CGFloat = 0
+    @State private var profileBookOpenTask: Task<Void, Never>?
+    @State private var isOpeningProfileComicReader = false
     @State private var isSelecting = false
     @State private var selectedStoryboardIDs: Set<UUID> = []
     @State private var storyboardsToShare: [GeneratedStoryboard] = []
@@ -51,14 +58,35 @@ struct ProfileView: View {
             ActivityView(activityItems: storyboardsToShare.map(\.image))
                 .presentationDetents([.medium, .large])
         }
+        .fullScreenCover(isPresented: $isProfileComicReaderPresented) {
+            ProfileStoryboardComicReaderView(
+                storyboards: generatedStoryboards,
+                currentPageIndex: $profileComicPageIndex
+            )
+            .onDisappear {
+                isOpeningProfileComicReader = false
+                playProfileBookOpenHint()
+            }
+        }
         .onChange(of: generatedStoryboards.map(\.id)) { availableIDs in
+            sanitizeProfileStoryboards()
             selectedStoryboardIDs.formIntersection(Set(availableIDs))
 
             if generatedStoryboards.isEmpty {
                 endSelection()
+                isProfileComicReaderPresented = false
+                profileComicPageIndex = 0
             }
         }
-        .task(id: authStore.userID) {
+        .onAppear {
+            sanitizeProfileStoryboards()
+            playProfileBookOpenHint()
+        }
+        .onDisappear {
+            profileBookOpenTask?.cancel()
+            profileBookOpenTask = nil
+        }
+        .task(id: profileLoadModeID) {
             await loadProfileStoryboards()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
@@ -173,7 +201,12 @@ struct ProfileView: View {
     private var profileSummary: some View {
         VStack(spacing: 18) {
             HStack(alignment: .center, spacing: 18) {
-                ProfilePlaceholder(size: 82)
+                ProfileJournalCoverOpener(
+                    coverImage: generatedStoryboards.first?.image,
+                    openHintProgress: profileBookOpenHintProgress,
+                    isEnabled: !generatedStoryboards.isEmpty && !isOpeningProfileComicReader,
+                    onOpen: openProfileComicReader
+                )
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Story Seeker")
@@ -223,11 +256,11 @@ struct ProfileView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Your Storyboards")
+                    Text(showsSampleProfileContent ? "Sample Storyboards" : "Your Storyboards")
                         .font(.system(size: 21, weight: .bold))
                         .foregroundStyle(Color.storyInk)
 
-                    Text("All the storyboards you've created.")
+                    Text(showsSampleProfileContent ? "A preview collection from the sample stories." : "All the storyboards you've created.")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(Color.homeMutedText)
                 }
@@ -316,6 +349,22 @@ struct ProfileView: View {
         generatedStoryboards.filter { selectedStoryboardIDs.contains($0.id) }
     }
 
+    private var showsSampleProfileContent: Bool {
+        isSampleAuthorMode || authStore.userID == nil
+    }
+
+    private var profileLoadModeID: String {
+        if isSampleAuthorMode {
+            return "sample-author"
+        }
+
+        if let userID = authStore.userID {
+            return "user-\(userID.uuidString)"
+        }
+
+        return "signed-out-samples"
+    }
+
     private var areAllStoryboardsSelected: Bool {
         !generatedStoryboards.isEmpty && selectedStoryboardIDs.count == generatedStoryboards.count
     }
@@ -372,20 +421,15 @@ struct ProfileView: View {
 
     @MainActor
     private func loadProfileStoryboards(forceReload: Bool = false) async {
+        if showsSampleProfileContent {
+            await loadSampleProfileStoryboards()
+            return
+        }
+
         guard authStore.userID != nil else {
             generatedStoryboards = []
             profileStoryboardErrorMessage = nil
             isLoadingProfileStoryboards = false
-            return
-        }
-
-        let cachedStoryboards = Array(GeneratedStoryboardStore.load().prefix(profileStoryboardPageSize))
-        if !forceReload, !cachedStoryboards.isEmpty {
-            generatedStoryboards = cachedStoryboards
-            profileStoryboardErrorMessage = nil
-            isLoadingProfileStoryboards = false
-            nextProfileStoryboardOffset = cachedStoryboards.count
-            hasMoreProfileStoryboards = true
             return
         }
 
@@ -394,21 +438,28 @@ struct ProfileView: View {
         hasMoreProfileStoryboards = true
         nextProfileStoryboardOffset = 0
         profileStoryboardErrorMessage = nil
+        generatedStoryboards = []
         defer { isLoadingProfileStoryboards = false }
 
         do {
             let service = SupabaseStoryboardService()
+            let sampleEntryIDs = await activeSampleEntryIDsForProfileFilter()
             generatedStoryboards = try await service.loadCompletedJournalStoryboardImages(
                 limit: profileStoryboardPageSize,
                 offset: 0
             )
+            .filter { storyboard in
+                isProfileEligibleStoryboard(storyboard, sampleEntryIDs: sampleEntryIDs)
+            }
+            .sorted { $0.createdAt > $1.createdAt }
             nextProfileStoryboardOffset = generatedStoryboards.count
             hasMoreProfileStoryboards = generatedStoryboards.count == profileStoryboardPageSize
             profileStoryboardErrorMessage = nil
+            playProfileBookOpenHint()
         } catch {
+            print("[Storytopia] Profile storyboard grid load failed: \(error.localizedDescription)")
             generatedStoryboards = []
             hasMoreProfileStoryboards = false
-            print("[Storytopia] Profile storyboard grid load failed: \(error.localizedDescription)")
             profileStoryboardErrorMessage = "Could not load your completed AI storyboards from Storytopia cloud."
         }
     }
@@ -428,19 +479,10 @@ struct ProfileView: View {
 
     @MainActor
     private func loadMoreProfileStoryboards() async {
-        guard authStore.userID != nil else {
+        guard !showsSampleProfileContent, authStore.userID != nil else {
             return
         }
         guard hasMoreProfileStoryboards, !isLoadingProfileStoryboards, !isLoadingMoreProfileStoryboards else {
-            return
-        }
-
-        let cachedStoryboards = GeneratedStoryboardStore.load()
-        if cachedStoryboards.count > generatedStoryboards.count {
-            let nextCachedPage = Array(cachedStoryboards.dropFirst(generatedStoryboards.count).prefix(profileStoryboardPageSize))
-            generatedStoryboards.append(contentsOf: nextCachedPage)
-            nextProfileStoryboardOffset = generatedStoryboards.count
-            hasMoreProfileStoryboards = true
             return
         }
 
@@ -449,13 +491,18 @@ struct ProfileView: View {
 
         do {
             let service = SupabaseStoryboardService()
+            let sampleEntryIDs = await activeSampleEntryIDsForProfileFilter()
             let page = try await service.loadCompletedJournalStoryboardImages(
                 limit: profileStoryboardPageSize,
                 offset: nextProfileStoryboardOffset
             )
             let existingIDs = Set(generatedStoryboards.map(\.id))
-            let newStoryboards = page.filter { !existingIDs.contains($0.id) }
+            let newStoryboards = page.filter { storyboard in
+                !existingIDs.contains(storyboard.id)
+                    && isProfileEligibleStoryboard(storyboard, sampleEntryIDs: sampleEntryIDs)
+            }
             generatedStoryboards.append(contentsOf: newStoryboards)
+            generatedStoryboards.sort { $0.createdAt > $1.createdAt }
             nextProfileStoryboardOffset += page.count
             hasMoreProfileStoryboards = page.count == profileStoryboardPageSize
             profileStoryboardErrorMessage = nil
@@ -464,9 +511,557 @@ struct ProfileView: View {
         }
     }
 
+    private func sanitizeProfileStoryboards() {
+        let visibleStoryboards = generatedStoryboards.filter { storyboard in
+            if showsSampleProfileContent {
+                return isSampleProfileStoryboard(storyboard)
+            }
+
+            return isProfileEligibleStoryboard(storyboard, sampleEntryIDs: [])
+        }
+        let sortedStoryboards = profileSortedStoryboards(visibleStoryboards)
+        guard sortedStoryboards.map(\.id) != generatedStoryboards.map(\.id) else {
+            return
+        }
+
+        generatedStoryboards = sortedStoryboards
+        selectedStoryboardIDs.formIntersection(Set(sortedStoryboards.map(\.id)))
+
+        if let selectedStoryboardIndex,
+           !sortedStoryboards.indices.contains(selectedStoryboardIndex) {
+            self.selectedStoryboardIndex = nil
+        }
+    }
+
+    private func activeSampleEntryIDsForProfileFilter() async -> Set<UUID> {
+        (try? await SupabaseSampleStoryService().loadActiveSampleEntryIDs()) ?? []
+    }
+
+    @MainActor
+    private func loadSampleProfileStoryboards() async {
+        isLoadingProfileStoryboards = true
+        isLoadingMoreProfileStoryboards = false
+        hasMoreProfileStoryboards = false
+        nextProfileStoryboardOffset = 0
+        profileStoryboardErrorMessage = nil
+        generatedStoryboards = []
+        defer { isLoadingProfileStoryboards = false }
+
+        do {
+            let service = SupabaseSampleStoryService()
+            let pack: SampleStoryPack
+            if isSampleAuthorMode {
+                pack = try await service.loadAuthoringPack()
+            } else {
+                pack = try await service.loadActivePack()
+            }
+            generatedStoryboards = pack.storyboardsByEntryID.values
+                .flatMap { $0 }
+                .sorted(by: profileStoryboardSort)
+            selectedStoryboardIDs.formIntersection(Set(generatedStoryboards.map(\.id)))
+            playProfileBookOpenHint()
+        } catch {
+            print("[Storytopia] Sample profile storyboard load failed: \(error.localizedDescription)")
+            generatedStoryboards = []
+            profileStoryboardErrorMessage = "Could not load the sample storyboards."
+        }
+    }
+
+    private func isSampleProfileStoryboard(_ storyboard: GeneratedStoryboard) -> Bool {
+        if storyboard.isSampleContent {
+            return true
+        }
+
+        return storyboard.storagePath?.hasPrefix("storytopia-first-run/") == true
+    }
+
+    private func isProfileEligibleStoryboard(
+        _ storyboard: GeneratedStoryboard,
+        sampleEntryIDs: Set<UUID>
+    ) -> Bool {
+        guard !storyboard.isSampleContent else {
+            return false
+        }
+
+        guard storyboard.cloudSyncState != StoryboardCloudSyncState.failed.rawValue else {
+            return false
+        }
+
+        if let clientEntryID = storyboard.clientEntryID,
+           sampleEntryIDs.contains(clientEntryID) {
+            return false
+        }
+
+        if let storagePath = storyboard.storagePath {
+            return !storagePath.hasPrefix("storytopia-first-run/")
+        }
+
+        return false
+    }
+
+    private func profileSortedStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
+        storyboards.sorted(by: profileStoryboardSort)
+    }
+
+    private func profileStoryboardSort(_ lhs: GeneratedStoryboard, _ rhs: GeneratedStoryboard) -> Bool {
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
+        }
+
+        return lhs.id.uuidString > rhs.id.uuidString
+    }
+
     private func endSelection() {
         isSelecting = false
         selectedStoryboardIDs.removeAll()
+    }
+
+    private func playProfileBookOpenHint() {
+        profileBookOpenTask?.cancel()
+        profileBookOpenHintProgress = 0
+
+        guard !reduceMotion, !generatedStoryboards.isEmpty else {
+            return
+        }
+
+        profileBookOpenTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            withAnimation(.easeOut(duration: 0.42)) {
+                profileBookOpenHintProgress = 1
+            }
+
+            try? await Task.sleep(nanoseconds: 560_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            withAnimation(.spring(response: 0.62, dampingFraction: 0.86)) {
+                profileBookOpenHintProgress = 0
+            }
+        }
+    }
+
+    private func openProfileComicReader() {
+        guard !generatedStoryboards.isEmpty, !isOpeningProfileComicReader else {
+            return
+        }
+
+        isOpeningProfileComicReader = true
+        profileBookOpenTask?.cancel()
+        profileBookOpenHintProgress = 0
+        profileComicPageIndex = min(profileComicPageIndex, max(0, generatedStoryboards.count - 1))
+
+        guard !reduceMotion else {
+            isProfileComicReaderPresented = true
+            return
+        }
+
+        profileBookOpenTask = Task { @MainActor in
+            withAnimation(.easeOut(duration: 0.14)) {
+                profileBookOpenHintProgress = 1
+            }
+
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            profileBookOpenTask = nil
+            isProfileComicReaderPresented = true
+        }
+    }
+}
+
+private struct ProfileJournalCoverOpener: View {
+    let coverImage: UIImage?
+    let openHintProgress: CGFloat
+    let isEnabled: Bool
+    let onOpen: () -> Void
+
+    private let coverWidth: CGFloat = 92
+    private let coverHeight: CGFloat = 128
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(spacing: 8) {
+                ProfileJournalCoverImage(
+                    coverImage: coverImage,
+                    openHintProgress: openHintProgress
+                )
+                .frame(width: coverWidth, height: coverHeight)
+
+                HStack(spacing: 4) {
+                    Text("Tap To Open")
+                        .font(.system(size: 12, weight: .heavy, design: .rounded))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .black))
+                }
+                .foregroundStyle(Color.storyInk.opacity(isEnabled ? 0.74 : 0.38))
+                .frame(width: 112)
+            }
+            .frame(width: 112)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel("Open profile comic")
+        .accessibilityHint("Opens the storyboard images on your profile")
+    }
+}
+
+private struct ProfileJournalCoverImage: View {
+    let coverImage: UIImage?
+    let openHintProgress: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                hintPages
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .offset(x: 3 + (openHintProgress * 5))
+                    .scaleEffect(
+                        x: 0.992 - (openHintProgress * 0.012),
+                        y: 0.99,
+                        anchor: .leading
+                    )
+                    .opacity(openHintProgress > 0 ? 0.86 : 0)
+
+                coverSurface
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .rotation3DEffect(
+                        .degrees(-6 * Double(openHintProgress)),
+                        axis: (x: 0, y: 1, z: 0),
+                        anchor: .leading,
+                        perspective: 0.66
+                    )
+                    .offset(x: -1.8 * openHintProgress, y: -1.2 * openHintProgress)
+                    .shadow(
+                        color: Color.storyInk.opacity(0.13 + (Double(openHintProgress) * 0.12)),
+                        radius: 10 + (openHintProgress * 5),
+                        y: 5 + (openHintProgress * 3)
+                    )
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    private var coverSurface: some View {
+        coverFill
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(alignment: .leading) {
+                journalSpine
+            }
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+    }
+
+    private var hintPages: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.white)
+            .overlay(alignment: .leading) {
+                LinearGradient(
+                    colors: [
+                        Color.storyInk.opacity(0.13),
+                        Color.storyInk.opacity(0.045),
+                        Color.clear
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 22)
+            }
+            .overlay(alignment: .trailing) {
+                VStack(spacing: 6) {
+                    ForEach(0..<5, id: \.self) { _ in
+                        Capsule()
+                            .fill(Color.homeBorder.opacity(0.58))
+                            .frame(height: 2)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .opacity(0.5)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.homeBorder.opacity(0.82), lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private var coverFill: some View {
+        if let coverImage {
+            Image(uiImage: coverImage)
+                .resizable()
+                .scaledToFill()
+                .overlay(
+                    LinearGradient(
+                        colors: [.black.opacity(0.08), .clear, .black.opacity(0.18)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        } else {
+            LinearGradient(
+                colors: [
+                    Color.homeAccent.opacity(0.55),
+                    Color.storyPurple.opacity(0.48),
+                    Color.storyInk.opacity(0.72)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .overlay {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.72))
+            }
+        }
+    }
+
+    private var journalSpine: some View {
+        ZStack(alignment: .leading) {
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.42),
+                    Color.black.opacity(0.24),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.white.opacity(0.16),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 8)
+            .padding(.leading, 9)
+            .blendMode(.screen)
+        }
+        .frame(width: 16)
+        .frame(maxHeight: .infinity)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ProfileStoryboardComicReaderView: View {
+    let storyboards: [GeneratedStoryboard]
+    @Binding var currentPageIndex: Int
+
+    @Environment(\.dismiss) private var dismiss
+
+    private let thumbnailHeight: CGFloat = 58
+
+    var body: some View {
+        ZStack {
+            Color.black
+                .ignoresSafeArea()
+
+            if storyboards.isEmpty {
+                emptyState
+            } else {
+                TabView(selection: $currentPageIndex) {
+                    ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                        ProfileStoryboardComicPage(storyboard: storyboard)
+                            .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .ignoresSafeArea()
+            }
+
+            VStack(spacing: 0) {
+                topBar
+
+                Spacer(minLength: 0)
+
+                if !storyboards.isEmpty {
+                    thumbnailStrip
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .statusBarHidden()
+        .onAppear {
+            currentPageIndex = clampedPageIndex(currentPageIndex)
+        }
+        .onChange(of: storyboards.count) { _ in
+            currentPageIndex = clampedPageIndex(currentPageIndex)
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.white.opacity(0.14), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back to profile")
+
+            Spacer()
+
+            Text(storyboards.isEmpty ? "0 / 0" : "\(currentPageIndex + 1) / \(storyboards.count)")
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+
+            Spacer()
+
+            Color.clear
+                .frame(width: 36, height: 36)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background {
+            LinearGradient(
+                colors: [.black.opacity(0.72), .black.opacity(0.28), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea(edges: .top)
+        }
+    }
+
+    private var thumbnailStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                currentPageIndex = index
+                            }
+                        } label: {
+                            ProfileStoryboardComicThumbnail(
+                                image: storyboard.image,
+                                isSelected: index == currentPageIndex,
+                                height: thumbnailHeight
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .id(index)
+                        .accessibilityLabel("Go to storyboard \(index + 1)")
+                        .accessibilityAddTraits(index == currentPageIndex ? .isSelected : [])
+                    }
+                }
+                .frame(minHeight: thumbnailHeight + 12)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+            .background {
+                Color.black.opacity(0.34)
+                    .ignoresSafeArea(edges: .bottom)
+            }
+            .onAppear {
+                proxy.scrollTo(currentPageIndex, anchor: .center)
+            }
+            .onChange(of: currentPageIndex) { pageIndex in
+                withAnimation(.easeInOut(duration: 0.24)) {
+                    proxy.scrollTo(pageIndex, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.62))
+
+            Text("No storyboards yet")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white.opacity(0.82))
+        }
+    }
+
+    private func clampedPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, storyboards.count - 1))
+    }
+}
+
+private struct ProfileStoryboardComicPage: View {
+    let storyboard: GeneratedStoryboard
+
+    var body: some View {
+        GeometryReader { proxy in
+            Image(uiImage: storyboard.image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .background(Color.black)
+        }
+        .overlay(alignment: .bottomLeading) {
+            storyboardMetadata
+                .padding(.horizontal, 16)
+                .padding(.bottom, 96)
+        }
+    }
+
+    private var storyboardMetadata: some View {
+        HStack(spacing: 8) {
+            Text(storyboard.artStyle)
+                .font(.system(size: 12, weight: .heavy, design: .rounded))
+
+            if let qualityText = storyboard.generationQuality?.title {
+                Text(qualityText)
+                    .font(.system(size: 12, weight: .heavy, design: .rounded))
+            }
+        }
+        .foregroundStyle(.white.opacity(0.86))
+        .padding(.horizontal, 11)
+        .frame(height: 28)
+        .background(Color.black.opacity(0.56), in: Capsule())
+    }
+}
+
+private struct ProfileStoryboardComicThumbnail: View {
+    let image: UIImage
+    let isSelected: Bool
+    let height: CGFloat
+
+    var body: some View {
+        let aspectRatio = image.size.height > 0 ? image.size.width / image.size.height : 0.72
+        let thumbnailWidth = max(36, height * aspectRatio)
+
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(width: thumbnailWidth, height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(
+                        isSelected ? Color.white : Color.white.opacity(0.22),
+                        lineWidth: isSelected ? 2.5 : 1
+                    )
+            }
+            .shadow(color: .black.opacity(isSelected ? 0.42 : 0.2), radius: isSelected ? 8 : 4, y: 2)
+            .opacity(isSelected ? 1 : 0.74)
+            .scaleEffect(isSelected ? 1.05 : 1)
+            .animation(.easeInOut(duration: 0.18), value: isSelected)
     }
 }
 

@@ -61,7 +61,7 @@ create table if not exists public.sample_storyboard_pages (
     updated_at timestamptz not null default now(),
     constraint sample_storyboard_pages_entry_page_key unique (sample_entry_id, page_index),
     constraint sample_storyboard_pages_storage_path_key unique (storage_path),
-    constraint sample_storyboard_pages_generation_quality_check check (generation_quality is null or generation_quality in ('standard', 'hd'))
+    constraint sample_storyboard_pages_generation_quality_check check (generation_quality is null or generation_quality in ('low', 'medium', 'standard', 'hd'))
 );
 
 create table if not exists public.sample_entry_assets (

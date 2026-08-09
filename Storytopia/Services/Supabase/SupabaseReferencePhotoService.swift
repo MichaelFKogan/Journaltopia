@@ -92,6 +92,10 @@ enum SupabaseStorageImageCache {
         }
     }
 
+    static func remove(bucketName: String, storagePath: String) {
+        try? FileManager.default.removeItem(at: fileURL(bucketName: bucketName, storagePath: storagePath))
+    }
+
     private static var cacheDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("StorytopiaSupabaseImageCache", isDirectory: true)

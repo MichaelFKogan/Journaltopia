@@ -138,6 +138,7 @@ struct GeneratedStoryboard: Identifiable {
     let storagePath: String?
     let cloudSyncState: String?
     let isPrimary: Bool
+    let isSampleContent: Bool
 
     init(
         id: UUID = UUID(),
@@ -152,7 +153,8 @@ struct GeneratedStoryboard: Identifiable {
         imageFileName: String? = nil,
         storagePath: String? = nil,
         cloudSyncState: String? = nil,
-        isPrimary: Bool = true
+        isPrimary: Bool = true,
+        isSampleContent: Bool = false
     ) {
         self.id = id
         self.clientEntryID = clientEntryID
@@ -167,6 +169,7 @@ struct GeneratedStoryboard: Identifiable {
         self.storagePath = storagePath
         self.cloudSyncState = cloudSyncState
         self.isPrimary = isPrimary
+        self.isSampleContent = isSampleContent
     }
 
     func withPrimaryStatus(_ isPrimary: Bool) -> GeneratedStoryboard {
@@ -183,7 +186,8 @@ struct GeneratedStoryboard: Identifiable {
             imageFileName: imageFileName,
             storagePath: storagePath,
             cloudSyncState: cloudSyncState,
-            isPrimary: isPrimary
+            isPrimary: isPrimary,
+            isSampleContent: isSampleContent
         )
     }
 }
@@ -1197,7 +1201,8 @@ enum GeneratedStoryboardStore {
                 imageFileName: item.imageFileName,
                 storagePath: item.storagePath,
                 cloudSyncState: item.cloudSyncState,
-                isPrimary: item.isPrimary ?? true
+                isPrimary: item.isPrimary ?? true,
+                isSampleContent: item.resolvedIsSampleContent
             )
         }
     }
@@ -1222,7 +1227,8 @@ enum GeneratedStoryboardStore {
                 imageFileName: imageFileName,
                 storagePath: storyboard.storagePath,
                 cloudSyncState: storyboard.cloudSyncState,
-                isPrimary: storyboard.isPrimary
+                isPrimary: storyboard.isPrimary,
+                isSampleContent: storyboard.isSampleContent
             )
         }
 
@@ -1253,10 +1259,12 @@ enum GeneratedStoryboardStore {
         generationQuality: OpenAIImageGenerationQuality? = nil,
         panelLayout: String?,
         sourcePhotoCount: Int,
+        createdAt: Date = Date(),
         id: UUID = UUID(),
         storagePath: String? = nil,
         cloudSyncState: String? = nil,
-        isPrimary: Bool = true
+        isPrimary: Bool = true,
+        isSampleContent: Bool = false
     ) throws -> GeneratedStoryboard {
         try FileManager.default.createDirectory(
             at: imagesDirectory,
@@ -1281,10 +1289,12 @@ enum GeneratedStoryboardStore {
             generationQuality: generationQuality,
             panelLayout: panelLayout,
             sourcePhotoCount: sourcePhotoCount,
+            createdAt: createdAt,
             imageFileName: imageFileName,
             storagePath: storagePath,
             cloudSyncState: cloudSyncState,
-            isPrimary: isPrimary
+            isPrimary: isPrimary,
+            isSampleContent: isSampleContent
         )
     }
 
@@ -1305,10 +1315,12 @@ enum GeneratedStoryboardStore {
             generationQuality: storyboard.generationQuality,
             panelLayout: storyboard.panelLayout,
             sourcePhotoCount: storyboard.sourcePhotoCount,
+            createdAt: storyboard.createdAt,
             id: storyboard.id,
             storagePath: storyboard.storagePath,
             cloudSyncState: storyboard.cloudSyncState,
-            isPrimary: storyboard.isPrimary
+            isPrimary: storyboard.isPrimary,
+            isSampleContent: storyboard.isSampleContent
         )
     }
 
@@ -1345,7 +1357,8 @@ enum GeneratedStoryboardStore {
                 imageFileName: existing.imageFileName,
                 storagePath: existing.storagePath,
                 cloudSyncState: existing.cloudSyncState,
-                isPrimary: false
+                isPrimary: false,
+                isSampleContent: existing.isSampleContent
             )
         }
         if let index = merged.firstIndex(where: { $0.id == storyboard.id }) {
@@ -1454,6 +1467,8 @@ enum GeneratedStoryboardStore {
 }
 
 struct GeneratedStoryboardMetadata: Codable {
+    private static let sampleStoragePrefix = "storytopia-first-run/"
+
     let id: UUID
     let clientEntryID: UUID?
     let promptText: String
@@ -1466,6 +1481,11 @@ struct GeneratedStoryboardMetadata: Codable {
     let storagePath: String?
     let cloudSyncState: String?
     let isPrimary: Bool?
+    let isSampleContent: Bool?
+
+    var resolvedIsSampleContent: Bool {
+        isSampleContent ?? storagePath?.hasPrefix(Self.sampleStoragePrefix) == true
+    }
 }
 
 enum StoryboardGenerationError: LocalizedError {
