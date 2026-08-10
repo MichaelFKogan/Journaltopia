@@ -165,21 +165,18 @@ private final class EntrySpeechTranscriber: ObservableObject {
     private let speechRecognizer = SFSpeechRecognizer()
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    private var baselineText = ""
-    private var lastRenderedText = ""
     private var lastTranscript = ""
     private var didInstallAudioTap = false
-    private var currentTextProvider: (() -> String)?
-    private var onTranscriptChanged: ((String) -> Void)?
+    private var onTranscript: ((String) -> Void)?
 
-    func toggle(currentText: @escaping () -> String, onTranscriptChanged: @escaping (String) -> Void) {
+    func toggle(onTranscript: @escaping (String) -> Void) {
         if state.isListening {
             stop()
             return
         }
 
         Task {
-            await start(currentText: currentText, onTranscriptChanged: onTranscriptChanged)
+            await start(onTranscript: onTranscript)
         }
     }
 
@@ -201,8 +198,8 @@ private final class EntrySpeechTranscriber: ObservableObject {
         recognitionTask?.cancel()
         recognitionRequest = nil
         recognitionTask = nil
-        currentTextProvider = nil
-        onTranscriptChanged = nil
+        onTranscript = nil
+        lastTranscript = ""
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default, options: [])
@@ -212,7 +209,7 @@ private final class EntrySpeechTranscriber: ObservableObject {
         }
     }
 
-    private func start(currentText: @escaping () -> String, onTranscriptChanged: @escaping (String) -> Void) async {
+    private func start(onTranscript: @escaping (String) -> Void) async {
         state = .idle
 
         guard let speechRecognizer else {
@@ -248,11 +245,8 @@ private final class EntrySpeechTranscriber: ObservableObject {
             return
         }
 
-        baselineText = currentText()
-        lastRenderedText = baselineText
         lastTranscript = ""
-        currentTextProvider = currentText
-        self.onTranscriptChanged = onTranscriptChanged
+        self.onTranscript = onTranscript
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
@@ -283,7 +277,12 @@ private final class EntrySpeechTranscriber: ObservableObject {
 
     private func handleRecognitionResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
         if let result {
-            appendTranscript(result.bestTranscription.formattedString)
+            let transcript = result.bestTranscription.formattedString
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !transcript.isEmpty, transcript != lastTranscript {
+                lastTranscript = transcript
+                onTranscript?(transcript)
+            }
             if result.isFinal {
                 stop()
             }
@@ -293,47 +292,6 @@ private final class EntrySpeechTranscriber: ObservableObject {
             stop()
             state = .unavailable("Dictation stopped. Please try again.")
         }
-    }
-
-    private func appendTranscript(_ transcript: String) {
-        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTranscript.isEmpty else {
-            return
-        }
-
-        let currentText = currentTextProvider?() ?? lastRenderedText
-        let updatedText: String
-
-        if trimmedTranscript == lastTranscript {
-            return
-        } else if lastTranscript.isEmpty {
-            updatedText = appendingDictation(trimmedTranscript, to: currentText)
-        } else if let previousTranscriptRange = currentText.range(of: lastTranscript, options: .backwards) {
-            updatedText = currentText.replacingCharacters(in: previousTranscriptRange, with: trimmedTranscript)
-        } else if currentText == lastRenderedText {
-            updatedText = appendingDictation(trimmedTranscript, to: baselineText)
-        } else {
-            updatedText = appendingDictation(trimmedTranscript, to: currentText)
-        }
-
-        lastTranscript = trimmedTranscript
-        lastRenderedText = updatedText
-        onTranscriptChanged?(updatedText)
-    }
-
-    private func appendingDictation(_ dictatedText: String, to currentText: String) -> String {
-        let separator: String
-        if currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            separator = ""
-        } else if currentText.last?.isWhitespace == true {
-            separator = ""
-        } else if dictatedText.startsWithAttachedPunctuation {
-            separator = ""
-        } else {
-            separator = " "
-        }
-
-        return currentText + separator + dictatedText
     }
 
     private func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
@@ -350,16 +308,6 @@ private final class EntrySpeechTranscriber: ObservableObject {
                 continuation.resume(returning: isGranted)
             }
         }
-    }
-}
-
-private extension String {
-    var startsWithAttachedPunctuation: Bool {
-        guard let first else {
-            return false
-        }
-
-        return [".", ",", "!", "?", ";", ":", ")", "]", "}", "%"].contains(first)
     }
 }
 
@@ -1815,7 +1763,8 @@ struct CreateEntryView: View {
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
-    @State private var dictationFollowRequestID = 0
+    @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
+    @State private var dictationTranscriptRequestID = 0
     @State private var speechRecognitionAlertMessage: String?
     @StateObject private var speechTranscriber = EntrySpeechTranscriber()
     @State private var editorBlurRequestID = 0
@@ -2680,6 +2629,7 @@ struct CreateEntryView: View {
                         entryID: completionResult.localDraftID,
                         storyboard: storyboardForCompletion
                     )
+                    NotificationCenter.default.post(name: .storytopiaGeneratedStoryboardsChanged, object: nil)
                     print("[Storytopia] Storyboard completion refreshed on Create page.")
                 }
             } catch {
@@ -2845,7 +2795,8 @@ struct CreateEntryView: View {
                         editorFocusRequestID: editorFocusRequestID,
                         editorBlurRequestID: editorBlurRequestID,
                         formattingRequest: textFormattingRequest,
-                        followTextEndRequestID: dictationFollowRequestID,
+                        isDictating: speechTranscriber.state.isListening,
+                        dictationTranscriptRequest: dictationTranscriptRequest,
                         bodyPlaceholder: "Start writing...",
                         scrollsInternally: false,
                         pageHeight: scrollContentHeight,
@@ -3763,7 +3714,8 @@ struct CreateEntryView: View {
                             editorFocusRequestID: editorFocusRequestID,
                             editorBlurRequestID: editorBlurRequestID,
                             formattingRequest: textFormattingRequest,
-                            followTextEndRequestID: dictationFollowRequestID,
+                            isDictating: speechTranscriber.state.isListening,
+                            dictationTranscriptRequest: dictationTranscriptRequest,
                             bodyPlaceholder: "Start writing...",
                             scrollsInternally: false,
                             pageHeight: scrollContentHeight,
@@ -4070,10 +4022,12 @@ struct CreateEntryView: View {
             editorFocusRequestID += 1
         }
 
-        speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
-            entryText = dictatedText
-            entryRichText = NotebookRichTextDocument(text: dictatedText)
-            dictationFollowRequestID += 1
+        speechTranscriber.toggle { transcript in
+            dictationTranscriptRequestID += 1
+            dictationTranscriptRequest = NotebookDictationTranscriptRequest(
+                id: dictationTranscriptRequestID,
+                transcript: transcript
+            )
         }
     }
 
@@ -7860,7 +7814,7 @@ private struct StoryboardGenerationProgressScreen: View {
                     Spacer()
 
                     Button(action: onClose) {
-                        Image(systemName: "xmark")
+                        Image(systemName: "chevron.down")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(Color.storyInk.opacity(0.68))
                             .frame(width: 40, height: 40)
@@ -7873,7 +7827,7 @@ private struct StoryboardGenerationProgressScreen: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Close generation progress")
+                    .accessibilityLabel("Dismiss generation progress")
                 }
 
                 Spacer()
@@ -9300,7 +9254,8 @@ struct ExpandedEntryEditor: View {
 
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
-    @State private var dictationFollowRequestID = 0
+    @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
+    @State private var dictationTranscriptRequestID = 0
     @State private var speechRecognitionAlertMessage: String?
     @StateObject private var speechTranscriber = EntrySpeechTranscriber()
 
@@ -9358,7 +9313,8 @@ struct ExpandedEntryEditor: View {
                         entryRichText: entryRichText,
                         isTitleFocused: $isTitleFocused,
                         editorFocusRequestID: editorFocusRequestID,
-                        followTextEndRequestID: dictationFollowRequestID,
+                        isDictating: speechTranscriber.state.isListening,
+                        dictationTranscriptRequest: dictationTranscriptRequest,
                         bodyPlaceholder: "Start writing...",
                         scrollsInternally: false,
                         pageHeight: proxy.size.height,
@@ -9448,10 +9404,12 @@ struct ExpandedEntryEditor: View {
             editorFocusRequestID += 1
         }
 
-        speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
-            entryText = dictatedText
-            entryRichText?.wrappedValue = NotebookRichTextDocument(text: dictatedText)
-            dictationFollowRequestID += 1
+        speechTranscriber.toggle { transcript in
+            dictationTranscriptRequestID += 1
+            dictationTranscriptRequest = NotebookDictationTranscriptRequest(
+                id: dictationTranscriptRequestID,
+                transcript: transcript
+            )
         }
     }
 }
@@ -10955,16 +10913,22 @@ struct ReferencePhotoViewer: View {
             Button {
                 closeAction()
             } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
-                    .background(.gray.opacity(0.62), in: Circle())
+                ZStack {
+                    Circle()
+                        .fill(.gray.opacity(0.62))
+                        .frame(width: 40, height: 40)
+
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 56, height: 56)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close photo viewer")
-            .padding(.top, 14)
-            .padding(.trailing, 16)
+            .padding(.top, 8)
+            .padding(.trailing, 8)
         }
         .preferredColorScheme(.dark)
         .statusBarHidden()

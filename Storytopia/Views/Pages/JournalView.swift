@@ -8791,6 +8791,12 @@ private enum EntryDisplayItem: Identifiable {
     var status: String {
         switch self {
         case .local(let entry, let cloudEntry):
+            if cloudEntry?.status == JournalEntryStatus.archived.rawValue {
+                return JournalEntryStatus.archived.rawValue
+            }
+            if entry.status == JournalEntryStatus.completed.rawValue {
+                return JournalEntryStatus.completed.rawValue
+            }
             return cloudEntry?.status ?? entry.status
         case .cloud(let entry):
             return entry.status
@@ -9479,6 +9485,9 @@ struct EntriesView: View {
             }
             .onChange(of: selectedEntrySortRawValue) { _ in
                 refreshEntries()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
+                handleGeneratedStoryboardsChanged()
             }
             .onDisappear {
                 dismissAnyKeyboard()
@@ -11512,6 +11521,22 @@ struct EntriesView: View {
         refreshEntries(forceCloudReload: true)
     }
 
+    private func handleGeneratedStoryboardsChanged() {
+        if isSampleAuthorMode {
+            refreshEntries(forceCloudReload: true)
+            return
+        }
+
+        guard let userID = authStore.userID else {
+            refreshEntries(forceCloudReload: true)
+            return
+        }
+
+        EntriesSessionMemoryCache.invalidate(userID: userID)
+        EntriesCloudFetchCache.invalidate(for: userID)
+        refreshEntries(forceCloudReload: true)
+    }
+
     private func cancelThumbnailBackfills() {
         entryThumbnailBackfillTask?.cancel()
         entryThumbnailBackfillTask = nil
@@ -11633,7 +11658,7 @@ struct EntriesView: View {
         hasLoadedEntriesForSession = true
         loadedEntryQueryKey = queryKey
 
-        entries = []
+        entries = CreateEntryDraftStore.loadAll()
         completedStoryboards = GeneratedStoryboardStore.load().filter { !$0.isSampleContent }
         scheduleCompletedStoryboardLoad()
         loadRemoteSampleContentIfNeeded()
