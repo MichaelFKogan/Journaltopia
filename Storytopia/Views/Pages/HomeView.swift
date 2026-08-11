@@ -2,8 +2,22 @@ import SwiftUI
 import UIKit
 
 struct HomeView: View {
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @Binding var selectedPage: StoryPage
+    @Binding var generatedStoryboards: [GeneratedStoryboard]
+    var isSampleAuthorMode = false
+
     @State private var fullScreenImageName: String?
+    @State private var isStoryVerticalViewerPresented = false
+    @State private var storyVerticalPageIndex = 0
+    @State private var homeBookOpenHintProgress: CGFloat = 0
+    @State private var homeBookOpenTask: Task<Void, Never>?
+    @State private var isOpeningStoryVerticalViewer = false
+    @State private var isLoadingHomeStoryboards = false
+
+    private let homeStoryboardLoadLimit = 50
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -14,6 +28,7 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     header
                     heroCard
+                    journalCoverSection
                     socialFeedSection
                 }
                 .padding(.horizontal, 16)
@@ -39,7 +54,44 @@ struct HomeView: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $isStoryVerticalViewerPresented) {
+            HomeStoryboardVerticalViewer(
+                storyboards: generatedStoryboards,
+                currentPageIndex: $storyVerticalPageIndex,
+                title: "The Story So Far..."
+            )
+            .onDisappear {
+                isOpeningStoryVerticalViewer = false
+                playHomeBookOpenHint()
+            }
+        }
+        .onAppear {
+            playHomeBookOpenHint()
+        }
+        .onDisappear {
+            homeBookOpenTask?.cancel()
+            homeBookOpenTask = nil
+        }
+        .task(id: homeStoryboardLoadID) {
+            await loadHomeStoryboards()
+        }
         .preferredColorScheme(.light)
+    }
+
+    private var showsSampleHomeContent: Bool {
+        isSampleAuthorMode || authStore.userID == nil
+    }
+
+    private var homeStoryboardLoadID: String {
+        if isSampleAuthorMode {
+            return "sample-author"
+        }
+
+        if let userID = authStore.userID {
+            return "user-\(userID.uuidString)"
+        }
+
+        return "signed-out-samples"
     }
 
     private var header: some View {
@@ -116,6 +168,171 @@ struct HomeView: View {
         .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
     }
 
+    private var journalCoverSection: some View {
+        HStack {
+            Spacer(minLength: 0)
+
+            HomeJournalCoverOpener(
+                coverImage: generatedStoryboards.first?.image,
+                title: "The Story So Far...",
+                openHintProgress: homeBookOpenHintProgress,
+                isEnabled: !generatedStoryboards.isEmpty && !isOpeningStoryVerticalViewer,
+                isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
+                onOpen: openStoryVerticalViewer
+            )
+
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+    }
+
+    private func playHomeBookOpenHint() {
+        homeBookOpenTask?.cancel()
+        homeBookOpenHintProgress = 0
+
+        guard !reduceMotion, !generatedStoryboards.isEmpty else {
+            return
+        }
+
+        homeBookOpenTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            withAnimation(.easeOut(duration: 0.42)) {
+                homeBookOpenHintProgress = 1
+            }
+
+            try? await Task.sleep(nanoseconds: 560_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            withAnimation(.spring(response: 0.62, dampingFraction: 0.86)) {
+                homeBookOpenHintProgress = 0
+            }
+        }
+    }
+
+    private func openStoryVerticalViewer() {
+        guard !generatedStoryboards.isEmpty, !isOpeningStoryVerticalViewer else {
+            return
+        }
+
+        isOpeningStoryVerticalViewer = true
+        homeBookOpenTask?.cancel()
+        homeBookOpenHintProgress = 0
+        storyVerticalPageIndex = 0
+
+        guard !reduceMotion else {
+            isStoryVerticalViewerPresented = true
+            return
+        }
+
+        homeBookOpenTask = Task { @MainActor in
+            withAnimation(.easeOut(duration: 0.14)) {
+                homeBookOpenHintProgress = 1
+            }
+
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            homeBookOpenTask = nil
+            isStoryVerticalViewerPresented = true
+        }
+    }
+
+    @MainActor
+    private func loadHomeStoryboards() async {
+        if showsSampleHomeContent {
+            await loadSampleHomeStoryboards()
+            return
+        }
+
+        isLoadingHomeStoryboards = true
+        defer { isLoadingHomeStoryboards = false }
+
+        do {
+            let service = SupabaseStoryboardService()
+            let sampleEntryIDs = (try? await SupabaseSampleStoryService().loadActiveSampleEntryIDs()) ?? []
+            let loadedStoryboards = try await service.loadCompletedJournalStoryboardImages(
+                limit: homeStoryboardLoadLimit,
+                offset: 0
+            )
+            .filter { storyboard in
+                isHomeEligibleStoryboard(storyboard, sampleEntryIDs: sampleEntryIDs)
+            }
+            .sorted(by: homeStoryboardSort)
+
+            generatedStoryboards = loadedStoryboards
+            playHomeBookOpenHint()
+        } catch {
+            print("[Storytopia] Home storyboard cover load failed: \(error.localizedDescription)")
+            if generatedStoryboards.isEmpty {
+                generatedStoryboards = []
+            }
+        }
+    }
+
+    @MainActor
+    private func loadSampleHomeStoryboards() async {
+        isLoadingHomeStoryboards = true
+        defer { isLoadingHomeStoryboards = false }
+
+        do {
+            let service = SupabaseSampleStoryService()
+            let pack: SampleStoryPack
+            if isSampleAuthorMode {
+                pack = try await service.loadAuthoringPack()
+            } else {
+                pack = try await service.loadActivePack()
+            }
+            generatedStoryboards = pack.storyboardsByEntryID.values
+                .flatMap { $0 }
+                .sorted(by: homeStoryboardSort)
+            playHomeBookOpenHint()
+        } catch {
+            print("[Storytopia] Sample home storyboard load failed: \(error.localizedDescription)")
+            generatedStoryboards = []
+        }
+    }
+
+    private func isHomeEligibleStoryboard(
+        _ storyboard: GeneratedStoryboard,
+        sampleEntryIDs: Set<UUID>
+    ) -> Bool {
+        guard !storyboard.isSampleContent else {
+            return false
+        }
+
+        guard storyboard.cloudSyncState != StoryboardCloudSyncState.failed.rawValue else {
+            return false
+        }
+
+        if let clientEntryID = storyboard.clientEntryID,
+           sampleEntryIDs.contains(clientEntryID) {
+            return false
+        }
+
+        if let storagePath = storyboard.storagePath {
+            return !storagePath.hasPrefix("storytopia-first-run/")
+        }
+
+        return false
+    }
+
+    private func homeStoryboardSort(_ lhs: GeneratedStoryboard, _ rhs: GeneratedStoryboard) -> Bool {
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
+        }
+
+        return lhs.id.uuidString > rhs.id.uuidString
+    }
+
     private var socialFeedSection: some View {
         LazyVStack(spacing: 14) {
             ForEach(homeFeedPosts) { post in
@@ -185,6 +402,426 @@ struct HomeView: View {
 
     private var homeFeedPosts: [HomeFeedPost] {
         storyboardFeedPosts
+    }
+}
+
+private struct HomeJournalCoverOpener: View {
+    let coverImage: UIImage?
+    let title: String
+    let openHintProgress: CGFloat
+    let isEnabled: Bool
+    let isLoading: Bool
+    let onOpen: () -> Void
+
+    private let coverWidth: CGFloat = 148
+    private let coverHeight: CGFloat = 206
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(spacing: 10) {
+                ZStack {
+                    HomeJournalCoverImage(
+                        coverImage: coverImage,
+                        title: title,
+                        openHintProgress: openHintProgress
+                    )
+                    .frame(width: coverWidth, height: coverHeight)
+
+                    if isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .frame(width: coverWidth, height: coverHeight)
+                            .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                }
+
+                HStack(spacing: 4) {
+                    Text(isEnabled ? "Tap To Open" : (isLoading ? "Loading Story" : "No Storyboards Yet"))
+                        .font(.system(size: 12, weight: .heavy, design: .rounded))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+
+                    if isEnabled {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .black))
+                    }
+                }
+                .foregroundStyle(Color.storyInk.opacity(isEnabled ? 0.74 : 0.38))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel("Open \(title)")
+        .accessibilityHint("Opens your storyboards in a vertical view")
+    }
+}
+
+private struct HomeJournalCoverImage: View {
+    let coverImage: UIImage?
+    let title: String
+    let openHintProgress: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                hintPages
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .offset(x: 3 + (openHintProgress * 5))
+                    .scaleEffect(
+                        x: 0.992 - (openHintProgress * 0.012),
+                        y: 0.99,
+                        anchor: .leading
+                    )
+                    .opacity(openHintProgress > 0 ? 0.86 : 0)
+
+                coverSurface
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .rotation3DEffect(
+                        .degrees(-6 * Double(openHintProgress)),
+                        axis: (x: 0, y: 1, z: 0),
+                        anchor: .leading,
+                        perspective: 0.66
+                    )
+                    .offset(x: -1.8 * openHintProgress, y: -1.2 * openHintProgress)
+                    .shadow(
+                        color: Color.storyInk.opacity(0.13 + (Double(openHintProgress) * 0.12)),
+                        radius: 10 + (openHintProgress * 5),
+                        y: 5 + (openHintProgress * 3)
+                    )
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    private var coverSurface: some View {
+        coverFill
+            .overlay(alignment: .bottom) {
+                titleOverlay
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .leading) {
+                journalSpine
+            }
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+    }
+
+    private var titleOverlay: some View {
+        LinearGradient(
+            colors: [
+                Color.clear,
+                Color.black.opacity(0.42),
+                Color.black.opacity(0.78)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: 92)
+        .overlay(alignment: .bottomLeading) {
+            Text(title)
+                .font(.system(size: 18, weight: .bold, design: .serif))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.82)
+                .padding(.leading, 22)
+                .padding(.trailing, 14)
+                .padding(.bottom, 14)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var hintPages: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color.white)
+            .overlay(alignment: .leading) {
+                LinearGradient(
+                    colors: [
+                        Color.storyInk.opacity(0.13),
+                        Color.storyInk.opacity(0.045),
+                        Color.clear
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 28)
+            }
+            .overlay(alignment: .trailing) {
+                VStack(spacing: 7) {
+                    ForEach(0..<6, id: \.self) { _ in
+                        Capsule()
+                            .fill(Color.homeBorder.opacity(0.58))
+                            .frame(height: 2.5)
+                    }
+                }
+                .padding(.horizontal, 18)
+                .opacity(0.5)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder.opacity(0.82), lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private var coverFill: some View {
+        if let coverImage {
+            Image(uiImage: coverImage)
+                .resizable()
+                .scaledToFill()
+                .overlay(
+                    LinearGradient(
+                        colors: [.black.opacity(0.08), .clear, .black.opacity(0.18)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        } else {
+            LinearGradient(
+                colors: [
+                    Color.homeAccent.opacity(0.55),
+                    Color.storyPurple.opacity(0.48),
+                    Color.storyInk.opacity(0.72)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .overlay {
+                Image(systemName: "book.closed.fill")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .offset(y: -18)
+            }
+        }
+    }
+
+    private var journalSpine: some View {
+        ZStack(alignment: .leading) {
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.42),
+                    Color.black.opacity(0.24),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.clear,
+                    Color.white.opacity(0.16),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 8)
+            .padding(.leading, 9)
+            .blendMode(.screen)
+        }
+        .frame(width: 16)
+        .frame(maxHeight: .infinity)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct HomeStoryboardVerticalViewer: View {
+    let storyboards: [GeneratedStoryboard]
+    @Binding var currentPageIndex: Int
+    let title: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var visiblePageIndex: Int
+
+    init(
+        storyboards: [GeneratedStoryboard],
+        currentPageIndex: Binding<Int>,
+        title: String
+    ) {
+        self.storyboards = storyboards
+        _currentPageIndex = currentPageIndex
+        self.title = title
+        _visiblePageIndex = State(initialValue: currentPageIndex.wrappedValue)
+    }
+
+    var body: some View {
+        GeometryReader { viewport in
+            ZStack(alignment: .top) {
+                Color.black
+                    .ignoresSafeArea()
+
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 0) {
+                            Color.black
+                                .frame(height: 64)
+
+                            verticalCoverPage
+                                .id(0)
+                                .background(pagePositionReader(index: 0))
+
+                            ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                                let pageIndex = index + 1
+
+                                pageBoundary(pageIndex: pageIndex)
+
+                                Image(uiImage: storyboard.image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity)
+                                    .background(Color.black)
+                                    .id(pageIndex)
+                                    .background(pagePositionReader(index: pageIndex))
+                            }
+
+                            Color.black
+                                .frame(height: 44)
+                        }
+                    }
+                    .coordinateSpace(name: "homeVerticalComicScroll")
+                    .background(Color.black)
+                    .onAppear {
+                        visiblePageIndex = clampedPageIndex(currentPageIndex)
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(visiblePageIndex, anchor: .center)
+                        }
+                    }
+                    .onPreferenceChange(HomeVerticalComicPagePositionPreferenceKey.self) { positions in
+                        updateVisiblePageIndex(from: positions, viewportHeight: viewport.size.height)
+                    }
+                }
+
+                verticalTopBar
+            }
+        }
+        .preferredColorScheme(.dark)
+        .statusBarHidden()
+    }
+
+    private var verticalTopBar: some View {
+        HStack {
+            Spacer()
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(.black.opacity(0.62), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close vertical story view")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+    }
+
+    private var verticalCoverPage: some View {
+        ZStack {
+            if let coverImage = storyboards.first?.image {
+                Image(uiImage: coverImage)
+                    .resizable()
+                    .scaledToFill()
+                    .overlay(Color.black.opacity(0.42))
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color.homeAccent.opacity(0.7),
+                        Color.storyPurple.opacity(0.55),
+                        Color.storyInk
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+
+            VStack(spacing: 12) {
+                Text(title)
+                    .font(.system(size: 34, weight: .bold, design: .serif))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+
+                Text(storyboards.count == 1 ? "1 storyboard" : "\(storyboards.count) storyboards")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.86))
+            }
+            .padding(.horizontal, 28)
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(0.72, contentMode: .fit)
+        .clipped()
+        .background(Color.black)
+    }
+
+    private func pageBoundary(pageIndex: Int) -> some View {
+        ZStack {
+            Color(white: 0.035)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.86))
+                .frame(height: 1)
+                .padding(.horizontal, 28)
+
+            Text("\(pageIndex) / \(storyboards.count)")
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .frame(height: 24)
+                .background(Color(white: 0.035), in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                )
+        }
+        .frame(height: 42)
+    }
+
+    private func pagePositionReader(index: Int) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: HomeVerticalComicPagePositionPreferenceKey.self,
+                value: [index: proxy.frame(in: .named("homeVerticalComicScroll")).midY]
+            )
+        }
+    }
+
+    private func updateVisiblePageIndex(from positions: [Int: CGFloat], viewportHeight: CGFloat) {
+        guard let closest = positions.min(by: { left, right in
+            abs(left.value - (viewportHeight / 2)) < abs(right.value - (viewportHeight / 2))
+        })?.key else {
+            return
+        }
+
+        let nextIndex = clampedPageIndex(closest)
+        guard nextIndex != visiblePageIndex else {
+            return
+        }
+
+        visiblePageIndex = nextIndex
+        currentPageIndex = nextIndex
+    }
+
+    private func clampedPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, totalPageCount - 1))
+    }
+
+    private var totalPageCount: Int {
+        storyboards.count + 1
+    }
+}
+
+private struct HomeVerticalComicPagePositionPreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
     }
 }
 

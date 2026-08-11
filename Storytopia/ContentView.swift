@@ -131,7 +131,11 @@ struct ContentView: View {
     private var basePage: some View {
         switch pageBehindCreate {
         case .home:
-            HomeView(selectedPage: pageSelection)
+            HomeView(
+                selectedPage: pageSelection,
+                generatedStoryboards: $generatedStoryboards,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
+            )
                 .transition(.identity)
                 .zIndex(0)
         case .today:
