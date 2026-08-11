@@ -319,6 +319,16 @@ private struct SettingsExtraView: View {
                 }
 
                 SettingsNavigationRow(
+                    systemName: "text.cursor",
+                    title: "Stock Text Editor",
+                    subtitle: "Compare Create/Write typing with Apple TextEditor",
+                    accessibilityLabel: "Open stock text editor test"
+                ) {
+                    StockTextEditorTestView()
+                        .enableInteractivePopGesture()
+                }
+
+                SettingsNavigationRow(
                     systemName: "paintpalette",
                     title: "Choose Art Style",
                     subtitle: "Preview and pick a storyboard look",

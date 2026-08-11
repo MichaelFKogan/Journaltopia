@@ -445,6 +445,66 @@ struct SupabaseSampleStoryService {
         SampleStoryPackCache.clear()
     }
 
+    func renameSampleEntry(id: UUID, title: String) async throws {
+        let pack = try await ensureAuthoringPack()
+        try await client
+            .from("sample_entries")
+            .update(SampleEntryTitleUpdate(title: trimmedOrFallback(title, fallback: "Untitled Sample")))
+            .eq("id", value: id)
+            .eq("pack_id", value: pack.id)
+            .execute()
+        SampleStoryPackCache.clear()
+    }
+
+    func deleteSampleEntry(id: UUID) async throws {
+        let deletedRows: [DeletedSampleEntryRow]
+        do {
+            deletedRows = try await client
+                .rpc("delete_authoring_sample_entry", params: SampleEntryDeletePayload(sampleEntryID: id))
+                .execute()
+                .value
+        } catch {
+            print("[Storytopia] Sample entry RPC delete failed; trying direct delete. \(error.localizedDescription)")
+            deletedRows = try await deleteSampleEntryDirectly(id: id)
+        }
+
+        guard deletedRows.contains(where: { $0.id == id }) else {
+            print("[Storytopia] Sample entry delete affected no rows for \(id).")
+            throw JournalEntryRepositoryError.operationFailed
+        }
+
+        for storagePath in deletedRows.compactMap(\.storagePath) {
+            try? await client.storage
+                .from(bucketName)
+                .remove(paths: [storagePath])
+            SupabaseStorageImageCache.remove(bucketName: bucketName, storagePath: storagePath)
+        }
+
+        SampleStoryPackCache.clear()
+    }
+
+    private func deleteSampleEntryDirectly(id: UUID) async throws -> [DeletedSampleEntryRow] {
+        let pack = try await ensureAuthoringPack()
+        let storyboardStoragePaths = try await loadSampleStoryboardStoragePaths(entryID: id)
+        let assetStoragePaths = try await loadSampleAssetRows(entryID: id).map(\.storagePath)
+        let deletedRows: [SampleEntryIDRow] = try await client
+            .from("sample_entries")
+            .delete()
+            .eq("id", value: id)
+            .eq("pack_id", value: pack.id)
+            .execute()
+            .value
+
+        guard deletedRows.contains(where: { $0.id == id }) else {
+            return []
+        }
+
+        let storageRows = (storyboardStoragePaths + assetStoragePaths).map { storagePath in
+            DeletedSampleEntryRow(id: id, storagePath: storagePath)
+        }
+        return storageRows + [DeletedSampleEntryRow(id: id, storagePath: nil)]
+    }
+
     private func loadPack(locale: String) async throws -> SampleStoryPackRow? {
         let packs: [SampleStoryPackRow] = try await client
             .from("sample_story_packs")
@@ -998,6 +1058,17 @@ struct SupabaseSampleStoryService {
             .value
     }
 
+    private func loadSampleStoryboardStoragePaths(entryID: UUID) async throws -> [String] {
+        let rows: [SampleStoryboardStoragePathRow] = try await client
+            .from("sample_storyboard_pages")
+            .select("storage_path")
+            .eq("sample_entry_id", value: entryID)
+            .execute()
+            .value
+
+        return rows.map(\.storagePath)
+    }
+
     private func trimmedOrNil(_ value: String) -> String? {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedValue.isEmpty ? nil : trimmedValue
@@ -1456,6 +1527,40 @@ private struct SampleEntryDisplayOrderUpdate: Encodable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case displayOrder = "display_order"
+    }
+}
+
+private struct SampleEntryTitleUpdate: Encodable, Sendable {
+    let title: String
+}
+
+private struct SampleEntryDeletePayload: Encodable, Sendable {
+    let sampleEntryID: UUID
+
+    private enum CodingKeys: String, CodingKey {
+        case sampleEntryID = "p_sample_entry_id"
+    }
+}
+
+private struct DeletedSampleEntryRow: Codable {
+    let id: UUID
+    let storagePath: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case storagePath = "storage_path"
+    }
+}
+
+private struct SampleEntryIDRow: Codable {
+    let id: UUID
+}
+
+private struct SampleStoryboardStoragePathRow: Codable {
+    let storagePath: String
+
+    private enum CodingKeys: String, CodingKey {
+        case storagePath = "storage_path"
     }
 }
 

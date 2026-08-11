@@ -28,6 +28,7 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     header
                     heroCard
+                    homeNavigationCards
                     journalCoverSection
                     socialFeedSection
                 }
@@ -166,6 +167,30 @@ struct HomeView: View {
                 .stroke(Color.homeBorder, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+    }
+
+    private var homeNavigationCards: some View {
+        VStack(spacing: 14) {
+            HomeNavigationCard(
+                title: "My Entries",
+                subtitle: "Write, edit, and turn your\nthoughts into storyboards.",
+                systemName: "doc.text",
+                backgroundImageName: "home_entries_card_bg",
+                contentAlignment: .trailing
+            ) {
+                selectedPage = .entries
+            }
+
+            HomeNavigationCard(
+                title: "My Journals",
+                subtitle: "Organize your stories\ninto meaningful journals.",
+                systemName: "book",
+                backgroundImageName: "home_journals_card_bg",
+                contentAlignment: .leading
+            ) {
+                selectedPage = .journal
+            }
+        }
     }
 
     private var journalCoverSection: some View {
@@ -402,6 +427,86 @@ struct HomeView: View {
 
     private var homeFeedPosts: [HomeFeedPost] {
         storyboardFeedPosts
+    }
+}
+
+private struct HomeNavigationCard: View {
+    let title: String
+    let subtitle: String
+    let systemName: String
+    let backgroundImageName: String
+    let contentAlignment: HorizontalAlignment
+    let action: () -> Void
+
+    private var isTrailingAligned: Bool {
+        contentAlignment == .trailing
+    }
+
+    private var textAlignment: TextAlignment {
+        isTrailingAligned ? .trailing : .leading
+    }
+
+    private var frameAlignment: Alignment {
+        isTrailingAligned ? .trailing : .leading
+    }
+
+    private var gradientStartPoint: UnitPoint {
+        isTrailingAligned ? .trailing : .leading
+    }
+
+    private var gradientEndPoint: UnitPoint {
+        isTrailingAligned ? .leading : .trailing
+    }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: contentAlignment, spacing: 14) {
+                Image(systemName: systemName)
+                    .font(.system(size: 32, weight: .regular))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+
+                VStack(alignment: contentAlignment, spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 26, weight: .bold, design: .serif))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(textAlignment)
+                        .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
+
+                    Text(subtitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineSpacing(2)
+                        .foregroundStyle(.white.opacity(0.96))
+                        .multilineTextAlignment(textAlignment)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: frameAlignment)
+            .background {
+                Image(backgroundImageName)
+                    .resizable()
+                    .scaledToFill()
+                    .overlay(
+                        LinearGradient(
+                            colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
+                            startPoint: gradientStartPoint,
+                            endPoint: gradientEndPoint
+                        )
+                    )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityHint("Opens \(title)")
     }
 }
 

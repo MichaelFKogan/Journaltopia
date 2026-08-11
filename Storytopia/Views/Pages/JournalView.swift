@@ -9024,6 +9024,39 @@ private extension CreateEntryDraft {
             displayOrder: displayOrder
         )
     }
+
+    func replacingTitle(_ title: String, thumbnail: UIImage?) -> CreateEntryDraft {
+        CreateEntryDraft(
+            id: id,
+            title: title,
+            text: text,
+            richText: richText,
+            photos: photos,
+            characters: characters,
+            artStyle: artStyle,
+            location: location,
+            date: date,
+            datePrecision: datePrecision,
+            savesDraft: savesDraft,
+            isPrivate: isPrivate,
+            status: status,
+            fontChoiceRawValue: fontChoiceRawValue,
+            textColorIndex: textColorIndex,
+            textSize: textSize,
+            paperStyleRawValue: paperStyleRawValue,
+            paperColorIndex: paperColorIndex,
+            isBold: isBold,
+            isItalic: isItalic,
+            isUnderlined: isUnderlined,
+            isStrikethrough: isStrikethrough,
+            isHighlighted: isHighlighted,
+            textAlignmentRawValue: textAlignmentRawValue,
+            thumbnail: thumbnail,
+            createdAt: createdAt,
+            updatedAt: Date(),
+            displayOrder: displayOrder
+        )
+    }
 }
 
 private enum EntriesCloudFetchCache {
@@ -9186,6 +9219,41 @@ private enum EntriesCloudFetchCache {
         let hasMore: Bool
         let nextOffset: Int
         let loadedAt: Date
+    }
+}
+
+private enum DeletedAuthoringSampleEntryStore {
+    private static let storageKey = "StorytopiaDeletedAuthoringSampleEntries"
+
+    static func load() -> Set<UUID> {
+        guard let rawValues = UserDefaults.standard.stringArray(forKey: storageKey) else {
+            return []
+        }
+
+        return Set(rawValues.compactMap(UUID.init(uuidString:)))
+    }
+
+    static func contains(_ id: UUID) -> Bool {
+        load().contains(id)
+    }
+
+    static func add(_ id: UUID) {
+        var ids = load()
+        ids.insert(id)
+        save(ids)
+    }
+
+    static func remove(_ id: UUID) {
+        var ids = load()
+        ids.remove(id)
+        save(ids)
+    }
+
+    private static func save(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(
+            ids.map(\.uuidString).sorted(),
+            forKey: storageKey
+        )
     }
 }
 
@@ -9739,7 +9807,7 @@ struct EntriesView: View {
             }
             .font(.system(size: 14, weight: .bold))
             .foregroundStyle(Color.homeAccent)
-            .disabled(showsSampleEntries)
+            .disabled(filteredEntryItems.isEmpty)
         }
         .padding(.top, 12)
     }
@@ -9906,7 +9974,7 @@ struct EntriesView: View {
 
     @ViewBuilder
     private var selectedEntriesToolbar: some View {
-        if editMode == .active && !showsSampleEntries && !selectedEntryIDs.isEmpty {
+        if editMode == .active && !selectedEntryIDs.isEmpty {
             HStack(spacing: 12) {
                 Text("\(selectedEntryIDs.count) selected")
                     .font(.system(size: 13, weight: .bold))
@@ -9926,17 +9994,19 @@ struct EntriesView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Delete selected entries")
 
-                Button {
-                    openAddSelectedEntriesToJournalPage()
-                } label: {
-                    Label("Add to Journal", systemImage: "book.closed.fill")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .frame(height: 38)
-                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                if !showsSampleEntries {
+                    Button {
+                        openAddSelectedEntriesToJournalPage()
+                    } label: {
+                        Label("Add to Journal", systemImage: "book.closed.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .frame(height: 38)
+                            .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, 14)
             .frame(height: 54)
@@ -10056,7 +10126,11 @@ struct EntriesView: View {
                 let category = categoryForSampleEntry(entry)
 
                 Button {
-                    openSampleEntry(entry)
+                    if editMode == .active {
+                        toggleEntrySelection(entry.id)
+                    } else {
+                        openSampleEntry(entry)
+                    }
                 } label: {
                     let isCompletedSample = entry.status == JournalEntryStatus.completed.rawValue
                     EntryListRow(
@@ -10071,12 +10145,29 @@ struct EntriesView: View {
                         rowHeight: 52,
                         coverWidth: 34,
                         coverHeight: 44,
+                        isSelecting: editMode == .active,
+                        isSelected: selectedEntryIDs.contains(entry.id),
                         isSample: true
                     )
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, JournalChapterListMetrics.horizontalInset)
                 .padding(.trailing, JournalChapterListMetrics.trailingInset)
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    Button {
+                        beginRenaming(entry)
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(Color.homeAccent)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        requestDeleteEntry(.local(entry, cloudEntry: nil))
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
             }
         } else {
             ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
@@ -10308,9 +10399,21 @@ struct EntriesView: View {
                 storyboardCount: sampleStoryboardCount(for: entry.id),
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
+                isSelecting: editMode == .active,
+                isSelected: selectedEntryIDs.contains(entry.id),
                 isSample: true,
                 onOpen: {
-                    openSampleEntry(entry)
+                    if editMode == .active {
+                        toggleEntrySelection(entry.id)
+                    } else {
+                        openSampleEntry(entry)
+                    }
+                },
+                onDelete: {
+                    requestDeleteEntry(.local(entry, cloudEntry: nil))
+                },
+                onRename: {
+                    beginRenaming(entry)
                 }
             )
         } else {
@@ -10318,17 +10421,27 @@ struct EntriesView: View {
                 entry: entry,
                 sortOption: selectedEntrySort,
                 pageLabel: entryManualOrderLabel(for: index),
-                isEditing: false,
-                showsActions: false,
+                isEditing: editMode == .active,
+                showsActions: true,
                 title: entryDisplayTitle(entry),
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
+                isSelecting: editMode == .active,
+                isSelected: selectedEntryIDs.contains(entry.id),
                 isSample: true,
                 onOpen: {
-                    openSampleEntry(entry)
+                    if editMode == .active {
+                        toggleEntrySelection(entry.id)
+                    } else {
+                        openSampleEntry(entry)
+                    }
                 },
-                onDelete: {},
-                onRename: nil
+                onDelete: {
+                    requestDeleteEntry(.local(entry, cloudEntry: nil))
+                },
+                onRename: {
+                    beginRenaming(entry)
+                }
             )
         }
     }
@@ -11017,6 +11130,11 @@ struct EntriesView: View {
             return
         }
 
+        if isSampleAuthorMode {
+            try await deleteSampleEntry(item)
+            return
+        }
+
         if authStore.userID != nil, cloudEntriesErrorMessage != nil, item.cloudEntry == nil {
             throw JournalEntryRepositoryError.operationFailed
         }
@@ -11038,6 +11156,29 @@ struct EntriesView: View {
             activeDraftID = nil
         }
         isDraftSaved = !entries.isEmpty
+    }
+
+    private func deleteSampleEntry(_ item: EntryDisplayItem) async throws {
+        entryIDsBeingDeleted.insert(item.id)
+        defer { entryIDsBeingDeleted.remove(item.id) }
+
+        try await SupabaseSampleStoryService().deleteSampleEntry(id: item.id)
+        DeletedAuthoringSampleEntryStore.add(item.id)
+        sampleEntries.removeAll { $0.id == item.id }
+        sampleStoryboardsByEntryID[item.id] = nil
+        let localSampleStoryboards = GeneratedStoryboardStore.load().filter { $0.clientEntryID == item.id }
+        if !localSampleStoryboards.isEmpty {
+            GeneratedStoryboardStore.delete(localSampleStoryboards)
+            GeneratedStoryboardStore.save(
+                GeneratedStoryboardStore.load().filter { $0.clientEntryID != item.id }
+            )
+        }
+        CreateEntryDraftStore.delete(id: item.id)
+
+        if activeDraftID == item.id {
+            activeDraftID = nil
+        }
+        isDraftSaved = false
     }
 
     private var isDeleteEntryAlertPresented: Binding<Bool> {
@@ -11098,7 +11239,9 @@ struct EntriesView: View {
             refreshEntries(forceCloudReload: true)
         } else {
             entriesPendingDeletion = failedEntries
-            entryDeleteErrorMessage = "Could not delete from Storytopia cloud. Check your connection and try again."
+            entryDeleteErrorMessage = isSampleAuthorMode
+                ? "Could not delete from the sample author pack. Check your connection and try again."
+                : "Could not delete from Storytopia cloud. Check your connection and try again."
         }
     }
 
@@ -11152,6 +11295,25 @@ struct EntriesView: View {
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue
         )
+
+        if isSampleAuthorMode {
+            entryIDsBeingRenamed.insert(entry.id)
+            defer { entryIDsBeingRenamed.remove(entry.id) }
+
+            do {
+                try await SupabaseSampleStoryService().renameSampleEntry(id: entry.id, title: trimmedTitle)
+                if let index = sampleEntries.firstIndex(where: { $0.id == entry.id }) {
+                    sampleEntries[index] = sampleEntries[index].replacingTitle(trimmedTitle, thumbnail: entryThumbnail)
+                }
+                entryBeingRenamed = nil
+                renamedEntryTitle = ""
+                entryRenameErrorMessage = nil
+                refreshEntries(forceCloudReload: true)
+            } catch {
+                entryRenameErrorMessage = "Could not sync the sample title to Storytopia cloud."
+            }
+            return
+        }
 
         let renamedID = CreateEntryDraftStore.save(
             id: entry.id,
@@ -11563,10 +11725,11 @@ struct EntriesView: View {
                     return
                 }
 
-                sampleEntries = pack.entries
+                let visibleEntries = visibleAuthoringSampleEntries(from: pack.entries)
+                sampleEntries = visibleEntries
                 sampleStoryboardsByEntryID = sampleStoryboardsByMergingLocalFallbacks(
                     remoteStoryboardsByEntryID: pack.storyboardsByEntryID,
-                    entries: pack.entries,
+                    entries: visibleEntries,
                     repairsMissingRemote: true
                 )
                 isLoadingCloudEntries = false
@@ -11603,6 +11766,15 @@ struct EntriesView: View {
             sampleStoryboardsByEntryID = pack.storyboardsByEntryID
             storeCurrentEntriesSessionSnapshot()
         }
+    }
+
+    private func visibleAuthoringSampleEntries(from entries: [CreateEntryDraft]) -> [CreateEntryDraft] {
+        let deletedEntryIDs = DeletedAuthoringSampleEntryStore.load()
+        guard !deletedEntryIDs.isEmpty else {
+            return entries
+        }
+
+        return entries.filter { !deletedEntryIDs.contains($0.id) }
     }
 
     private func refreshEntries(forceCloudReload: Bool = false) {
@@ -12977,6 +13149,8 @@ private struct CompletedEntryGridCard: View {
     let isSelected: Bool
     let isSample: Bool
     let onOpen: () -> Void
+    let onDelete: (() -> Void)?
+    let onRename: (() -> Void)?
     let accessibilityLabel: String
 
     init(
@@ -12991,7 +13165,9 @@ private struct CompletedEntryGridCard: View {
         isSelecting: Bool = false,
         isSelected: Bool = false,
         isSample: Bool = false,
-        onOpen: @escaping () -> Void
+        onOpen: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil,
+        onRename: (() -> Void)? = nil
     ) {
         self.entry = entry
         self.title = title
@@ -13005,6 +13181,8 @@ private struct CompletedEntryGridCard: View {
         self.isSelected = isSelected
         self.isSample = isSample
         self.onOpen = onOpen
+        self.onDelete = onDelete
+        self.onRename = onRename
         accessibilityLabel = "Completed \(title)"
     }
 
@@ -13059,6 +13237,23 @@ private struct CompletedEntryGridCard: View {
         .animation(.spring(response: 0.24, dampingFraction: 0.78), value: isOpening)
         .onTapGesture {
             onOpen()
+        }
+        .contextMenu {
+            if let onRename {
+                Button {
+                    onRename()
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+            }
+
+            if let onDelete {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(accessibilityLabel), \(pageLabel ?? entryPreviewDateText(entry, sortOption: sortOption))")
