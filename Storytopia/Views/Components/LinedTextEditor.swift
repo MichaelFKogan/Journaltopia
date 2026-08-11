@@ -801,7 +801,7 @@ final class LinedTextView: UITextView {
             textStyle: notebookTextStyle,
             usesTexturedPaperEffect: usesTexturedPaperEffect
         )
-        self.selectedRange = selectedRange
+        self.selectedRange = Self.clampedSelection(selectedRange, textLength: document.text.utf16.count)
         refreshTypingAttributes()
         layer.compositingFilter = nil
         setNeedsDisplay()
@@ -1143,9 +1143,11 @@ final class LinedTextView: UITextView {
     ) {
         let document = richText?.normalized(for: string) ?? NotebookRichTextDocument(text: string)
         storedRichTextDocument = document
+        let textLength = (string as NSString).length
 
         if string.isEmpty {
             text = ""
+            selectedRange = NSRange(location: 0, length: 0)
             refreshTypingAttributes()
             refreshLayoutAfterContentChange()
             return
@@ -1157,13 +1159,22 @@ final class LinedTextView: UITextView {
             usesTexturedPaperEffect: usesTexturedPaperEffect
         )
         if moveCaretToEnd {
-            let endLocation = (string as NSString).length
-            self.selectedRange = NSRange(location: endLocation, length: 0)
+            self.selectedRange = NSRange(location: textLength, length: 0)
         } else {
-            self.selectedRange = selectedRange
+            self.selectedRange = Self.clampedSelection(selectedRange, textLength: textLength)
         }
         refreshTypingAttributes()
         refreshLayoutAfterContentChange()
+    }
+
+    fileprivate static func clampedSelection(_ range: NSRange, textLength: Int) -> NSRange {
+        guard textLength >= 0, range.location != NSNotFound else {
+            return NSRange(location: 0, length: 0)
+        }
+
+        let location = min(max(range.location, 0), textLength)
+        let length = min(max(range.length, 0), textLength - location)
+        return NSRange(location: location, length: length)
     }
 
     func normalizeAttributesPreservingSelection() {
@@ -1178,7 +1189,7 @@ final class LinedTextView: UITextView {
         )
         attributedText = NSAttributedString(string: text, attributes: attributes)
         updateStoredRichTextDocument()
-        self.selectedRange = selectedRange
+        self.selectedRange = Self.clampedSelection(selectedRange, textLength: (text as NSString).length)
         refreshTypingAttributes()
     }
 
@@ -1912,20 +1923,23 @@ struct LinedTextEditor: UIViewRepresentable {
             textView.usesTexturedPaperEffect = usesTexturedPaperEffect
         }
 
-        if text == textView.text {
+        // Only treat the binding as caught up when it matches the live text view
+        // (or the last value we pushed). A stale intermediate binding must NOT clear
+        // the waiting flag — that previously rewrote the text view mid-keystroke and
+        // jumped the caret.
+        if text == textView.text || text == coordinator.lastTextPushedToBinding {
             coordinator.isWaitingForTextBindingSync = false
-            coordinator.lastTextPushedToBinding = text
-        } else if coordinator.isWaitingForTextBindingSync,
-                  let lastTextPushedToBinding = coordinator.lastTextPushedToBinding,
-                  text != lastTextPushedToBinding {
-            // Binding changed from outside (e.g. dictation) before the text-view push synced.
-            // Allow the external value to apply instead of getting stuck.
-            coordinator.isWaitingForTextBindingSync = false
+            coordinator.isUpdatingFromTextView = false
+            coordinator.lastTextPushedToBinding = textView.text
         }
 
         let shouldFollowTextEnd = followTextEndRequestID != coordinator.handledFollowTextEndRequestID
 
+        // While the text view is first responder it owns the document. SwiftUI bindings
+        // are outbound only during typing. Explicit follow-to-end requests are the
+        // one inbound exception (e.g. programmatic inserts that should move the caret).
         let canApplyBindingText = !coordinator.isUpdatingFromTextView
+            && (!textView.isFirstResponder || shouldFollowTextEnd)
             && !(textView.isFirstResponder && coordinator.isWaitingForTextBindingSync)
 
         if canApplyBindingText {
@@ -1940,6 +1954,7 @@ struct LinedTextEditor: UIViewRepresentable {
                     )
                     coordinator.currentRichTextDocument = textView.richTextDocument()
                     coordinator.lastTextPushedToBinding = text
+                    coordinator.isWaitingForTextBindingSync = false
                 }
             } else if !didChangeTextStyle,
                       !didChangeTexturedPaperEffect,
@@ -1974,8 +1989,11 @@ struct LinedTextEditor: UIViewRepresentable {
 
         if focusRequestID != coordinator.handledFocusRequestID {
             coordinator.handledFocusRequestID = focusRequestID
-            if !didHandleBlurRequest {
+            if !didHandleBlurRequest, !textView.isFirstResponder {
                 DispatchQueue.main.async {
+                    guard !textView.isFirstResponder else {
+                        return
+                    }
                     textView.becomeFirstResponder()
                 }
             }
@@ -2115,8 +2133,16 @@ struct LinedTextEditor: UIViewRepresentable {
                 }
             }
 
-            DispatchQueue.main.async {
-                self.isUpdatingFromTextView = false
+            // Fallback only: the waiting flags are normally cleared in updateUIView once
+            // the SwiftUI binding catches up. Avoid clearing immediately, which opened a
+            // race where a stale binding could rewrite the text view and jump the caret.
+            dispatchToSwiftUI { [weak self] in
+                guard let self else {
+                    return
+                }
+                if !self.isWaitingForTextBindingSync {
+                    self.isUpdatingFromTextView = false
+                }
             }
         }
 
