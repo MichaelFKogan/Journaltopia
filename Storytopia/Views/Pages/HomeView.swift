@@ -3,18 +3,15 @@ import UIKit
 
 struct HomeView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     var isSampleAuthorMode = false
+    var openJournalsPage: () -> Void = {}
 
     @State private var fullScreenImageName: String?
     @State private var isStoryVerticalViewerPresented = false
     @State private var storyVerticalPageIndex = 0
-    @State private var homeBookOpenHintProgress: CGFloat = 0
-    @State private var homeBookOpenTask: Task<Void, Never>?
-    @State private var isOpeningStoryVerticalViewer = false
     @State private var isLoadingHomeStoryboards = false
 
     private let homeStoryboardLoadLimit = 50
@@ -28,9 +25,11 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     header
                     heroCard
+                        .zIndex(3)
                     homeNavigationCards
+                        .zIndex(2)
                     journalCoverSection
-                    socialFeedSection
+                        .zIndex(1)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -61,17 +60,6 @@ struct HomeView: View {
                 currentPageIndex: $storyVerticalPageIndex,
                 title: "The Story So Far..."
             )
-            .onDisappear {
-                isOpeningStoryVerticalViewer = false
-                playHomeBookOpenHint()
-            }
-        }
-        .onAppear {
-            playHomeBookOpenHint()
-        }
-        .onDisappear {
-            homeBookOpenTask?.cancel()
-            homeBookOpenTask = nil
         }
         .task(id: homeStoryboardLoadID) {
             await loadHomeStoryboards()
@@ -118,55 +106,70 @@ struct HomeView: View {
     }
 
     private var heroCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Create your\nfirst story")
-                .font(.system(size: 26, weight: .bold, design: .serif))
-                .lineSpacing(2)
-                .foregroundStyle(.white)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Write about your day \nand turn it into a story.")
-                .font(.system(size: 14, weight: .medium))
-                .lineSpacing(2)
-                .foregroundStyle(.white.opacity(0.92))
-
-            Button {
-                selectedPage = .create
-            } label: {
-                Label("New Story", systemImage: "plus")
-                    .font(.system(size: 14, weight: .bold))
+        Button {
+            selectedPage = .create
+        } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Create your\nfirst story")
+                    .font(.system(size: 26, weight: .bold, design: .serif))
+                    .lineSpacing(2)
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .frame(height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.homeAccent)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Write about your day \nand turn it into a story.")
+                    .font(.system(size: 14, weight: .medium))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.92))
+
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+
+                    Text("New Story")
+                        .font(.system(size: 14, weight: .bold))
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .black))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 44)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.homeAccent)
+                )
+                .padding(.top, 2)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, minHeight: 190, alignment: .leading)
+            .background {
+                Image("homepage_banner")
+                    .resizable()
+                    .scaledToFill()
+                    .overlay(
+                        LinearGradient(
+                            colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
                     )
             }
-            .buttonStyle(.plain)
-            .padding(.top, 2)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                HomeCardNavigationIndicator()
+                    .padding(14)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, minHeight: 190, alignment: .leading)
-        .background {
-            Image("homepage_banner")
-                .resizable()
-                .scaledToFill()
-                .overlay(
-                    LinearGradient(
-                        colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.homeBorder, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Create your first story")
+        .accessibilityHint("Opens New Story")
     }
 
     private var homeNavigationCards: some View {
@@ -176,7 +179,8 @@ struct HomeView: View {
                 subtitle: "Write, edit, and turn your\nthoughts into storyboards.",
                 systemName: "doc.text",
                 backgroundImageName: "home_entries_card_bg",
-                contentAlignment: .trailing
+                contentAlignment: .leading,
+                showsGradient: true
             ) {
                 selectedPage = .entries
             }
@@ -186,89 +190,35 @@ struct HomeView: View {
                 subtitle: "Organize your stories\ninto meaningful journals.",
                 systemName: "book",
                 backgroundImageName: "home_journals_card_bg",
-                contentAlignment: .leading
+                contentAlignment: .leading,
+                showsGradient: false
             ) {
-                selectedPage = .journal
+                openJournalsPage()
             }
         }
     }
 
     private var journalCoverSection: some View {
-        HStack {
-            Spacer(minLength: 0)
-
-            HomeJournalCoverOpener(
-                coverImage: generatedStoryboards.first?.image,
-                title: "The Story So Far...",
-                openHintProgress: homeBookOpenHintProgress,
-                isEnabled: !generatedStoryboards.isEmpty && !isOpeningStoryVerticalViewer,
-                isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
-                onOpen: openStoryVerticalViewer
-            )
-
-            Spacer(minLength: 0)
-        }
+        HomeStorySoFarCard(
+            coverImage: generatedStoryboards.first?.image,
+            isEnabled: !generatedStoryboards.isEmpty,
+            isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
+            action: openStoryVerticalViewer
+        )
+        .frame(height: 190)
+        .clipped()
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.top, 4)
         .padding(.bottom, 2)
     }
 
-    private func playHomeBookOpenHint() {
-        homeBookOpenTask?.cancel()
-        homeBookOpenHintProgress = 0
-
-        guard !reduceMotion, !generatedStoryboards.isEmpty else {
-            return
-        }
-
-        homeBookOpenTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 260_000_000)
-            guard !Task.isCancelled else {
-                return
-            }
-
-            withAnimation(.easeOut(duration: 0.42)) {
-                homeBookOpenHintProgress = 1
-            }
-
-            try? await Task.sleep(nanoseconds: 560_000_000)
-            guard !Task.isCancelled else {
-                return
-            }
-
-            withAnimation(.spring(response: 0.62, dampingFraction: 0.86)) {
-                homeBookOpenHintProgress = 0
-            }
-        }
-    }
-
     private func openStoryVerticalViewer() {
-        guard !generatedStoryboards.isEmpty, !isOpeningStoryVerticalViewer else {
+        guard !generatedStoryboards.isEmpty else {
             return
         }
 
-        isOpeningStoryVerticalViewer = true
-        homeBookOpenTask?.cancel()
-        homeBookOpenHintProgress = 0
         storyVerticalPageIndex = 0
-
-        guard !reduceMotion else {
-            isStoryVerticalViewerPresented = true
-            return
-        }
-
-        homeBookOpenTask = Task { @MainActor in
-            withAnimation(.easeOut(duration: 0.14)) {
-                homeBookOpenHintProgress = 1
-            }
-
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            guard !Task.isCancelled else {
-                return
-            }
-
-            homeBookOpenTask = nil
-            isStoryVerticalViewerPresented = true
-        }
+        isStoryVerticalViewerPresented = true
     }
 
     @MainActor
@@ -294,7 +244,6 @@ struct HomeView: View {
             .sorted(by: homeStoryboardSort)
 
             generatedStoryboards = loadedStoryboards
-            playHomeBookOpenHint()
         } catch {
             print("[Storytopia] Home storyboard cover load failed: \(error.localizedDescription)")
             if generatedStoryboards.isEmpty {
@@ -319,7 +268,6 @@ struct HomeView: View {
             generatedStoryboards = pack.storyboardsByEntryID.values
                 .flatMap { $0 }
                 .sorted(by: homeStoryboardSort)
-            playHomeBookOpenHint()
         } catch {
             print("[Storytopia] Sample home storyboard load failed: \(error.localizedDescription)")
             generatedStoryboards = []
@@ -430,12 +378,31 @@ struct HomeView: View {
     }
 }
 
+private struct HomeCardNavigationIndicator: View {
+    var isEnabled = true
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 12, weight: .black))
+            .foregroundStyle(.white.opacity(isEnabled ? 0.96 : 0.54))
+            .frame(width: 32, height: 32)
+            .background(.black.opacity(isEnabled ? 0.36 : 0.22), in: Circle())
+            .overlay(
+                Circle()
+                    .stroke(.white.opacity(isEnabled ? 0.38 : 0.2), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.22), radius: 5, y: 2)
+            .accessibilityHidden(true)
+    }
+}
+
 private struct HomeNavigationCard: View {
     let title: String
     let subtitle: String
     let systemName: String
     let backgroundImageName: String
     let contentAlignment: HorizontalAlignment
+    var showsGradient: Bool = false
     let action: () -> Void
 
     private var isTrailingAligned: Bool {
@@ -489,20 +456,27 @@ private struct HomeNavigationCard: View {
                 Image(backgroundImageName)
                     .resizable()
                     .scaledToFill()
-                    .overlay(
-                        LinearGradient(
-                            colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
-                            startPoint: gradientStartPoint,
-                            endPoint: gradientEndPoint
-                        )
-                    )
+                    .overlay {
+                        if showsGradient {
+                            LinearGradient(
+                                colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
+                                startPoint: gradientStartPoint,
+                                endPoint: gradientEndPoint
+                            )
+                        }
+                    }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                HomeCardNavigationIndicator()
+                    .padding(14)
+            }
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.homeBorder, lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
@@ -510,228 +484,115 @@ private struct HomeNavigationCard: View {
     }
 }
 
-private struct HomeJournalCoverOpener: View {
+private struct HomeStorySoFarCard: View {
     let coverImage: UIImage?
-    let title: String
-    let openHintProgress: CGFloat
     let isEnabled: Bool
     let isLoading: Bool
-    let onOpen: () -> Void
+    let action: () -> Void
 
-    private let coverWidth: CGFloat = 148
-    private let coverHeight: CGFloat = 206
+    private var subtitle: String {
+        if isLoading {
+            return "Loading your completed\nstoryboards."
+        }
+
+        if isEnabled {
+            return "Revisit your completed\nstoryboards in one view."
+        }
+
+        return "Completed storyboards\nwill appear here."
+    }
 
     var body: some View {
-        Button(action: onOpen) {
-            VStack(spacing: 10) {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 14) {
                 ZStack {
-                    HomeJournalCoverImage(
-                        coverImage: coverImage,
-                        title: title,
-                        openHintProgress: openHintProgress
-                    )
-                    .frame(width: coverWidth, height: coverHeight)
+                    Image(systemName: "photo.stack")
+                        .font(.system(size: 32, weight: .regular))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
 
                     if isLoading {
                         ProgressView()
                             .tint(.white)
-                            .frame(width: coverWidth, height: coverHeight)
-                            .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .scaleEffect(0.92)
+                            .offset(x: 30)
                     }
                 }
 
-                HStack(spacing: 4) {
-                    Text(isEnabled ? "Tap To Open" : (isLoading ? "Loading Story" : "No Storyboards Yet"))
-                        .font(.system(size: 12, weight: .heavy, design: .rounded))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("The Story So Far...")
+                        .font(.system(size: 26, weight: .bold, design: .serif))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
 
-                    if isEnabled {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .black))
-                    }
+                    Text(subtitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineSpacing(2)
+                        .foregroundStyle(.white.opacity(0.96))
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
                 }
-                .foregroundStyle(Color.storyInk.opacity(isEnabled ? 0.74 : 0.38))
             }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .accessibilityLabel("Open \(title)")
-        .accessibilityHint("Opens your storyboards in a vertical view")
-    }
-}
-
-private struct HomeJournalCoverImage: View {
-    let coverImage: UIImage?
-    let title: String
-    let openHintProgress: CGFloat
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                hintPages
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .offset(x: 3 + (openHintProgress * 5))
-                    .scaleEffect(
-                        x: 0.992 - (openHintProgress * 0.012),
-                        y: 0.99,
-                        anchor: .leading
-                    )
-                    .opacity(openHintProgress > 0 ? 0.86 : 0)
-
-                coverSurface
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .rotation3DEffect(
-                        .degrees(-6 * Double(openHintProgress)),
-                        axis: (x: 0, y: 1, z: 0),
-                        anchor: .leading,
-                        perspective: 0.66
-                    )
-                    .offset(x: -1.8 * openHintProgress, y: -1.2 * openHintProgress)
-                    .shadow(
-                        color: Color.storyInk.opacity(0.13 + (Double(openHintProgress) * 0.12)),
-                        radius: 10 + (openHintProgress * 5),
-                        y: 5 + (openHintProgress * 3)
-                    )
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-        }
-    }
-
-    private var coverSurface: some View {
-        coverFill
-            .overlay(alignment: .bottom) {
-                titleOverlay
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: .leading)
+            .background {
+                background
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(alignment: .leading) {
-                journalSpine
+            .overlay(alignment: .bottomTrailing) {
+                HomeCardNavigationIndicator(isEnabled: isEnabled)
+                    .padding(14)
             }
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.homeBorder, lineWidth: 1)
             )
-    }
-
-    private var titleOverlay: some View {
-        LinearGradient(
-            colors: [
-                Color.clear,
-                Color.black.opacity(0.42),
-                Color.black.opacity(0.78)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .frame(height: 92)
-        .overlay(alignment: .bottomLeading) {
-            Text(title)
-                .font(.system(size: 18, weight: .bold, design: .serif))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.82)
-                .padding(.leading, 22)
-                .padding(.trailing, 14)
-                .padding(.bottom, 14)
+            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .allowsHitTesting(false)
-    }
-
-    private var hintPages: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color.white)
-            .overlay(alignment: .leading) {
-                LinearGradient(
-                    colors: [
-                        Color.storyInk.opacity(0.13),
-                        Color.storyInk.opacity(0.045),
-                        Color.clear
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: 28)
-            }
-            .overlay(alignment: .trailing) {
-                VStack(spacing: 7) {
-                    ForEach(0..<6, id: \.self) { _ in
-                        Capsule()
-                            .fill(Color.homeBorder.opacity(0.58))
-                            .frame(height: 2.5)
-                    }
-                }
-                .padding(.horizontal, 18)
-                .opacity(0.5)
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder.opacity(0.82), lineWidth: 1)
-            )
+        .buttonStyle(.plain)
+        .frame(height: 190)
+        .clipped()
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .disabled(!isEnabled)
+        .accessibilityLabel("The Story So Far")
+        .accessibilityHint(isEnabled ? "Opens your storyboards in a vertical view" : "Completed storyboards will appear here")
     }
 
     @ViewBuilder
-    private var coverFill: some View {
+    private var background: some View {
         if let coverImage {
             Image(uiImage: coverImage)
                 .resizable()
                 .scaledToFill()
                 .overlay(
                     LinearGradient(
-                        colors: [.black.opacity(0.08), .clear, .black.opacity(0.18)],
-                        startPoint: .top,
-                        endPoint: .bottom
+                        colors: [.black.opacity(0.68), .black.opacity(0.24), .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
                     )
                 )
+                .overlay(Color.black.opacity(isEnabled ? 0 : 0.18))
         } else {
             LinearGradient(
                 colors: [
-                    Color.homeAccent.opacity(0.55),
-                    Color.storyPurple.opacity(0.48),
-                    Color.storyInk.opacity(0.72)
+                    Color.storyInk.opacity(0.78),
+                    Color.homeAccent.opacity(0.58),
+                    Color.storyPurple.opacity(0.42)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             .overlay {
-                Image(systemName: "book.closed.fill")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.72))
-                    .offset(y: -18)
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 80, weight: .light))
+                    .foregroundStyle(Color.white.opacity(0.2))
+                    .offset(x: 82, y: 12)
             }
         }
-    }
-
-    private var journalSpine: some View {
-        ZStack(alignment: .leading) {
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.42),
-                    Color.black.opacity(0.24),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-
-            LinearGradient(
-                colors: [
-                    Color.clear,
-                    Color.white.opacity(0.16),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: 8)
-            .padding(.leading, 9)
-            .blendMode(.screen)
-        }
-        .frame(width: 16)
-        .frame(maxHeight: .infinity)
-        .allowsHitTesting(false)
     }
 }
 

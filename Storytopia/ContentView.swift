@@ -134,7 +134,8 @@ struct ContentView: View {
             HomeView(
                 selectedPage: pageSelection,
                 generatedStoryboards: $generatedStoryboards,
-                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil,
+                openJournalsPage: openJournalsPage
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -228,6 +229,15 @@ struct ContentView: View {
                 dismissCreatePage()
             }
         )
+    }
+
+    private func openJournalsPage() {
+        pageBehindCreate = .journal
+        selectedPage = .journal
+        journalCreatePresentation = nil
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
     }
 
     private var isOpenedStoryboardGenerationImagePresented: Binding<Bool> {
