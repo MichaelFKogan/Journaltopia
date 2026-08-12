@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import UIKit
 
@@ -109,44 +110,23 @@ struct HomeView: View {
         Button {
             selectedPage = .create
         } label: {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Create your\nfirst story")
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Create\nStory")
                     .font(.system(size: 26, weight: .bold, design: .serif))
                     .lineSpacing(2)
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Write about your day \nand turn it into a story.")
+                Text("Write about your day\nand turn it into a storyboard.")
                     .font(.system(size: 14, weight: .medium))
                     .lineSpacing(2)
                     .foregroundStyle(.white.opacity(0.92))
-
-                HStack(spacing: 8) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .bold))
-
-                    Text("New Story")
-                        .font(.system(size: 14, weight: .bold))
-
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .black))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .frame(height: 44)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.homeAccent)
-                )
-                .padding(.top, 2)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity, minHeight: 190, alignment: .leading)
             .background {
-                Image("homepage_banner")
-                    .resizable()
-                    .scaledToFill()
+                HomeLoopingVideoBackground(resourceName: "homepage_banner")
                     .overlay(
                         LinearGradient(
                             colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
@@ -157,7 +137,7 @@ struct HomeView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
-                HomeCardNavigationIndicator()
+                HomeCardNavigationIndicator(systemName: "plus", style: .accent)
                     .padding(14)
             }
             .overlay(
@@ -168,8 +148,8 @@ struct HomeView: View {
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Create your first story")
-        .accessibilityHint("Opens New Story")
+        .accessibilityLabel("Create Story")
+        .accessibilityHint("Opens Create Story")
     }
 
     private var homeNavigationCards: some View {
@@ -177,8 +157,8 @@ struct HomeView: View {
             HomeNavigationCard(
                 title: "My Entries",
                 subtitle: "Write, edit, and turn your\nthoughts into storyboards.",
-                systemName: "doc.text",
                 backgroundImageName: "home_entries_card_bg",
+                backgroundVideoName: "home_entries_card_bg",
                 contentAlignment: .leading,
                 showsGradient: true
             ) {
@@ -188,8 +168,8 @@ struct HomeView: View {
             HomeNavigationCard(
                 title: "My Journals",
                 subtitle: "Organize your stories\ninto meaningful journals.",
-                systemName: "book",
                 backgroundImageName: "home_journals_card_bg",
+                backgroundVideoName: "home_journals_card_bg",
                 contentAlignment: .leading,
                 showsGradient: false
             ) {
@@ -378,18 +358,153 @@ struct HomeView: View {
     }
 }
 
+private struct HomeLoopingVideoBackground: UIViewRepresentable {
+    let resourceName: String
+    var resourceExtension = "mp4"
+
+    func makeUIView(context: Context) -> HomeLoopingVideoPlayerView {
+        let view = HomeLoopingVideoPlayerView()
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.configure(resourceName: resourceName, resourceExtension: resourceExtension)
+        return view
+    }
+
+    func updateUIView(_ uiView: HomeLoopingVideoPlayerView, context: Context) {
+        uiView.playIfNeeded()
+    }
+
+    static func dismantleUIView(_ uiView: HomeLoopingVideoPlayerView, coordinator: ()) {
+        uiView.stop()
+    }
+}
+
+private final class HomeLoopingVideoPlayerView: UIView {
+    private var queuePlayer: AVQueuePlayer?
+    private var playerLooper: AVPlayerLooper?
+    private var becomeActiveObserver: NSObjectProtocol?
+
+    override class var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+
+    private var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        clipsToBounds = true
+        playerLayer.videoGravity = .resizeAspectFill
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        stop()
+    }
+
+    func configure(resourceName: String, resourceExtension: String) {
+        guard queuePlayer == nil else {
+            playIfNeeded()
+            return
+        }
+
+        guard let url = Bundle.main.url(forResource: resourceName, withExtension: resourceExtension) else {
+            print("[Storytopia] Missing bundled video: \(resourceName).\(resourceExtension)")
+            return
+        }
+
+        let queuePlayer = AVQueuePlayer()
+        queuePlayer.isMuted = true
+        let templateItem = AVPlayerItem(url: url)
+        playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: templateItem)
+        playerLayer.player = queuePlayer
+        self.queuePlayer = queuePlayer
+
+        becomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.playIfNeeded()
+        }
+
+        playIfNeeded()
+    }
+
+    func playIfNeeded() {
+        guard let queuePlayer else {
+            return
+        }
+
+        if queuePlayer.timeControlStatus != .playing {
+            queuePlayer.play()
+        }
+    }
+
+    func stop() {
+        if let becomeActiveObserver {
+            NotificationCenter.default.removeObserver(becomeActiveObserver)
+            self.becomeActiveObserver = nil
+        }
+
+        queuePlayer?.pause()
+        playerLooper?.disableLooping()
+        playerLooper = nil
+        playerLayer.player = nil
+        queuePlayer?.removeAllItems()
+        queuePlayer = nil
+    }
+}
+
 private struct HomeCardNavigationIndicator: View {
     var isEnabled = true
+    var systemName = "chevron.right"
+    var style: Style = .standard
+
+    enum Style {
+        case standard
+        case accent
+    }
+
+    private var foregroundOpacity: Double {
+        isEnabled ? 0.96 : 0.54
+    }
+
+    private var background: some ShapeStyle {
+        switch style {
+        case .standard:
+            return Color.black.opacity(isEnabled ? 0.36 : 0.22)
+        case .accent:
+            return Color.homeAccent.opacity(isEnabled ? 0.98 : 0.45)
+        }
+    }
+
+    private var strokeOpacity: Double {
+        switch style {
+        case .standard:
+            return isEnabled ? 0.38 : 0.2
+        case .accent:
+            return isEnabled ? 0.56 : 0.24
+        }
+    }
 
     var body: some View {
-        Image(systemName: "chevron.right")
-            .font(.system(size: 12, weight: .black))
-            .foregroundStyle(.white.opacity(isEnabled ? 0.96 : 0.54))
+        Image(systemName: systemName)
+            .font(.system(size: style == .accent ? 15 : 12, weight: .black))
+            .foregroundStyle(.white.opacity(foregroundOpacity))
             .frame(width: 32, height: 32)
-            .background(.black.opacity(isEnabled ? 0.36 : 0.22), in: Circle())
+            .background(background, in: Circle())
             .overlay(
                 Circle()
-                    .stroke(.white.opacity(isEnabled ? 0.38 : 0.2), lineWidth: 1)
+                    .stroke(.white.opacity(strokeOpacity), lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.22), radius: 5, y: 2)
             .accessibilityHidden(true)
@@ -399,8 +514,8 @@ private struct HomeCardNavigationIndicator: View {
 private struct HomeNavigationCard: View {
     let title: String
     let subtitle: String
-    let systemName: String
     let backgroundImageName: String
+    var backgroundVideoName: String? = nil
     let contentAlignment: HorizontalAlignment
     var showsGradient: Bool = false
     let action: () -> Void
@@ -427,35 +542,26 @@ private struct HomeNavigationCard: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: contentAlignment, spacing: 14) {
-                Image(systemName: systemName)
-                    .font(.system(size: 32, weight: .regular))
+            VStack(alignment: contentAlignment, spacing: 8) {
+                Text(title)
+                    .font(.system(size: 26, weight: .bold, design: .serif))
                     .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                    .multilineTextAlignment(textAlignment)
+                    .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
 
-                VStack(alignment: contentAlignment, spacing: 8) {
-                    Text(title)
-                        .font(.system(size: 26, weight: .bold, design: .serif))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(textAlignment)
-                        .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
-
-                    Text(subtitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineSpacing(2)
-                        .foregroundStyle(.white.opacity(0.96))
-                        .multilineTextAlignment(textAlignment)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
-                }
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.96))
+                    .multilineTextAlignment(textAlignment)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: frameAlignment)
             .background {
-                Image(backgroundImageName)
-                    .resizable()
-                    .scaledToFill()
+                cardBackground
                     .overlay {
                         if showsGradient {
                             LinearGradient(
@@ -482,6 +588,17 @@ private struct HomeNavigationCard: View {
         .accessibilityLabel(title)
         .accessibilityHint("Opens \(title)")
     }
+
+    @ViewBuilder
+    private var cardBackground: some View {
+        if let backgroundVideoName {
+            HomeLoopingVideoBackground(resourceName: backgroundVideoName)
+        } else {
+            Image(backgroundImageName)
+                .resizable()
+                .scaledToFill()
+        }
+    }
 }
 
 private struct HomeStorySoFarCard: View {
@@ -504,36 +621,28 @@ private struct HomeStorySoFarCard: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 14) {
-                ZStack {
-                    Image(systemName: "photo.stack")
-                        .font(.system(size: 32, weight: .regular))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
-
-                    if isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .scaleEffect(0.92)
-                            .offset(x: 30)
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
                     Text("The Story So Far...")
                         .font(.system(size: 26, weight: .bold, design: .serif))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.leading)
                         .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
 
-                    Text(subtitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineSpacing(2)
-                        .foregroundStyle(.white.opacity(0.96))
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
+                    if isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .scaleEffect(0.92)
+                    }
                 }
+
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.96))
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 18)
