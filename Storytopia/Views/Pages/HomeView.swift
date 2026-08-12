@@ -9,10 +9,9 @@ struct HomeView: View {
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     var isSampleAuthorMode = false
     var openJournalsPage: () -> Void = {}
+    var openStorySoFarPage: () -> Void = {}
 
     @State private var fullScreenImageName: String?
-    @State private var isStoryVerticalViewerPresented = false
-    @State private var storyVerticalPageIndex = 0
     @State private var isLoadingHomeStoryboards = false
 
     private let homeStoryboardLoadLimit = 50
@@ -54,13 +53,6 @@ struct HomeView: View {
                     self.fullScreenImageName = nil
                 }
             }
-        }
-        .fullScreenCover(isPresented: $isStoryVerticalViewerPresented) {
-            HomeStoryboardVerticalViewer(
-                storyboards: generatedStoryboards,
-                currentPageIndex: $storyVerticalPageIndex,
-                title: "The Story So Far..."
-            )
         }
         .task(id: homeStoryboardLoadID) {
             await loadHomeStoryboards()
@@ -180,25 +172,15 @@ struct HomeView: View {
 
     private var journalCoverSection: some View {
         HomeStorySoFarCard(
-            coverImage: generatedStoryboards.first?.image,
             isEnabled: !generatedStoryboards.isEmpty,
             isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
-            action: openStoryVerticalViewer
+            action: openStorySoFarPage
         )
         .frame(height: 190)
         .clipped()
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.top, 4)
         .padding(.bottom, 2)
-    }
-
-    private func openStoryVerticalViewer() {
-        guard !generatedStoryboards.isEmpty else {
-            return
-        }
-
-        storyVerticalPageIndex = 0
-        isStoryVerticalViewerPresented = true
     }
 
     @MainActor
@@ -224,11 +206,10 @@ struct HomeView: View {
             .sorted(by: homeStoryboardSort)
 
             generatedStoryboards = loadedStoryboards
+        } catch is CancellationError {
+            return
         } catch {
             print("[Storytopia] Home storyboard cover load failed: \(error.localizedDescription)")
-            if generatedStoryboards.isEmpty {
-                generatedStoryboards = []
-            }
         }
     }
 
@@ -248,9 +229,10 @@ struct HomeView: View {
             generatedStoryboards = pack.storyboardsByEntryID.values
                 .flatMap { $0 }
                 .sorted(by: homeStoryboardSort)
+        } catch is CancellationError {
+            return
         } catch {
             print("[Storytopia] Sample home storyboard load failed: \(error.localizedDescription)")
-            generatedStoryboards = []
         }
     }
 
@@ -602,7 +584,6 @@ private struct HomeNavigationCard: View {
 }
 
 private struct HomeStorySoFarCard: View {
-    let coverImage: UIImage?
     let isEnabled: Bool
     let isLoading: Bool
     let action: () -> Void
@@ -648,7 +629,15 @@ private struct HomeStorySoFarCard: View {
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: .leading)
             .background {
-                background
+                HomeLoopingVideoBackground(resourceName: "home_story_so_far")
+                    .overlay(
+                        LinearGradient(
+                            colors: [.black.opacity(0.68), .black.opacity(0.24), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .overlay(Color.black.opacity(isEnabled ? 0 : 0.18))
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
@@ -670,48 +659,16 @@ private struct HomeStorySoFarCard: View {
         .accessibilityLabel("The Story So Far")
         .accessibilityHint(isEnabled ? "Opens your storyboards in a vertical view" : "Completed storyboards will appear here")
     }
-
-    @ViewBuilder
-    private var background: some View {
-        if let coverImage {
-            Image(uiImage: coverImage)
-                .resizable()
-                .scaledToFill()
-                .overlay(
-                    LinearGradient(
-                        colors: [.black.opacity(0.68), .black.opacity(0.24), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .overlay(Color.black.opacity(isEnabled ? 0 : 0.18))
-        } else {
-            LinearGradient(
-                colors: [
-                    Color.storyInk.opacity(0.78),
-                    Color.homeAccent.opacity(0.58),
-                    Color.storyPurple.opacity(0.42)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .overlay {
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 80, weight: .light))
-                    .foregroundStyle(Color.white.opacity(0.2))
-                    .offset(x: 82, y: 12)
-            }
-        }
-    }
 }
 
-private struct HomeStoryboardVerticalViewer: View {
+struct HomeStoryboardVerticalViewer: View {
     let storyboards: [GeneratedStoryboard]
     @Binding var currentPageIndex: Int
     let title: String
 
     @Environment(\.dismiss) private var dismiss
     @State private var visiblePageIndex: Int
+    @State private var viewportHeight: CGFloat = 0
 
     init(
         storyboards: [GeneratedStoryboard],
@@ -725,62 +682,67 @@ private struct HomeStoryboardVerticalViewer: View {
     }
 
     var body: some View {
-        GeometryReader { viewport in
-            ZStack(alignment: .top) {
-                Color.black
-                    .ignoresSafeArea()
+        ZStack(alignment: .topTrailing) {
+            Color.black
+                .ignoresSafeArea()
 
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: false) {
-                        LazyVStack(spacing: 0) {
-                            Color.black
-                                .frame(height: 64)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    // VStack avoids LazyVStack blank-until-scroll layout bugs with
+                    // flexible-height UIImage rows.
+                    VStack(spacing: 0) {
+                        verticalCoverPage
+                            .id(0)
+                            .background(pagePositionReader(index: 0))
 
-                            verticalCoverPage
-                                .id(0)
-                                .background(pagePositionReader(index: 0))
+                        ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                            let pageIndex = index + 1
+                            let image = storyboard.image
+                            let aspectRatio = image.size.height > 0
+                                ? image.size.width / image.size.height
+                                : 1
 
-                            ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
-                                let pageIndex = index + 1
+                            pageBoundary(pageIndex: pageIndex)
 
-                                pageBoundary(pageIndex: pageIndex)
-
-                                Image(uiImage: storyboard.image)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxWidth: .infinity)
-                                    .background(Color.black)
-                                    .id(pageIndex)
-                                    .background(pagePositionReader(index: pageIndex))
-                            }
-
-                            Color.black
-                                .frame(height: 44)
+                            Image(uiImage: image)
+                                .resizable()
+                                .aspectRatio(aspectRatio, contentMode: .fit)
+                                .frame(maxWidth: .infinity)
+                                .background(Color.black)
+                                .id(pageIndex)
+                                .background(pagePositionReader(index: pageIndex))
                         }
-                    }
-                    .coordinateSpace(name: "homeVerticalComicScroll")
-                    .background(Color.black)
-                    .onAppear {
-                        visiblePageIndex = clampedPageIndex(currentPageIndex)
-                        DispatchQueue.main.async {
-                            proxy.scrollTo(visiblePageIndex, anchor: .center)
-                        }
-                    }
-                    .onPreferenceChange(HomeVerticalComicPagePositionPreferenceKey.self) { positions in
-                        updateVisiblePageIndex(from: positions, viewportHeight: viewport.size.height)
+
+                        Color.black
+                            .frame(height: 44)
                     }
                 }
+                .coordinateSpace(name: "homeVerticalComicScroll")
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: HomeVerticalComicViewportHeightPreferenceKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                }
+                .onAppear {
+                    visiblePageIndex = clampedPageIndex(currentPageIndex)
+                    guard visiblePageIndex > 0 else {
+                        return
+                    }
 
-                verticalTopBar
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(visiblePageIndex, anchor: .center)
+                    }
+                }
+                .onPreferenceChange(HomeVerticalComicViewportHeightPreferenceKey.self) { height in
+                    viewportHeight = height
+                }
+                .onPreferenceChange(HomeVerticalComicPagePositionPreferenceKey.self) { positions in
+                    updateVisiblePageIndex(from: positions, viewportHeight: viewportHeight)
+                }
             }
-        }
-        .preferredColorScheme(.dark)
-        .statusBarHidden()
-    }
-
-    private var verticalTopBar: some View {
-        HStack {
-            Spacer()
 
             Button {
                 dismiss()
@@ -793,45 +755,32 @@ private struct HomeStoryboardVerticalViewer: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close vertical story view")
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
+        .preferredColorScheme(.dark)
     }
 
     private var verticalCoverPage: some View {
-        ZStack {
-            if let coverImage = storyboards.first?.image {
-                Image(uiImage: coverImage)
-                    .resizable()
-                    .scaledToFill()
-                    .overlay(Color.black.opacity(0.42))
-            } else {
-                LinearGradient(
-                    colors: [
-                        Color.homeAccent.opacity(0.7),
-                        Color.storyPurple.opacity(0.55),
-                        Color.storyInk
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
+        VStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 34, weight: .bold, design: .serif))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
 
-            VStack(spacing: 12) {
-                Text(title)
-                    .font(.system(size: 34, weight: .bold, design: .serif))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
+            Text("A continuous view of your completed storyboards.")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.86))
+                .multilineTextAlignment(.center)
 
-                Text(storyboards.count == 1 ? "1 storyboard" : "\(storyboards.count) storyboards")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.86))
-            }
-            .padding(.horizontal, 28)
+            Text(storyboards.count == 1 ? "1 storyboard" : "\(storyboards.count) storyboards")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.62))
         }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(0.72, contentMode: .fit)
-        .clipped()
+        .padding(.horizontal, 28)
+        .padding(.top, 56)
+        .padding(.bottom, 44)
+        .frame(maxWidth: .infinity, alignment: .top)
         .background(Color.black)
     }
 
@@ -868,6 +817,10 @@ private struct HomeStoryboardVerticalViewer: View {
     }
 
     private func updateVisiblePageIndex(from positions: [Int: CGFloat], viewportHeight: CGFloat) {
+        guard viewportHeight > 0 else {
+            return
+        }
+
         guard let closest = positions.min(by: { left, right in
             abs(left.value - (viewportHeight / 2)) < abs(right.value - (viewportHeight / 2))
         })?.key else {
@@ -897,6 +850,14 @@ private struct HomeVerticalComicPagePositionPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
         value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
+private struct HomeVerticalComicViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

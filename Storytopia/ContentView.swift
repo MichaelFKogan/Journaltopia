@@ -26,6 +26,8 @@ struct ContentView: View {
     @State private var openedStoryboardGenerationImage: UIImage?
     @State private var isOpeningEntryFromEntries: Bool
     @State private var isOpeningCompletedEntryFromEntries: Bool
+    @State private var homeStorySoFarPresentation: HomeStorySoFarPresentation?
+    @State private var homeStorySoFarPageIndex: Int
     @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
 
     init() {
@@ -41,6 +43,8 @@ struct ContentView: View {
         _openedStoryboardGenerationImage = State(initialValue: nil)
         _isOpeningEntryFromEntries = State(initialValue: false)
         _isOpeningCompletedEntryFromEntries = State(initialValue: false)
+        _homeStorySoFarPresentation = State(initialValue: nil)
+        _homeStorySoFarPageIndex = State(initialValue: 0)
     }
 
     var body: some View {
@@ -56,6 +60,13 @@ struct ContentView: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 18)
+        }
+        .fullScreenCover(item: $homeStorySoFarPresentation) { presentation in
+            HomeStoryboardVerticalViewer(
+                storyboards: presentation.storyboards,
+                currentPageIndex: $homeStorySoFarPageIndex,
+                title: "The Story So Far..."
+            )
         }
         .fullScreenCover(isPresented: isOpenedStoryboardGenerationImagePresented) {
             if let openedStoryboardGenerationImage {
@@ -135,7 +146,8 @@ struct ContentView: View {
                 selectedPage: pageSelection,
                 generatedStoryboards: $generatedStoryboards,
                 isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil,
-                openJournalsPage: openJournalsPage
+                openJournalsPage: openJournalsPage,
+                openStorySoFarPage: openStorySoFarPage
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -240,6 +252,16 @@ struct ContentView: View {
         completedEntryOpenedStoryboardImage = nil
     }
 
+    private func openStorySoFarPage() {
+        guard !generatedStoryboards.isEmpty else {
+            return
+        }
+
+        // Snapshot at open time so a Home reload under the cover can't wipe the viewer.
+        homeStorySoFarPageIndex = 0
+        homeStorySoFarPresentation = HomeStorySoFarPresentation(storyboards: generatedStoryboards)
+    }
+
     private var isOpenedStoryboardGenerationImagePresented: Binding<Bool> {
         Binding(
             get: { openedStoryboardGenerationImage != nil },
@@ -302,6 +324,11 @@ struct ContentView: View {
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
     }
+}
+
+private struct HomeStorySoFarPresentation: Identifiable {
+    let id = UUID()
+    let storyboards: [GeneratedStoryboard]
 }
 
 private struct StoryboardGenerationBottomBanner: View {
