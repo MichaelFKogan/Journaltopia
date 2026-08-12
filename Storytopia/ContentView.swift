@@ -26,6 +26,9 @@ struct ContentView: View {
     @State private var openedStoryboardGenerationImage: UIImage?
     @State private var isOpeningEntryFromEntries: Bool
     @State private var isOpeningCompletedEntryFromEntries: Bool
+    @State private var homeStorySoFarPresentation: HomeStorySoFarPresentation?
+    @State private var homeStorySoFarPageIndex: Int
+    @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
 
     init() {
         _entryText = State(initialValue: "")
@@ -40,6 +43,8 @@ struct ContentView: View {
         _openedStoryboardGenerationImage = State(initialValue: nil)
         _isOpeningEntryFromEntries = State(initialValue: false)
         _isOpeningCompletedEntryFromEntries = State(initialValue: false)
+        _homeStorySoFarPresentation = State(initialValue: nil)
+        _homeStorySoFarPageIndex = State(initialValue: 0)
     }
 
     var body: some View {
@@ -47,6 +52,18 @@ struct ContentView: View {
             basePage
                 .navigationDestination(isPresented: isCreatePagePresented) {
                     createPage
+                }
+                .navigationDestination(isPresented: isHomeStorySoFarPresented) {
+                    if let homeStorySoFarPresentation {
+                        HomeStoryboardVerticalViewer(
+                            storyboards: homeStorySoFarPresentation.storyboards,
+                            currentPageIndex: $homeStorySoFarPageIndex,
+                            title: "The Story So Far..."
+                        )
+                        .navigationBarBackButtonHidden(true)
+                        .toolbar(.hidden, for: .navigationBar)
+                        .enableInteractivePopGesture()
+                    }
                 }
         }
         .overlay(alignment: .bottom) {
@@ -77,6 +94,12 @@ struct ContentView: View {
         .onChange(of: selectedPage) { _ in
             endWindowEditing()
         }
+        .onChange(of: isSampleAuthorModeEnabled) { _ in
+            if selectedPage == .create {
+                dismissCreatePage()
+            }
+            reloadScopedLocalState()
+        }
     }
 
     private var isCreatePagePresented: Binding<Bool> {
@@ -96,35 +119,59 @@ struct ContentView: View {
         Binding(
             get: { selectedPage },
             set: { newPage in
-                if newPage == .create {
-                    if selectedPage != .create {
-                        pageBehindCreate = selectedPage
-                    }
-
-                    if !isOpeningEntryFromEntries {
-                        activeDraftID = nil
-                        completedEntryOpenedStoryboardImage = nil
-                    } else if !isOpeningCompletedEntryFromEntries {
-                        completedEntryOpenedStoryboardImage = nil
-                    }
-                } else {
-                    pageBehindCreate = newPage
-                    journalCreatePresentation = nil
-                    isOpeningEntryFromEntries = false
-                    isOpeningCompletedEntryFromEntries = false
-                    completedEntryOpenedStoryboardImage = nil
-                }
-
-                selectedPage = newPage
+                selectPage(newPage)
             }
         )
+    }
+
+    private var isHomeStorySoFarPresented: Binding<Bool> {
+        Binding(
+            get: { homeStorySoFarPresentation != nil },
+            set: { isPresented in
+                if !isPresented {
+                    homeStorySoFarPresentation = nil
+                }
+            }
+        )
+    }
+
+    private func selectPage(_ newPage: StoryPage) {
+        if newPage == .create {
+            if selectedPage != .create {
+                pageBehindCreate = selectedPage
+            }
+
+            if !isOpeningEntryFromEntries {
+                activeDraftID = nil
+                completedEntryOpenedStoryboardImage = nil
+            } else if !isOpeningCompletedEntryFromEntries {
+                completedEntryOpenedStoryboardImage = nil
+            }
+        } else {
+            pageBehindCreate = newPage
+            journalCreatePresentation = nil
+            isOpeningEntryFromEntries = false
+            isOpeningCompletedEntryFromEntries = false
+            completedEntryOpenedStoryboardImage = nil
+        }
+
+        selectedPage = newPage
     }
 
     @ViewBuilder
     private var basePage: some View {
         switch pageBehindCreate {
         case .home:
-            HomeView(selectedPage: pageSelection)
+            HomeView(
+                selectedPage: pageSelection,
+                generatedStoryboards: $generatedStoryboards,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil,
+                openCreatePage: openCreatePageFromHome,
+                openEntriesPage: openEntriesPageFromHome,
+                openJournalsPage: openJournalsPage,
+                openProfilePage: openProfilePageFromHome,
+                openStorySoFarPage: openStorySoFarPage
+            )
                 .transition(.identity)
                 .zIndex(0)
         case .today:
@@ -138,7 +185,8 @@ struct ContentView: View {
                 activeDraftID: $activeDraftID,
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
-                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries
+                isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -152,14 +200,16 @@ struct ContentView: View {
                 isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
                 generatedStoryboards: $generatedStoryboards,
-                storyboardGenerationStatus: $storyboardGenerationStatus
+                storyboardGenerationStatus: $storyboardGenerationStatus,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
             )
                 .transition(.identity)
                 .zIndex(0)
         case .profile:
             ProfileView(
                 selectedPage: pageSelection,
-                generatedStoryboards: $generatedStoryboards
+                generatedStoryboards: $generatedStoryboards,
+                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
             )
             .transition(.identity)
             .zIndex(0)
@@ -209,10 +259,46 @@ struct ContentView: View {
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
             storyboardGenerationStatus: $storyboardGenerationStatus,
+            authoringMode: isSampleAuthorModeEnabled && authStore.userID != nil ? .sampleStudio : .user,
             dismissCreate: {
                 dismissCreatePage()
             }
         )
+    }
+
+    private func openCreatePageFromHome() {
+        resetHomeCardState()
+        activeDraftID = nil
+        journalCreatePresentation = nil
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
+        selectPage(.create)
+    }
+
+    private func openEntriesPageFromHome() {
+        resetHomeCardState()
+        selectPage(.entries)
+    }
+
+    private func openJournalsPage() {
+        resetHomeCardState()
+        selectPage(.journal)
+    }
+
+    private func openProfilePageFromHome() {
+        resetHomeCardState()
+        selectPage(.profile)
+    }
+
+    private func openStorySoFarPage() {
+        guard !generatedStoryboards.isEmpty else {
+            return
+        }
+
+        // Snapshot at open time so a Home reload can't wipe the pushed page.
+        homeStorySoFarPageIndex = 0
+        homeStorySoFarPresentation = HomeStorySoFarPresentation(storyboards: generatedStoryboards)
     }
 
     private var isOpenedStoryboardGenerationImagePresented: Binding<Bool> {
@@ -256,6 +342,14 @@ struct ContentView: View {
             .endEditing(true)
     }
 
+    private func resetHomeCardState() {
+        homeStorySoFarPresentation = nil
+        journalCreatePresentation = nil
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
+    }
+
     private func reloadScopedLocalState() {
         guard authStore.userID != nil else {
             isDraftSaved = false
@@ -277,6 +371,11 @@ struct ContentView: View {
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
     }
+}
+
+private struct HomeStorySoFarPresentation: Identifiable {
+    let id = UUID()
+    let storyboards: [GeneratedStoryboard]
 }
 
 private struct StoryboardGenerationBottomBanner: View {
@@ -401,11 +500,8 @@ private struct StoryboardGenerationImagePreview: View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
 
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .padding(.horizontal, 14)
-                .padding(.vertical, 72)
+            ZoomableStoryboardGenerationImageView(image: image)
+                .ignoresSafeArea()
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -423,9 +519,96 @@ private struct StoryboardGenerationImagePreview: View {
     }
 }
 
+private struct ZoomableStoryboardGenerationImageView: UIViewRepresentable {
+    let image: UIImage
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.backgroundColor = .black
+        scrollView.delegate = context.coordinator
+        scrollView.minimumZoomScale = 1
+        scrollView.maximumZoomScale = 5
+        scrollView.bouncesZoom = true
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.showsHorizontalScrollIndicator = false
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFit
+        imageView.backgroundColor = .black
+        imageView.isUserInteractionEnabled = true
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(imageView)
+
+        NSLayoutConstraint.activate([
+            imageView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            imageView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            imageView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            imageView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
+            imageView.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor)
+        ])
+
+        let doubleTapRecognizer = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDoubleTap(_:))
+        )
+        doubleTapRecognizer.numberOfTapsRequired = 2
+        scrollView.addGestureRecognizer(doubleTapRecognizer)
+
+        context.coordinator.scrollView = scrollView
+        context.coordinator.imageView = imageView
+
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        if context.coordinator.imageView?.image !== image {
+            context.coordinator.imageView?.image = image
+            scrollView.setZoomScale(scrollView.minimumZoomScale, animated: false)
+        }
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        weak var scrollView: UIScrollView?
+        weak var imageView: UIImageView?
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+            imageView
+        }
+
+        @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+            guard let scrollView else {
+                return
+            }
+
+            if scrollView.zoomScale > scrollView.minimumZoomScale {
+                scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
+                return
+            }
+
+            let tapPoint = recognizer.location(in: imageView)
+            let targetScale = min(scrollView.maximumZoomScale, 2.35)
+            let zoomSize = CGSize(
+                width: scrollView.bounds.width / targetScale,
+                height: scrollView.bounds.height / targetScale
+            )
+            let zoomOrigin = CGPoint(
+                x: tapPoint.x - (zoomSize.width / 2),
+                y: tapPoint.y - (zoomSize.height / 2)
+            )
+            scrollView.zoom(to: CGRect(origin: zoomOrigin, size: zoomSize), animated: true)
+        }
+    }
+}
+
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
             .environmentObject(SupabaseAuthStore.preview)
+            .environmentObject(GenerationCreditStore())
     }
 }

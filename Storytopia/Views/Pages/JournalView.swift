@@ -7,6 +7,50 @@ private func playJournalFloatingButtonHaptic() {
     UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.82)
 }
 
+private func sampleStoryboardsByMergingLocalFallbacks(
+    remoteStoryboardsByEntryID: [UUID: [GeneratedStoryboard]],
+    entries: [CreateEntryDraft],
+    repairsMissingRemote: Bool
+) -> [UUID: [GeneratedStoryboard]] {
+    let entryIDs = Set(entries.map(\.id))
+    guard !entryIDs.isEmpty else {
+        return remoteStoryboardsByEntryID
+    }
+
+    var merged = remoteStoryboardsByEntryID
+    let remoteStoryboardIDs = Set(remoteStoryboardsByEntryID.values.flatMap { $0.map(\.id) })
+    let localStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+        guard let clientEntryID = storyboard.clientEntryID else {
+            return false
+        }
+
+        return entryIDs.contains(clientEntryID) && !remoteStoryboardIDs.contains(storyboard.id)
+    }
+
+    for storyboard in localStoryboards {
+        guard let clientEntryID = storyboard.clientEntryID else {
+            continue
+        }
+
+        merged[clientEntryID, default: []].append(storyboard)
+        if repairsMissingRemote {
+            Task {
+                _ = try? await SupabaseSampleStoryService().persistSampleStoryboard(storyboard)
+            }
+        }
+    }
+
+    return merged.mapValues { storyboards in
+        storyboards.sorted { left, right in
+            if left.isPrimary != right.isPrimary {
+                return left.isPrimary
+            }
+
+            return left.createdAt < right.createdAt
+        }
+    }
+}
+
 struct JournalView: View {
     @Binding var selectedPage: StoryPage
     @Binding var isDraftSaved: Bool
@@ -17,6 +61,7 @@ struct JournalView: View {
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
+    var isSampleAuthorMode = false
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @Environment(\.scenePhase) private var scenePhase
@@ -40,6 +85,9 @@ struct JournalView: View {
     @State private var openingJournal: JournalOpeningContext?
     @State private var isJournalOpening = false
     @State private var journalNavigationPath: [JournalRoute] = []
+    @State private var sampleJournalLoadTask: Task<Void, Never>?
+    @State private var sampleJournalEntryIDs: Set<UUID> = []
+    @State private var sampleJournalsByID: [UUID: SampleJournal] = [:]
     @State private var areJournalPagesExpanded = false
     @State private var isJournalDetailVisible = false
     @State private var draggingJournalID: UUID?
@@ -71,7 +119,8 @@ struct JournalView: View {
         isOpeningEntryFromEntries: Binding<Bool> = .constant(false),
         isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false),
         generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([]),
-        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil)
+        storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil),
+        isSampleAuthorMode: Bool = false
     ) {
         _selectedPage = selectedPage
         _isDraftSaved = isDraftSaved
@@ -82,6 +131,7 @@ struct JournalView: View {
         _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
         _generatedStoryboards = generatedStoryboards
         _storyboardGenerationStatus = storyboardGenerationStatus
+        self.isSampleAuthorMode = isSampleAuthorMode
         _chapters = State(initialValue: DailyJournalData.allChapters())
     }
 
@@ -136,7 +186,8 @@ struct JournalView: View {
                     ProfileView(
                         selectedPage: $selectedPage,
                         generatedStoryboards: $generatedStoryboards,
-                        embedsInNavigationStack: false
+                        embedsInNavigationStack: false,
+                        isSampleAuthorMode: isSampleAuthorMode
                     )
                 case .credits:
                     GenerationCreditsView()
@@ -144,12 +195,22 @@ struct JournalView: View {
             }
         }
         .onAppear {
+            if usesSampleJournalContent {
+                loadSampleJournals()
+                return
+            }
+
             chapters = DailyJournalData.allChapters()
             loadCloudJournalsIfNeeded()
             restorePendingCoverSyncIfNeeded()
         }
         .onChange(of: selectedPage) { newPage in
             if newPage != .create {
+                if usesSampleJournalContent {
+                    loadSampleJournals()
+                    return
+                }
+
                 chapters = DailyJournalData.allChapters()
                 loadCloudJournalsIfNeeded()
                 restorePendingCoverSyncIfNeeded()
@@ -165,6 +226,12 @@ struct JournalView: View {
 
             guard userID != nil else {
                 resetJournalSessionState()
+                loadSampleJournals()
+                return
+            }
+
+            if usesSampleJournalContent {
+                loadSampleJournals()
                 return
             }
 
@@ -173,8 +240,29 @@ struct JournalView: View {
             restorePendingCoverSyncIfNeeded()
             retryPendingCoverSync()
         }
+        .onChange(of: isSampleAuthorMode) { isEnabled in
+            resetJournalSessionState()
+            if isEnabled {
+                loadSampleJournals()
+            } else if authStore.userID == nil {
+                loadSampleJournals()
+            } else if authStore.userID != nil {
+                chapters = DailyJournalData.allChapters()
+                loadCloudJournalsIfNeeded()
+                restorePendingCoverSyncIfNeeded()
+            }
+        }
         .onChange(of: scenePhase) { phase in
-            guard phase == .active, authStore.userID != nil else {
+            guard phase == .active else {
+                return
+            }
+
+            if usesSampleJournalContent {
+                loadSampleJournals()
+                return
+            }
+
+            guard authStore.userID != nil else {
                 return
             }
 
@@ -281,8 +369,16 @@ struct JournalView: View {
         journalPageBackground.remoteCover != nil
     }
 
+    private var usesSampleJournalContent: Bool {
+        isSampleAuthorMode || authStore.userID == nil
+    }
+
     private var journalSelectButton: some View {
         Button {
+            guard !usesSampleJournalContent else {
+                return
+            }
+
             withAnimation(.easeInOut(duration: 0.18)) {
                 editMode = editMode == .active ? .inactive : .active
             }
@@ -290,6 +386,7 @@ struct JournalView: View {
             Text(editMode == .active ? "Done" : "Edit")
         }
         .buttonStyle(.plain)
+        .disabled(usesSampleJournalContent)
         .accessibilityLabel(editMode == .active ? "Done selecting journals" : "Edit journals")
     }
 
@@ -678,6 +775,16 @@ struct JournalView: View {
         )
 
         chapters[index] = updatedChapter
+        if isSampleAuthorMode {
+            updateSampleJournal(
+                updatedChapter,
+                storedCoverImage: customization.storedCoverImage,
+                clearsStoredCover: customization.clearsStoredCover
+            )
+            journalBeingCustomized = nil
+            return
+        }
+
         UserChapterStore.updateAppearance(
             id: updatedChapter.id,
             color: updatedChapter.color,
@@ -755,6 +862,13 @@ struct JournalView: View {
 
         let oldTitle = chapters[index].title
         chapters[index] = chapters[index].copy(title: trimmedTitle)
+        if isSampleAuthorMode {
+            updateSampleJournal(chapters[index])
+            journalBeingRenamed = nil
+            renamedJournalTitle = ""
+            return
+        }
+
         UserChapterStore.rename(title: oldTitle, to: trimmedTitle)
         UserChapterStore.syncToCloud(chapters[index])
         StoryEntryStore.renameChapter(from: oldTitle, to: trimmedTitle)
@@ -770,6 +884,24 @@ struct JournalView: View {
     private func createJournal() {
         let trimmedTitle = newJournalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else {
+            return
+        }
+
+        if isSampleAuthorMode {
+            let title = trimmedTitle
+            newJournalTitle = ""
+            Task {
+                do {
+                    try await SupabaseSampleStoryService().createSampleJournal(title: title)
+                    await MainActor.run {
+                        loadSampleJournals()
+                    }
+                } catch {
+                    await MainActor.run {
+                        newJournalTitle = title
+                    }
+                }
+            }
             return
         }
 
@@ -828,6 +960,15 @@ struct JournalView: View {
     }
 
     private func deleteJournal(_ journal: PrototypeChapter) {
+        if isSampleAuthorMode {
+            chapters.removeAll { $0.id == journal.id }
+            sampleJournalsByID[journal.id] = nil
+            Task {
+                try? await SupabaseSampleStoryService().deleteSampleJournal(id: journal.id)
+            }
+            return
+        }
+
         let isUserJournal = UserChapterStore.contains(title: journal.title)
         UserChapterStore.delete(title: journal.title)
         UserChapterStore.deleteFromCloud(journal)
@@ -847,6 +988,14 @@ struct JournalView: View {
     }
 
     private func persistManualJournalOrder() {
+        if isSampleAuthorMode {
+            let orderedIDs = chapters.map(\.id)
+            Task {
+                try? await SupabaseSampleStoryService().updateSampleJournalOrder(orderedIDs)
+            }
+            return
+        }
+
         let userChapters = chapters.filter { UserChapterStore.contains(title: $0.title) }
         UserChapterStore.replace(with: userChapters)
         UserChapterStore.syncOrderToCloud(userChapters)
@@ -936,7 +1085,8 @@ struct JournalView: View {
             storyboardGenerationStatus: $storyboardGenerationStatus,
             onCreateEntryRequested: openFreshEntryFromJournalDetail,
             onChapterUpdated: updateChapterFromDetail,
-            onOpenExistingEntry: openExistingEntryFromJournalDetail
+            onOpenExistingEntry: openExistingEntryFromJournalDetail,
+            isSampleAuthorMode: isSampleAuthorMode
         ) { entry in
             guard let chapterIndex = chapters.firstIndex(where: { $0.id == chapter.id }) else {
                 return
@@ -991,6 +1141,7 @@ struct JournalView: View {
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
             storyboardGenerationStatus: $storyboardGenerationStatus,
+            authoringMode: isSampleAuthorMode ? .sampleStudio : .user,
             existingEntryStartsReadOnly: isOpeningEntryFromEntries,
             dismissCreate: {
                 popJournalCreateEntryRoute()
@@ -1026,6 +1177,9 @@ struct JournalView: View {
         }
 
         resetJournalCreateEntryState()
+        if isSampleAuthorMode {
+            loadSampleJournals()
+        }
     }
 
     private func resetJournalCreateEntryState() {
@@ -1036,6 +1190,10 @@ struct JournalView: View {
     }
 
     private func resetJournalSessionState() {
+        sampleJournalLoadTask?.cancel()
+        sampleJournalLoadTask = nil
+        removeSampleJournalDrafts()
+        sampleJournalsByID = [:]
         chapters = []
         showsPrototypeData = false
         editMode = .inactive
@@ -1079,7 +1237,264 @@ struct JournalView: View {
         journalFallbackCoverImageName(for: chapter, at: index)
     }
 
+    private func loadSampleJournals() {
+        sampleJournalLoadTask?.cancel()
+        sampleJournalLoadTask = Task {
+            let service = SupabaseSampleStoryService()
+            let pack = isSampleAuthorMode
+                ? try? await service.loadAuthoringPack()
+                : try? await service.loadActivePack()
+
+            guard let pack else {
+                await MainActor.run {
+                    chapters = []
+                    showsPrototypeData = true
+                    editMode = .inactive
+                }
+                return
+            }
+
+            await reconcileSampleJournalCovers(
+                pack.journals,
+                service: service,
+                preservesLocalCoversWithoutRemotePath: isSampleAuthorMode
+            )
+
+            await MainActor.run {
+                seedSampleDraftsForJournals(pack.entries)
+                let storyboardsByEntryID = sampleStoryboardsByMergingLocalFallbacks(
+                    remoteStoryboardsByEntryID: pack.storyboardsByEntryID,
+                    entries: pack.entries,
+                    repairsMissingRemote: isSampleAuthorMode
+                )
+                persistSampleStoryboardsForJournals(storyboardsByEntryID)
+                sampleJournalsByID = Dictionary(uniqueKeysWithValues: pack.journals.map { ($0.id, $0) })
+                chapters = pack.journals.map(sampleJournalChapter)
+                showsPrototypeData = true
+                editMode = .inactive
+            }
+        }
+    }
+
+    private func sampleJournalChapter(from journal: SampleJournal) -> PrototypeChapter {
+        return PrototypeChapter(
+            id: journal.id,
+            title: journal.title,
+            subtitle: journal.subtitle ?? "Sample journal",
+            color: journal.colorHex.flatMap(Color.init(hex:)) ?? Color.storyPurple,
+            symbol: journal.symbol ?? "book.closed.fill",
+            coverImageName: journal.coverImageName,
+            remoteCover: journal.remoteCover,
+            kind: journal.kind == "storyboard" ? .storyboard : .journal,
+            isFavorite: journal.isFavorite,
+            createdAt: journal.createdAt,
+            updatedAt: journal.updatedAt,
+            entries: journal.entries.map(samplePrototypeEntry)
+        )
+    }
+
+    private func reconcileSampleJournalCovers(
+        _ journals: [SampleJournal],
+        service: SupabaseSampleStoryService,
+        preservesLocalCoversWithoutRemotePath: Bool
+    ) async {
+        for journal in journals {
+            guard
+                journal.remoteCover == nil,
+                journal.coverImageName?.trimmedOrNil == nil,
+                let storagePath = journal.coverStoragePath?.trimmedOrNil
+            else {
+                if !preservesLocalCoversWithoutRemotePath || journal.remoteCover != nil || journal.coverImageName?.trimmedOrNil != nil {
+                    await MainActor.run {
+                        JournalCoverStore.delete(journalID: journal.id, legacyTitle: journal.title)
+                    }
+                }
+                continue
+            }
+
+            do {
+                let image = try await service.downloadSampleJournalCover(storagePath: storagePath)
+                await MainActor.run {
+                    JournalCoverStore.save(image, journalID: journal.id, legacyTitle: journal.title)
+                }
+            } catch {
+                print("[Storytopia] Sample journal cover load failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func updateSampleJournal(
+        _ chapter: PrototypeChapter,
+        storedCoverImage: UIImage? = nil,
+        clearsStoredCover: Bool = false
+    ) {
+        guard let existingJournal = sampleJournalsByID[chapter.id] else {
+            return
+        }
+
+        let preservesStoredCover = storedCoverImage == nil
+            && !clearsStoredCover
+            && chapter.remoteCover == nil
+            && chapter.coverImageName?.trimmedOrNil == nil
+        let coverStoragePath = preservesStoredCover ? existingJournal.coverStoragePath : nil
+        let updatedJournal = SampleJournal(
+            id: existingJournal.id,
+            packID: existingJournal.packID,
+            title: chapter.title,
+            subtitle: chapter.subtitle,
+            colorHex: JournalColorOption.hexString(for: chapter.color),
+            symbol: chapter.symbol,
+            coverImageName: chapter.coverImageName,
+            coverStoragePath: coverStoragePath,
+            remoteCover: chapter.remoteCover,
+            kind: chapter.kind == .storyboard ? "storyboard" : "journal",
+            isFavorite: chapter.isFavorite,
+            displayOrder: existingJournal.displayOrder,
+            entries: existingJournal.entries,
+            createdAt: existingJournal.createdAt,
+            updatedAt: Date()
+        )
+
+        sampleJournalsByID[chapter.id] = updatedJournal
+        Task {
+            let service = SupabaseSampleStoryService()
+            var storedCoverPath = updatedJournal.coverStoragePath
+            if let storedCoverImage {
+                do {
+                    storedCoverPath = try await service.uploadSampleJournalCover(storedCoverImage, journalID: chapter.id)
+                } catch {
+                    print("[Storytopia] Sample journal cover upload failed: \(error.localizedDescription)")
+                    return
+                }
+            }
+
+            let persistedJournal = SampleJournal(
+                id: updatedJournal.id,
+                packID: updatedJournal.packID,
+                title: updatedJournal.title,
+                subtitle: updatedJournal.subtitle,
+                colorHex: updatedJournal.colorHex,
+                symbol: updatedJournal.symbol,
+                coverImageName: updatedJournal.coverImageName,
+                coverStoragePath: storedCoverPath,
+                remoteCover: updatedJournal.remoteCover,
+                kind: updatedJournal.kind,
+                isFavorite: updatedJournal.isFavorite,
+                displayOrder: updatedJournal.displayOrder,
+                entries: updatedJournal.entries,
+                createdAt: updatedJournal.createdAt,
+                updatedAt: Date()
+            )
+            do {
+                try await service.updateSampleJournal(persistedJournal)
+                await MainActor.run {
+                    sampleJournalsByID[chapter.id] = persistedJournal
+                }
+            } catch {
+                print("[Storytopia] Sample journal update failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func seedSampleDraftsForJournals(_ entries: [CreateEntryDraft]) {
+        sampleJournalEntryIDs = Set(entries.map(\.id))
+
+        for entry in entries {
+            _ = CreateEntryDraftStore.save(
+                id: entry.id,
+                title: entry.title,
+                text: entry.text,
+                richText: entry.richText,
+                referencePhotos: entry.photos,
+                characters: entry.characters,
+                artStyle: entry.artStyle,
+                location: entry.location,
+                date: entry.date,
+                datePrecision: entry.datePrecision,
+                savesDraft: entry.savesDraft,
+                isPrivate: entry.isPrivate,
+                status: JournalEntryStatus(rawValue: entry.status) ?? .draft,
+                fontChoiceRawValue: entry.fontChoiceRawValue,
+                textColorIndex: entry.textColorIndex,
+                textSize: entry.textSize,
+                paperStyleRawValue: entry.paperStyleRawValue,
+                paperColorIndex: entry.paperColorIndex,
+                isBold: entry.isBold,
+                isItalic: entry.isItalic,
+                isUnderlined: entry.isUnderlined,
+                isStrikethrough: entry.isStrikethrough,
+                isHighlighted: entry.isHighlighted,
+                textAlignmentRawValue: entry.textAlignmentRawValue,
+                thumbnail: entry.thumbnail
+            )
+        }
+    }
+
+    private func removeSampleJournalDrafts() {
+        for entryID in sampleJournalEntryIDs {
+            CreateEntryDraftStore.delete(id: entryID)
+        }
+        sampleJournalEntryIDs = []
+    }
+
+    private func samplePrototypeEntry(from entry: CreateEntryDraft) -> PrototypeEntry {
+        PrototypeEntry(
+            id: entry.id,
+            weekday: entry.date.formatted(.dateTime.weekday(.abbreviated)).uppercased(),
+            day: entry.date.formatted(.dateTime.day()),
+            title: entry.title.isEmpty ? "Untitled Sample" : entry.title,
+            body: entry.text,
+            richText: entry.richText,
+            time: entry.date.formatted(.dateTime.hour().minute()),
+            location: entry.location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : entry.location,
+            imageNames: []
+        )
+    }
+
+    private func persistSampleStoryboardsForJournals(_ storyboardsByEntryID: [UUID: [GeneratedStoryboard]]) {
+        let sampleEntryIDs = Set(storyboardsByEntryID.keys)
+        var persistedStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+            guard let clientEntryID = storyboard.clientEntryID else {
+                return true
+            }
+
+            return !sampleEntryIDs.contains(clientEntryID)
+        }
+
+        for (_, storyboards) in storyboardsByEntryID {
+            for (index, sampleStoryboard) in storyboards.enumerated() {
+                guard
+                    let clientEntryID = sampleStoryboard.clientEntryID,
+                    let storyboard = try? GeneratedStoryboardStore.persistedStoryboard(
+                        image: sampleStoryboard.image,
+                        clientEntryID: clientEntryID,
+                        promptText: sampleStoryboard.promptText,
+                        artStyle: sampleStoryboard.artStyle,
+                        generationQuality: sampleStoryboard.generationQuality,
+                        panelLayout: sampleStoryboard.panelLayout,
+                        sourcePhotoCount: sampleStoryboard.sourcePhotoCount,
+                        id: sampleStoryboard.id,
+                        storagePath: sampleStoryboard.storagePath,
+                        cloudSyncState: sampleStoryboard.cloudSyncState,
+                        isPrimary: sampleStoryboard.isPrimary || index == 0
+                    )
+                else {
+                    continue
+                }
+
+                persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
+            }
+        }
+
+        GeneratedStoryboardStore.save(persistedStoryboards)
+        generatedStoryboards = persistedStoryboards
+    }
+
     private func loadCloudJournalsIfNeeded() {
+        guard !isSampleAuthorMode else {
+            return
+        }
+
         guard authStore.userID != nil else {
             return
         }
@@ -8023,6 +8438,7 @@ enum DailyJournalData {
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
+        isSampleAuthorMode: Bool = false,
         onAddEntry: @escaping (PrototypeEntry) -> Void
     ) -> some View {
         let datedChapter = dateTitledChapter(from: chapter, dayOffset: dayOffset)
@@ -8036,6 +8452,7 @@ enum DailyJournalData {
             onCreateEntryRequested: onCreateEntryRequested,
             onChapterUpdated: onChapterUpdated,
             onOpenExistingEntry: onOpenExistingEntry,
+            isSampleAuthorMode: isSampleAuthorMode,
             onCreateStory: onAddEntry
         )
     }
@@ -8374,6 +8791,12 @@ private enum EntryDisplayItem: Identifiable {
     var status: String {
         switch self {
         case .local(let entry, let cloudEntry):
+            if cloudEntry?.status == JournalEntryStatus.archived.rawValue {
+                return JournalEntryStatus.archived.rawValue
+            }
+            if entry.status == JournalEntryStatus.completed.rawValue {
+                return JournalEntryStatus.completed.rawValue
+            }
             return cloudEntry?.status ?? entry.status
         case .cloud(let entry):
             return entry.status
@@ -8601,6 +9024,39 @@ private extension CreateEntryDraft {
             displayOrder: displayOrder
         )
     }
+
+    func replacingTitle(_ title: String, thumbnail: UIImage?) -> CreateEntryDraft {
+        CreateEntryDraft(
+            id: id,
+            title: title,
+            text: text,
+            richText: richText,
+            photos: photos,
+            characters: characters,
+            artStyle: artStyle,
+            location: location,
+            date: date,
+            datePrecision: datePrecision,
+            savesDraft: savesDraft,
+            isPrivate: isPrivate,
+            status: status,
+            fontChoiceRawValue: fontChoiceRawValue,
+            textColorIndex: textColorIndex,
+            textSize: textSize,
+            paperStyleRawValue: paperStyleRawValue,
+            paperColorIndex: paperColorIndex,
+            isBold: isBold,
+            isItalic: isItalic,
+            isUnderlined: isUnderlined,
+            isStrikethrough: isStrikethrough,
+            isHighlighted: isHighlighted,
+            textAlignmentRawValue: textAlignmentRawValue,
+            thumbnail: thumbnail,
+            createdAt: createdAt,
+            updatedAt: Date(),
+            displayOrder: displayOrder
+        )
+    }
 }
 
 private enum EntriesCloudFetchCache {
@@ -8766,6 +9222,41 @@ private enum EntriesCloudFetchCache {
     }
 }
 
+private enum DeletedAuthoringSampleEntryStore {
+    private static let storageKey = "StorytopiaDeletedAuthoringSampleEntries"
+
+    static func load() -> Set<UUID> {
+        guard let rawValues = UserDefaults.standard.stringArray(forKey: storageKey) else {
+            return []
+        }
+
+        return Set(rawValues.compactMap(UUID.init(uuidString:)))
+    }
+
+    static func contains(_ id: UUID) -> Bool {
+        load().contains(id)
+    }
+
+    static func add(_ id: UUID) {
+        var ids = load()
+        ids.insert(id)
+        save(ids)
+    }
+
+    static func remove(_ id: UUID) {
+        var ids = load()
+        ids.remove(id)
+        save(ids)
+    }
+
+    private static func save(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(
+            ids.map(\.uuidString).sorted(),
+            forKey: storageKey
+        )
+    }
+}
+
 private extension EntriesCloudFetchCache.EntryQueryKey {
     var diskKey: String {
         [
@@ -8835,6 +9326,7 @@ private enum EntriesSessionMemoryCache {
     struct Snapshot {
         let entries: [CreateEntryDraft]
         let sampleEntries: [CreateEntryDraft]
+        let sampleStoryboardsByEntryID: [UUID: [GeneratedStoryboard]]
         let completedStoryboards: [GeneratedStoryboard]
         let storyboardCountsByClientEntryID: [UUID: Int]
         let cloudEntries: [JournalEntry]
@@ -8918,6 +9410,7 @@ struct EntriesView: View {
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningEntryFromEntries: Bool
     @Binding var isOpeningCompletedEntryFromEntries: Bool
+    var isSampleAuthorMode = false
 
     private let thumbnailRendererVersion = 12
     private let thumbnailRendererVersionKey = "StorytopiaEntryThumbnailRendererVersion"
@@ -8925,6 +9418,7 @@ struct EntriesView: View {
     @State private var showsPrototypeData = true
     @State private var entries: [CreateEntryDraft] = []
     @State private var sampleEntries: [CreateEntryDraft] = []
+    @State private var sampleStoryboardsByEntryID: [UUID: [GeneratedStoryboard]] = [:]
     @State private var completedStoryboards: [GeneratedStoryboard] = []
     @State private var storyboardCountsByClientEntryID: [UUID: Int] = [:]
     @State private var cloudStoryboardClientIDs: Set<UUID> = []
@@ -8932,7 +9426,7 @@ struct EntriesView: View {
     @State private var editMode: EditMode = .inactive
     @State private var entryBeingRenamed: CreateEntryDraft?
     @State private var renamedEntryTitle = ""
-    @State private var sampleEntryBeingPreviewed: CreateEntryDraft?
+    @State private var temporaryOpenedSampleEntryID: UUID?
     @State private var entriesPendingDeletion: [EntryDisplayItem] = []
     @State private var entryDeleteErrorMessage: String?
     @State private var draggingEntryID: UUID?
@@ -8962,11 +9456,14 @@ struct EntriesView: View {
     @State private var entryThumbnailBackfillTask: Task<Void, Never>?
     @State private var cloudEntryThumbnailBackfillTask: Task<Void, Never>?
     @State private var completedStoryboardLoadTask: Task<Void, Never>?
+    @State private var sampleContentLoadTask: Task<Void, Never>?
     @State private var cloudThumbnailIDsBeingLoaded: Set<UUID> = []
     private let cloudEntriesPageSize = 30
     @AppStorage("StorytopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("StorytopiaSelectedEntriesTab") private var selectedEntryTabRawValue = EntriesTab.all.rawValue
     @AppStorage("StorytopiaSelectedEntrySort") private var selectedEntrySortRawValue = EntrySortOption.cloudCreated.rawValue
+    @AppStorage("StorytopiaEntriesSampleBannerDismissed") private var isSampleBannerDismissed = false
+    @AppStorage("StorytopiaEntriesSamplesCompleted") private var hasCompletedEntriesSamples = false
 
     private var selectedEntryLayout: JournalEntryLayout {
         get {
@@ -9023,9 +9520,6 @@ struct EntriesView: View {
 
     private var entriesScreenWithPresentation: some View {
         entriesScreenWithLifecycle
-            .sheet(item: $sampleEntryBeingPreviewed) { entry in
-                EntrySamplePreview(entry: entry)
-            }
             .sheet(isPresented: $isShowingAddSelectedEntriesToJournalSheet) {
                 NavigationStack {
                     addSelectedEntriesToJournalDestination
@@ -9051,11 +9545,17 @@ struct EntriesView: View {
             .onChange(of: authStore.userID) { _ in
                 handleUserIDChange()
             }
+            .onChange(of: isSampleAuthorMode) { _ in
+                handleSampleAuthorModeChange()
+            }
             .onChange(of: selectedEntryTabRawValue) { _ in
                 refreshEntries()
             }
             .onChange(of: selectedEntrySortRawValue) { _ in
                 refreshEntries()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .storytopiaGeneratedStoryboardsChanged)) { _ in
+                handleGeneratedStoryboardsChanged()
             }
             .onDisappear {
                 dismissAnyKeyboard()
@@ -9083,6 +9583,8 @@ struct EntriesView: View {
 
                     cloudEntriesNotice
 
+                    entriesSampleBanner
+
                     entriesPageContent
                 }
                 .padding(.bottom, 104)
@@ -9101,8 +9603,6 @@ struct EntriesView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .zIndex(2)
             }
-
-            bottomPrototypeNotice
 
             selectedEntriesToolbar
 
@@ -9134,9 +9634,7 @@ struct EntriesView: View {
         .accessibilityLabel("Write")
     }
 
-    private var entriesFloatingEditButtonBottomPadding: CGFloat {
-        showsSampleEntries ? 148 : 84
-    }
+    private var entriesFloatingEditButtonBottomPadding: CGFloat { 84 }
 
     private var addSelectedEntriesToJournalDestination: some View {
         AddEntryToJournalPage(
@@ -9189,6 +9687,9 @@ struct EntriesView: View {
     }
 
     private func openCreateEntryFromEntries() {
+        if !isSampleAuthorMode {
+            removeTemporaryOpenedSampleEntryIfNeeded()
+        }
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil
@@ -9204,6 +9705,14 @@ struct EntriesView: View {
         }
 
         if newPage == .entries {
+            if isSampleAuthorMode {
+                removeTemporaryOpenedSampleEntryIfNeeded()
+                refreshEntries(forceCloudReload: true)
+                return
+            }
+
+            removeTemporaryOpenedSampleEntryIfNeeded()
+
             if let activeDraftID {
                 handleReturnToEntriesFromEditedDraft(activeDraftID)
             } else {
@@ -9213,7 +9722,21 @@ struct EntriesView: View {
     }
 
     private func handleReturnToEntriesFromEditedDraft(_ draftID: UUID) {
+        if isSampleAuthorMode {
+            removeTemporaryOpenedSampleEntryIfNeeded()
+            refreshEntries(forceCloudReload: true)
+            return
+        }
+
         if let draft = CreateEntryDraftStore.load(id: draftID) {
+            guard !currentSampleEntryIDs.contains(draft.id) else {
+                removeTemporaryOpenedSampleEntryIfNeeded()
+                loadEntriesForCurrentPageIfNeeded()
+                return
+            }
+
+            hasCompletedEntriesSamples = true
+            sampleEntries = []
             if let existingIndex = entries.firstIndex(where: { $0.id == draft.id }) {
                 entries[existingIndex] = draft
             } else {
@@ -9256,6 +9779,14 @@ struct EntriesView: View {
         refreshEntries(forceCloudReload: true)
     }
 
+    private func handleSampleAuthorModeChange() {
+        EntriesSessionMemoryCache.invalidate(userID: nil)
+        resetEntriesSessionState()
+        selectedEntryIDs = []
+        editMode = .inactive
+        refreshEntries(forceCloudReload: true)
+    }
+
     private var header: some View {
         HStack(alignment: .lastTextBaseline, spacing: 14) {
             Text("Entries")
@@ -9276,7 +9807,7 @@ struct EntriesView: View {
             }
             .font(.system(size: 14, weight: .bold))
             .foregroundStyle(Color.homeAccent)
-            .disabled(showsSampleEntries)
+            .disabled(filteredEntryItems.isEmpty)
         }
         .padding(.top, 12)
     }
@@ -9443,7 +9974,7 @@ struct EntriesView: View {
 
     @ViewBuilder
     private var selectedEntriesToolbar: some View {
-        if editMode == .active && !showsSampleEntries && !selectedEntryIDs.isEmpty {
+        if editMode == .active && !selectedEntryIDs.isEmpty {
             HStack(spacing: 12) {
                 Text("\(selectedEntryIDs.count) selected")
                     .font(.system(size: 13, weight: .bold))
@@ -9463,17 +9994,19 @@ struct EntriesView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Delete selected entries")
 
-                Button {
-                    openAddSelectedEntriesToJournalPage()
-                } label: {
-                    Label("Add to Journal", systemImage: "book.closed.fill")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .frame(height: 38)
-                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                if !showsSampleEntries {
+                    Button {
+                        openAddSelectedEntriesToJournalPage()
+                    } label: {
+                        Label("Add to Journal", systemImage: "book.closed.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .frame(height: 38)
+                            .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, 14)
             .frame(height: 54)
@@ -9492,42 +10025,46 @@ struct EntriesView: View {
     }
 
     @ViewBuilder
-    private var bottomPrototypeNotice: some View {
-        if showsSampleEntries {
-            prototypeNotice
-                .padding(.horizontal, 16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, 82)
-        }
-    }
+    private var entriesSampleBanner: some View {
+        if showsSampleEntries && !isSampleBannerDismissed {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.homeAccent)
+                    .padding(.top, 1)
 
-    private var prototypeNotice: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "eye.fill")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color.homeAccent)
+                Text("Explore a few sample stories to see how Storytopia works. Your own entries will appear here once you begin writing.")
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineSpacing(2)
+                    .foregroundStyle(Color.homeMutedText)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text("Previewing sample entries")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.homeMutedText)
+                Spacer(minLength: 6)
 
-            Spacer()
-
-            Button("Show Empty") {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showsPrototypeData = false
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isSampleBannerDismissed = true
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.homeMutedText)
+                        .frame(width: 26, height: 26)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss sample stories message")
             }
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(Color.homeAccent)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 2)
+            .transition(.opacity.combined(with: .move(edge: .top)))
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.homeBorder, lineWidth: 1)
-        )
     }
 
     @ViewBuilder
@@ -9589,24 +10126,48 @@ struct EntriesView: View {
                 let category = categoryForSampleEntry(entry)
 
                 Button {
-                    sampleEntryBeingPreviewed = entry
+                    if editMode == .active {
+                        toggleEntrySelection(entry.id)
+                    } else {
+                        openSampleEntry(entry)
+                    }
                 } label: {
+                    let isCompletedSample = entry.status == JournalEntryStatus.completed.rawValue
                     EntryListRow(
                         entry: entry,
                         sortOption: selectedEntrySort,
                         pageLabel: entryManualOrderLabel(for: index),
                         category: category,
-                        completedStoryboardImage: category == .completed
-                            ? .failed
+                        completedStoryboardImage: isCompletedSample
+                            ? sampleStoryboardImage(for: entry)
                             : nil,
+                        completedStoryboardCount: isCompletedSample ? sampleStoryboardCount(for: entry.id) : 0,
                         rowHeight: 52,
                         coverWidth: 34,
-                        coverHeight: 44
+                        coverHeight: 44,
+                        isSelecting: editMode == .active,
+                        isSelected: selectedEntryIDs.contains(entry.id),
+                        isSample: true
                     )
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, JournalChapterListMetrics.horizontalInset)
                 .padding(.trailing, JournalChapterListMetrics.trailingInset)
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    Button {
+                        beginRenaming(entry)
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(Color.homeAccent)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        requestDeleteEntry(.local(entry, cloudEntry: nil))
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
             }
         } else {
             ForEach(Array(filteredEntryItems.enumerated()), id: \.element.id) { index, item in
@@ -9763,6 +10324,9 @@ struct EntriesView: View {
         VStack(alignment: .leading, spacing: 14) {
             if showsCloudLoadingPlaceholder {
                 entryGridLoadingPlaceholders
+            } else if showsSampleEntries {
+                entryGridContent
+                    .padding(.horizontal, 16)
             } else if completedEntryItems.isEmpty {
                 emptyEntriesState
                     .padding(.horizontal, 16)
@@ -9825,17 +10389,31 @@ struct EntriesView: View {
 
     @ViewBuilder
     private func sampleEntryGridCard(for entry: CreateEntryDraft, index: Int) -> some View {
-        if categoryForSampleEntry(entry) == .completed {
+        if entry.status == JournalEntryStatus.completed.rawValue {
             CompletedEntryGridCard(
                 entry: entry,
                 title: entryDisplayTitle(entry),
                 sortOption: selectedEntrySort,
                 pageLabel: entryManualOrderLabel(for: index),
-                storyboardImage: .failed,
+                storyboardImage: sampleStoryboardImage(for: entry),
+                storyboardCount: sampleStoryboardCount(for: entry.id),
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
+                isSelecting: editMode == .active,
+                isSelected: selectedEntryIDs.contains(entry.id),
+                isSample: true,
                 onOpen: {
-                    sampleEntryBeingPreviewed = entry
+                    if editMode == .active {
+                        toggleEntrySelection(entry.id)
+                    } else {
+                        openSampleEntry(entry)
+                    }
+                },
+                onDelete: {
+                    requestDeleteEntry(.local(entry, cloudEntry: nil))
+                },
+                onRename: {
+                    beginRenaming(entry)
                 }
             )
         } else {
@@ -9843,16 +10421,27 @@ struct EntriesView: View {
                 entry: entry,
                 sortOption: selectedEntrySort,
                 pageLabel: entryManualOrderLabel(for: index),
-                isEditing: false,
-                showsActions: false,
+                isEditing: editMode == .active,
+                showsActions: true,
                 title: entryDisplayTitle(entry),
                 category: categoryForSampleEntry(entry),
                 isOpening: false,
+                isSelecting: editMode == .active,
+                isSelected: selectedEntryIDs.contains(entry.id),
+                isSample: true,
                 onOpen: {
-                    sampleEntryBeingPreviewed = entry
+                    if editMode == .active {
+                        toggleEntrySelection(entry.id)
+                    } else {
+                        openSampleEntry(entry)
+                    }
                 },
-                onDelete: {},
-                onRename: nil
+                onDelete: {
+                    requestDeleteEntry(.local(entry, cloudEntry: nil))
+                },
+                onRename: {
+                    beginRenaming(entry)
+                }
             )
         }
     }
@@ -9899,7 +10488,7 @@ struct EntriesView: View {
                 isSelected: selectedEntryIDs.contains(item.id),
                 onOpen: {
                     if showsSampleEntries {
-                        sampleEntryBeingPreviewed = displayEntry
+                        openSampleEntry(displayEntry)
                     } else if editMode == .active {
                         toggleEntrySelection(item.id)
                     } else {
@@ -9935,6 +10524,10 @@ struct EntriesView: View {
 
     private var completedEntries: [CreateEntryDraft] {
         let sourceEntries = showsSampleEntries ? sampleEntries : entries
+        if showsSampleEntries {
+            return sourceEntries.filter { $0.status == JournalEntryStatus.completed.rawValue }
+        }
+
         guard !sourceEntries.isEmpty else {
             return []
         }
@@ -9944,12 +10537,194 @@ struct EntriesView: View {
 
     private var draftEntries: [CreateEntryDraft] {
         let sourceEntries = showsSampleEntries ? sampleEntries : entries
+        if showsSampleEntries {
+            return sourceEntries.filter { $0.status != JournalEntryStatus.completed.rawValue }
+        }
+
         let completedIDs = Set(completedEntries.map(\.id))
         return sourceEntries.filter { !completedIDs.contains($0.id) }
     }
 
     private func completedEntryCount(for entryCount: Int) -> Int {
         min(max(entryCount / 3, 1), 4)
+    }
+
+    private func sampleStoryboardImage(for entry: CreateEntryDraft) -> CompletedStoryboardImage {
+        if let storyboard = sampleStoryboards(for: entry).first {
+            return .uiImage(storyboard.image)
+        }
+
+        return .failed
+    }
+
+    private func sampleStoryboardCount(for entryID: UUID) -> Int {
+        sampleStoryboardsByEntryID[entryID]?.count ?? 0
+    }
+
+    private func sampleStoryboards(for entry: CreateEntryDraft) -> [GeneratedStoryboard] {
+        if let storyboards = sampleStoryboardsByEntryID[entry.id], !storyboards.isEmpty {
+            return storyboards
+        }
+
+        return []
+    }
+
+    private func openSampleEntry(_ entry: CreateEntryDraft) {
+        removeStaleSampleRecordsIfNeeded()
+
+        let persistedSampleID = CreateEntryDraftStore.save(
+            id: entry.id,
+            title: entry.title,
+            text: entry.text,
+            richText: entry.richText,
+            referencePhotos: entry.photos,
+            characters: entry.characters,
+            artStyle: entry.artStyle,
+            location: entry.location,
+            date: entry.date,
+            datePrecision: entry.datePrecision,
+            savesDraft: entry.savesDraft,
+            isPrivate: entry.isPrivate,
+            status: JournalEntryStatus(rawValue: entry.status) ?? .draft,
+            fontChoiceRawValue: entry.fontChoiceRawValue,
+            textColorIndex: entry.textColorIndex,
+            textSize: entry.textSize,
+            paperStyleRawValue: entry.paperStyleRawValue,
+            paperColorIndex: entry.paperColorIndex,
+            isBold: entry.isBold,
+            isItalic: entry.isItalic,
+            isUnderlined: entry.isUnderlined,
+            isStrikethrough: entry.isStrikethrough,
+            isHighlighted: entry.isHighlighted,
+            textAlignmentRawValue: entry.textAlignmentRawValue,
+            thumbnail: entry.thumbnail
+        )
+
+        guard persistedSampleID != nil else {
+            return
+        }
+
+        temporaryOpenedSampleEntryID = entry.id
+        let storyboardImage = persistTemporarySampleStoryboards(for: entry)
+        openEntryItem(
+            .local(entry, cloudEntry: nil),
+            asCompleted: entry.status == JournalEntryStatus.completed.rawValue,
+            storyboardImage: storyboardImage
+        )
+    }
+
+    @discardableResult
+    private func persistTemporarySampleStoryboards(for entry: CreateEntryDraft) -> UIImage? {
+        let sampleStoryboards = sampleStoryboards(for: entry)
+        guard !sampleStoryboards.isEmpty else {
+            return nil
+        }
+
+        let sampleIDs = currentSampleEntryIDs
+        var persistedStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+            storyboard.clientEntryID != entry.id && !isCurrentSampleEntryID(storyboard.clientEntryID, in: sampleIDs)
+        }
+        var firstImage: UIImage?
+
+        for (index, sampleStoryboard) in sampleStoryboards.enumerated() {
+            if firstImage == nil {
+                firstImage = sampleStoryboard.image
+            }
+
+            guard
+                let storyboard = try? GeneratedStoryboardStore.persistedStoryboard(
+                    image: sampleStoryboard.image,
+                    clientEntryID: entry.id,
+                    promptText: sampleStoryboard.promptText,
+                    artStyle: sampleStoryboard.artStyle,
+                    generationQuality: sampleStoryboard.generationQuality,
+                    panelLayout: sampleStoryboard.panelLayout,
+                    sourcePhotoCount: sampleStoryboard.sourcePhotoCount,
+                    id: sampleStoryboard.id,
+                    storagePath: sampleStoryboard.storagePath,
+                    cloudSyncState: sampleStoryboard.cloudSyncState,
+                    isPrimary: sampleStoryboard.isPrimary || index == 0
+                )
+            else {
+                continue
+            }
+
+            persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
+        }
+
+        GeneratedStoryboardStore.save(persistedStoryboards)
+        return firstImage
+    }
+
+    private func removeTemporaryOpenedSampleEntryIfNeeded() {
+        guard !isSampleAuthorMode else {
+            temporaryOpenedSampleEntryID = nil
+            return
+        }
+
+        guard let temporaryOpenedSampleEntryID else {
+            return
+        }
+
+        let sampleIDs = currentSampleEntryIDs
+        CreateEntryDraftStore.delete(id: temporaryOpenedSampleEntryID)
+        let sampleStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+            storyboard.clientEntryID == temporaryOpenedSampleEntryID
+                || isCurrentSampleEntryID(storyboard.clientEntryID, in: sampleIDs)
+        }
+        if !sampleStoryboards.isEmpty {
+            GeneratedStoryboardStore.delete(sampleStoryboards)
+            GeneratedStoryboardStore.save(
+                GeneratedStoryboardStore.load().filter { storyboard in
+                    storyboard.clientEntryID != temporaryOpenedSampleEntryID
+                        && !isCurrentSampleEntryID(storyboard.clientEntryID, in: sampleIDs)
+                }
+            )
+        }
+        self.temporaryOpenedSampleEntryID = nil
+        if activeDraftID == temporaryOpenedSampleEntryID {
+            activeDraftID = nil
+        }
+        completedEntryOpenedStoryboardImage = nil
+    }
+
+    private func removeStaleSampleRecordsIfNeeded() {
+        guard !isSampleAuthorMode else {
+            return
+        }
+
+        let sampleIDs = currentSampleEntryIDs
+        for sampleID in sampleIDs where sampleID != temporaryOpenedSampleEntryID {
+            CreateEntryDraftStore.delete(id: sampleID)
+        }
+
+        let staleSampleStoryboards = GeneratedStoryboardStore.load().filter { storyboard in
+            isCurrentSampleEntryID(storyboard.clientEntryID, in: sampleIDs)
+                && storyboard.clientEntryID != temporaryOpenedSampleEntryID
+        }
+        guard !staleSampleStoryboards.isEmpty else {
+            return
+        }
+
+        GeneratedStoryboardStore.delete(staleSampleStoryboards)
+        GeneratedStoryboardStore.save(
+            GeneratedStoryboardStore.load().filter { storyboard in
+                !isCurrentSampleEntryID(storyboard.clientEntryID, in: sampleIDs)
+                    || storyboard.clientEntryID == temporaryOpenedSampleEntryID
+            }
+        )
+    }
+
+    private var currentSampleEntryIDs: Set<UUID> {
+        Set(sampleEntries.map(\.id))
+    }
+
+    private func isCurrentSampleEntryID(_ entryID: UUID?, in sampleIDs: Set<UUID>) -> Bool {
+        guard let entryID else {
+            return false
+        }
+
+        return sampleIDs.contains(entryID)
     }
 
     private func generatedStoryboard(for item: EntryDisplayItem) -> GeneratedStoryboard? {
@@ -10026,16 +10801,26 @@ struct EntriesView: View {
     }
 
     private var filteredEntries: [CreateEntryDraft] {
+        let sourceEntries: [CreateEntryDraft]
         switch selectedEntryTab {
         case .all:
-            return showsSampleEntries ? sampleEntries : entries
+            sourceEntries = showsSampleEntries ? sampleEntries : entries
         case .drafts:
-            return draftEntries
+            sourceEntries = draftEntries
         case .completed:
-            return completedEntries
+            sourceEntries = completedEntries
         case .addToJournal:
-            return sampleEntries
+            sourceEntries = sampleEntries
         }
+
+        guard showsSampleEntries else {
+            return sourceEntries
+        }
+
+        return sourceEntries
+            .map { EntryDisplayItem.local($0, cloudEntry: nil) }
+            .sorted(by: sortEntryItems)
+            .map(\.entry)
     }
 
     private var filteredEntryItems: [EntryDisplayItem] {
@@ -10303,13 +11088,21 @@ struct EntriesView: View {
     }
 
     private var showsSampleEntries: Bool {
-        authStore.userID != nil
+        if isSampleAuthorMode {
+            return showsPrototypeData && !sampleEntries.isEmpty && !isLoadingCloudEntries
+        }
+
+        return !shouldSuppressSamplesForSignedInUser
             && entries.isEmpty
             && cloudEntries.isEmpty
             && !isLoadingCloudEntries
             && cloudEntriesErrorMessage == nil
             && showsPrototypeData
             && !sampleEntries.isEmpty
+    }
+
+    private var shouldSuppressSamplesForSignedInUser: Bool {
+        authStore.userID != nil && !isSampleAuthorMode && hasCompletedEntriesSamples
     }
 
     private var showsCloudLoadingPlaceholder: Bool {
@@ -10337,6 +11130,11 @@ struct EntriesView: View {
             return
         }
 
+        if isSampleAuthorMode {
+            try await deleteSampleEntry(item)
+            return
+        }
+
         if authStore.userID != nil, cloudEntriesErrorMessage != nil, item.cloudEntry == nil {
             throw JournalEntryRepositoryError.operationFailed
         }
@@ -10358,6 +11156,29 @@ struct EntriesView: View {
             activeDraftID = nil
         }
         isDraftSaved = !entries.isEmpty
+    }
+
+    private func deleteSampleEntry(_ item: EntryDisplayItem) async throws {
+        entryIDsBeingDeleted.insert(item.id)
+        defer { entryIDsBeingDeleted.remove(item.id) }
+
+        try await SupabaseSampleStoryService().deleteSampleEntry(id: item.id)
+        DeletedAuthoringSampleEntryStore.add(item.id)
+        sampleEntries.removeAll { $0.id == item.id }
+        sampleStoryboardsByEntryID[item.id] = nil
+        let localSampleStoryboards = GeneratedStoryboardStore.load().filter { $0.clientEntryID == item.id }
+        if !localSampleStoryboards.isEmpty {
+            GeneratedStoryboardStore.delete(localSampleStoryboards)
+            GeneratedStoryboardStore.save(
+                GeneratedStoryboardStore.load().filter { $0.clientEntryID != item.id }
+            )
+        }
+        CreateEntryDraftStore.delete(id: item.id)
+
+        if activeDraftID == item.id {
+            activeDraftID = nil
+        }
+        isDraftSaved = false
     }
 
     private var isDeleteEntryAlertPresented: Binding<Bool> {
@@ -10418,7 +11239,9 @@ struct EntriesView: View {
             refreshEntries(forceCloudReload: true)
         } else {
             entriesPendingDeletion = failedEntries
-            entryDeleteErrorMessage = "Could not delete from Storytopia cloud. Check your connection and try again."
+            entryDeleteErrorMessage = isSampleAuthorMode
+                ? "Could not delete from the sample author pack. Check your connection and try again."
+                : "Could not delete from Storytopia cloud. Check your connection and try again."
         }
     }
 
@@ -10472,6 +11295,25 @@ struct EntriesView: View {
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue
         )
+
+        if isSampleAuthorMode {
+            entryIDsBeingRenamed.insert(entry.id)
+            defer { entryIDsBeingRenamed.remove(entry.id) }
+
+            do {
+                try await SupabaseSampleStoryService().renameSampleEntry(id: entry.id, title: trimmedTitle)
+                if let index = sampleEntries.firstIndex(where: { $0.id == entry.id }) {
+                    sampleEntries[index] = sampleEntries[index].replacingTitle(trimmedTitle, thumbnail: entryThumbnail)
+                }
+                entryBeingRenamed = nil
+                renamedEntryTitle = ""
+                entryRenameErrorMessage = nil
+                refreshEntries(forceCloudReload: true)
+            } catch {
+                entryRenameErrorMessage = "Could not sync the sample title to Storytopia cloud."
+            }
+            return
+        }
 
         let renamedID = CreateEntryDraftStore.save(
             id: entry.id,
@@ -10577,10 +11419,41 @@ struct EntriesView: View {
 
         applyManualEntryOrder(orderedIDs)
 
-        if authStore.userID == nil {
+        if isSampleAuthorMode {
+            persistManualSampleEntryOrder()
+        } else if authStore.userID == nil {
             CreateEntryDraftStore.saveOrder(entries.map(\.id))
         } else {
             persistManualCloudEntryOrder()
+        }
+    }
+
+    private func persistManualSampleEntryOrder() {
+        let orderedSampleEntryIDs = sampleEntries
+            .map { EntryDisplayItem.local($0, cloudEntry: nil) }
+            .sorted(by: sortEntryItems)
+            .map(\.id)
+        guard !orderedSampleEntryIDs.isEmpty else {
+            return
+        }
+
+        manualEntryOrderSaveTask?.cancel()
+        manualEntryOrderSaveTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            do {
+                try await SupabaseSampleStoryService().updateSampleEntryOrder(orderedSampleEntryIDs)
+                await MainActor.run {
+                    cloudEntriesErrorMessage = nil
+                }
+            } catch {
+                await MainActor.run {
+                    cloudEntriesErrorMessage = "Could not save sample entry order."
+                }
+            }
         }
     }
 
@@ -10646,6 +11519,19 @@ struct EntriesView: View {
                 return sortCloudEntriesByManualOrder(lhs, rhs)
             }
         }
+
+        sampleEntries.sort { lhs, rhs in
+            switch (orderByID[lhs.id], orderByID[rhs.id]) {
+            case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+                return lhsOrder < rhsOrder
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return (lhs.displayOrder ?? Int.max) < (rhs.displayOrder ?? Int.max)
+            }
+        }
     }
 
     private func sortLocalEntriesByManualOrder(_ lhs: CreateEntryDraft, _ rhs: CreateEntryDraft) -> Bool {
@@ -10675,6 +11561,13 @@ struct EntriesView: View {
     }
 
     private func loadEntriesForCurrentPageIfNeeded() {
+        if isSampleAuthorMode {
+            refreshEntries()
+            return
+        }
+
+        removeStaleSampleRecordsIfNeeded()
+
         guard let userID = authStore.userID else {
             refreshEntries()
             return
@@ -10715,6 +11608,7 @@ struct EntriesView: View {
 
         entries = snapshot.entries
         sampleEntries = snapshot.sampleEntries
+        sampleStoryboardsByEntryID = snapshot.sampleStoryboardsByEntryID
         completedStoryboards = snapshot.completedStoryboards
         storyboardCountsByClientEntryID = snapshot.storyboardCountsByClientEntryID
         cloudEntries = snapshot.cloudEntries
@@ -10744,6 +11638,7 @@ struct EntriesView: View {
             EntriesSessionMemoryCache.Snapshot(
                 entries: entries,
                 sampleEntries: sampleEntries,
+                sampleStoryboardsByEntryID: sampleStoryboardsByEntryID,
                 completedStoryboards: completedStoryboards,
                 storyboardCountsByClientEntryID: storyboardCountsByClientEntryID,
                 cloudEntries: cloudEntries,
@@ -10771,6 +11666,11 @@ struct EntriesView: View {
     }
 
     private func refreshEntriesFromCloud() {
+        if isSampleAuthorMode {
+            refreshEntries(forceCloudReload: true)
+            return
+        }
+
         guard let userID = authStore.userID else {
             refreshEntries(forceCloudReload: true)
             return
@@ -10783,6 +11683,22 @@ struct EntriesView: View {
         refreshEntries(forceCloudReload: true)
     }
 
+    private func handleGeneratedStoryboardsChanged() {
+        if isSampleAuthorMode {
+            refreshEntries(forceCloudReload: true)
+            return
+        }
+
+        guard let userID = authStore.userID else {
+            refreshEntries(forceCloudReload: true)
+            return
+        }
+
+        EntriesSessionMemoryCache.invalidate(userID: userID)
+        EntriesCloudFetchCache.invalidate(for: userID)
+        refreshEntries(forceCloudReload: true)
+    }
+
     private func cancelThumbnailBackfills() {
         entryThumbnailBackfillTask?.cancel()
         entryThumbnailBackfillTask = nil
@@ -10790,13 +11706,107 @@ struct EntriesView: View {
         cloudEntryThumbnailBackfillTask = nil
         completedStoryboardLoadTask?.cancel()
         completedStoryboardLoadTask = nil
+        sampleContentLoadTask?.cancel()
+        sampleContentLoadTask = nil
+    }
+
+    private func loadRemoteSampleContentIfNeeded() {
+        if isSampleAuthorMode {
+            sampleContentLoadTask?.cancel()
+            sampleContentLoadTask = Task {
+                guard let pack = try? await SupabaseSampleStoryService().loadAuthoringPack() else {
+                    sampleEntries = []
+                    sampleStoryboardsByEntryID = [:]
+                    isLoadingCloudEntries = false
+                    return
+                }
+
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                let visibleEntries = visibleAuthoringSampleEntries(from: pack.entries)
+                sampleEntries = visibleEntries
+                sampleStoryboardsByEntryID = sampleStoryboardsByMergingLocalFallbacks(
+                    remoteStoryboardsByEntryID: pack.storyboardsByEntryID,
+                    entries: visibleEntries,
+                    repairsMissingRemote: true
+                )
+                isLoadingCloudEntries = false
+                storeCurrentEntriesSessionSnapshot()
+            }
+            return
+        }
+
+        guard
+            !shouldSuppressSamplesForSignedInUser,
+            showsPrototypeData,
+            entries.isEmpty,
+            cloudEntries.isEmpty
+        else {
+            return
+        }
+
+        sampleContentLoadTask?.cancel()
+        sampleContentLoadTask = Task {
+            guard let pack = try? await SupabaseSampleStoryService().loadActivePack() else {
+                return
+            }
+
+            guard
+                !Task.isCancelled,
+                !shouldSuppressSamplesForSignedInUser,
+                entries.isEmpty,
+                cloudEntries.isEmpty
+            else {
+                return
+            }
+
+            sampleEntries = pack.entries
+            sampleStoryboardsByEntryID = pack.storyboardsByEntryID
+            storeCurrentEntriesSessionSnapshot()
+        }
+    }
+
+    private func visibleAuthoringSampleEntries(from entries: [CreateEntryDraft]) -> [CreateEntryDraft] {
+        let deletedEntryIDs = DeletedAuthoringSampleEntryStore.load()
+        guard !deletedEntryIDs.isEmpty else {
+            return entries
+        }
+
+        return entries.filter { !deletedEntryIDs.contains($0.id) }
     }
 
     private func refreshEntries(forceCloudReload: Bool = false) {
+        if isSampleAuthorMode {
+            resetEntriesSessionState()
+            entries = []
+            sampleEntries = []
+            sampleStoryboardsByEntryID = [:]
+            completedStoryboards = []
+            storyboardCountsByClientEntryID = [:]
+            cloudEntries = []
+            cloudEntryCounts = nil
+            unjournaledEntryIDs = []
+            cloudEntryThumbnails = [:]
+            cloudEntryThumbnailVersions = [:]
+            cloudEntriesErrorMessage = nil
+            cloudStoryboardClientIDs = []
+            failedCloudStoryboardClientIDs = []
+            isLoadingCloudEntries = true
+            isLoadingMoreCloudEntries = false
+            hasMoreCloudEntries = false
+            nextCloudEntryOffset = 0
+            isDraftSaved = false
+            loadRemoteSampleContentIfNeeded()
+            return
+        }
+
         guard let userID = authStore.userID else {
             resetEntriesSessionState()
             entries = []
             sampleEntries = []
+            sampleStoryboardsByEntryID = [:]
             completedStoryboards = []
             storyboardCountsByClientEntryID = [:]
             cloudEntries = []
@@ -10812,6 +11822,7 @@ struct EntriesView: View {
             hasMoreCloudEntries = false
             nextCloudEntryOffset = 0
             isDraftSaved = false
+            loadRemoteSampleContentIfNeeded()
             return
         }
 
@@ -10819,12 +11830,10 @@ struct EntriesView: View {
         hasLoadedEntriesForSession = true
         loadedEntryQueryKey = queryKey
 
-        entries = []
-        completedStoryboards = GeneratedStoryboardStore.load()
+        entries = CreateEntryDraftStore.loadAll()
+        completedStoryboards = GeneratedStoryboardStore.load().filter { !$0.isSampleContent }
         scheduleCompletedStoryboardLoad()
-        if entries.isEmpty && showsPrototypeData && sampleEntries.isEmpty {
-            sampleEntries = EntriesSampleData.entries()
-        }
+        loadRemoteSampleContentIfNeeded()
         scheduleEntryThumbnailBackfill()
         scheduleCloudEntryThumbnailBackfill()
         isDraftSaved = false
@@ -10853,6 +11862,7 @@ struct EntriesView: View {
         if cloudEntries != cachedEntries.entries {
             cloudEntries = cachedEntries.entries
         }
+        updateEntriesSamplesCompletion()
         if let cachedCounts = cachedEntries.counts, cloudEntryCounts != cachedCounts {
             cloudEntryCounts = cachedCounts
         }
@@ -10893,6 +11903,7 @@ struct EntriesView: View {
             if cloudEntries != cachedEntries.entries {
                 cloudEntries = cachedEntries.entries
             }
+            updateEntriesSamplesCompletion()
             if let cachedCounts = cachedEntries.counts {
                 if cloudEntryCounts != cachedCounts {
                     cloudEntryCounts = cachedCounts
@@ -10930,6 +11941,7 @@ struct EntriesView: View {
                 }
                 unjournaledEntryIDs = currentUnjournaledEntryIDs
                 cloudEntries = page
+                updateEntriesSamplesCompletion()
                 if let counts, cloudEntryCounts != counts {
                     cloudEntryCounts = counts
                 }
@@ -10970,6 +11982,7 @@ struct EntriesView: View {
             if cloudEntries != page {
                 cloudEntries = page
             }
+            updateEntriesSamplesCompletion()
             if let counts, cloudEntryCounts != counts {
                 cloudEntryCounts = counts
             }
@@ -11032,6 +12045,7 @@ struct EntriesView: View {
             let existingIDs = Set(cloudEntries.map(\.clientEntryID))
             let newEntries = page.filter { !existingIDs.contains($0.clientEntryID) }
             cloudEntries.append(contentsOf: newEntries)
+            updateEntriesSamplesCompletion()
             restoreCachedCloudEntryThumbnails()
             hasMoreCloudEntries = page.count == cloudEntriesPageSize
             nextCloudEntryOffset += page.count
@@ -11532,7 +12546,7 @@ struct EntriesView: View {
                 return
             }
             let storyboards = await Task.detached(priority: .utility) {
-                GeneratedStoryboardStore.load()
+                GeneratedStoryboardStore.load().filter { !$0.isSampleContent }
             }.value
 
             guard !Task.isCancelled else {
@@ -11565,240 +12579,15 @@ struct EntriesView: View {
             textAlignmentRawValue: entry.textAlignmentRawValue
         )
     }
-}
 
-private enum EntriesSampleData {
-    private struct Sample {
-        let id: String
-        let title: String
-        let text: String
-        let daysAgo: Int
-        let location: String
-        let paperStyleRawValue: String
-        let paperColorIndex: Int
-        let textColorIndex: Int
-        let textSize: Double
-    }
-
-    @MainActor
-    static func entries() -> [CreateEntryDraft] {
-        samples.enumerated().map { index, sample in
-            let date = Calendar.current.date(byAdding: .day, value: -sample.daysAgo, to: Date()) ?? Date()
-            let thumbnail = DraftThumbnailRenderer.render(
-                title: sample.title,
-                text: sample.text,
-                richText: NotebookRichTextDocument(text: sample.text),
-                photos: [],
-                fontChoiceRawValue: nil,
-                textColorIndex: sample.textColorIndex,
-                textSize: sample.textSize,
-                paperStyleRawValue: sample.paperStyleRawValue,
-                paperColorIndex: sample.paperColorIndex,
-                isBold: false,
-                isItalic: index == 5,
-                isUnderlined: false,
-                isStrikethrough: false,
-                isHighlighted: index == 1,
-                textAlignmentRawValue: "leading"
-            )
-
-            return CreateEntryDraft(
-                id: UUID(uuidString: sample.id) ?? UUID(),
-                title: sample.title,
-                text: sample.text,
-                richText: NotebookRichTextDocument(text: sample.text),
-                photos: [],
-                artStyle: "Cozy Storybook",
-                location: sample.location,
-                date: date,
-                datePrecision: .exact,
-                savesDraft: true,
-                isPrivate: index == 3,
-                status: JournalEntryStatus.draft.rawValue,
-                fontChoiceRawValue: nil,
-                textColorIndex: sample.textColorIndex,
-                textSize: sample.textSize,
-                paperStyleRawValue: sample.paperStyleRawValue,
-                paperColorIndex: sample.paperColorIndex,
-                isBold: false,
-                isItalic: index == 5,
-                isUnderlined: false,
-                isStrikethrough: false,
-                isHighlighted: index == 1,
-                textAlignmentRawValue: "leading",
-                thumbnail: thumbnail,
-                createdAt: date,
-                updatedAt: date,
-                displayOrder: index
-            )
+    private func updateEntriesSamplesCompletion() {
+        guard authStore.userID != nil, !isSampleAuthorMode else {
+            return
         }
-    }
 
-    private static let samples: [Sample] = [
-        Sample(
-            id: "10000000-0000-0000-0000-000000000001",
-            title: "Morning Light",
-            text: "The kitchen was quiet except for the kettle. I watched the first strip of sun reach the table and felt like the whole day was waiting politely.",
-            daysAgo: 0,
-            location: "Home",
-            paperStyleRawValue: "collegeRuled",
-            paperColorIndex: 1,
-            textColorIndex: 1,
-            textSize: 18
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000002",
-            title: "Tiny Win",
-            text: "Finished the thing I kept avoiding. It only took twenty minutes, which is both hilarious and a little rude.",
-            daysAgo: 1,
-            location: "Desk",
-            paperStyleRawValue: "blank",
-            paperColorIndex: 4,
-            textColorIndex: 4,
-            textSize: 20
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000003",
-            title: "Rain Walk",
-            text: "Took the long way home after lunch. The sidewalks were shiny, the trees smelled awake, and nobody seemed in a rush.",
-            daysAgo: 2,
-            location: "Maple Street",
-            paperStyleRawValue: "watercolorPaper",
-            paperColorIndex: 0,
-            textColorIndex: 2,
-            textSize: 18
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000004",
-            title: "What I Needed",
-            text: "A slow dinner, a charged phone left in another room, and a conversation that did not try to solve anything.",
-            daysAgo: 3,
-            location: "West Village",
-            paperStyleRawValue: "cottonPaper",
-            paperColorIndex: 0,
-            textColorIndex: 6,
-            textSize: 19
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000005",
-            title: "Saturday Errands",
-            text: "Bought flowers, returned the library book, remembered batteries, forgot basil. The list was almost victorious.",
-            daysAgo: 5,
-            location: "Downtown",
-            paperStyleRawValue: "blank",
-            paperColorIndex: 5,
-            textColorIndex: 8,
-            textSize: 18
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000006",
-            title: "A Line to Keep",
-            text: "There are days that do not announce themselves as important until later. Today had that quiet shimmer.",
-            daysAgo: 7,
-            location: "Park Bench",
-            paperStyleRawValue: "recycledPaper",
-            paperColorIndex: 0,
-            textColorIndex: 5,
-            textSize: 21
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000007",
-            title: "Coffee Notes",
-            text: "The cafe playlist was all old soul songs. I wrote three messy ideas and one good sentence.",
-            daysAgo: 9,
-            location: "Corner Cafe",
-            paperStyleRawValue: "collegeRuled",
-            paperColorIndex: 2,
-            textColorIndex: 3,
-            textSize: 18
-        ),
-        Sample(
-            id: "10000000-0000-0000-0000-000000000008",
-            title: "Before Sleep",
-            text: "Grateful for clean sheets, a book with short chapters, and the particular relief of putting tomorrow down for a while.",
-            daysAgo: 12,
-            location: "Bedroom",
-            paperStyleRawValue: "blank",
-            paperColorIndex: 6,
-            textColorIndex: 7,
-            textSize: 19
-        )
-    ]
-}
-
-private struct EntrySamplePreview: View {
-    let entry: CreateEntryDraft
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    previewImage
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(entryDisplayTitle(entry))
-                            .font(.system(size: 26, weight: .bold, design: .serif))
-                            .foregroundStyle(Color.storyInk)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 8) {
-                            Text(entry.createdAt.formatted(date: .abbreviated, time: .omitted))
-
-                            if !entry.location.isEmpty {
-                                Text("•")
-                                Text(entry.location)
-                            }
-                        }
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-                    }
-
-                    Text(entry.text)
-                        .font(.system(size: 18, weight: .regular, design: .serif))
-                        .lineSpacing(5)
-                        .foregroundStyle(Color.storyInk)
-                        .padding(18)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.homeBorder, lineWidth: 1)
-                        )
-                }
-                .padding(18)
-            }
-            .background(Color.homePageBackground.ignoresSafeArea())
-            .navigationTitle("Sample Entry")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.homeAccent)
-                }
-            }
-        }
-        .onDisappear {
-            UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap(\.windows)
-                .first(where: \.isKeyWindow)?
-                .endEditing(true)
-        }
-        .preferredColorScheme(.light)
-    }
-
-    @ViewBuilder
-    private var previewImage: some View {
-        if let thumbnail = entry.thumbnail {
-            Image(uiImage: thumbnail)
-                .resizable()
-                .scaledToFit()
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
+        if !entries.isEmpty || !cloudEntries.isEmpty {
+            hasCompletedEntriesSamples = true
+            sampleEntries = []
         }
     }
 }
@@ -11816,6 +12605,7 @@ private struct EntryListRow: View {
     var coverHeight = JournalChapterListMetrics.coverHeight
     var isSelecting = false
     var isSelected = false
+    var isSample = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -11840,6 +12630,11 @@ private struct EntryListRow: View {
 
             if let category {
                 EntryCategoryPill(category: category)
+                    .layoutPriority(1)
+            }
+
+            if isSample {
+                EntrySampleBadge()
                     .layoutPriority(1)
             }
 
@@ -11964,6 +12759,24 @@ private struct EntryCategoryPill: View {
                     .stroke(category.pillBorderColor, lineWidth: 1)
             )
             .accessibilityLabel(category.title)
+    }
+}
+
+private struct EntrySampleBadge: View {
+    var body: some View {
+        Text("Sample")
+            .font(.system(size: 10, weight: .heavy))
+            .foregroundStyle(Color.storyInk.opacity(0.78))
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .frame(height: 20)
+            .background(Color.white.opacity(0.94), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.storyInk.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.08), radius: 3, y: 1)
+            .accessibilityLabel("Sample")
     }
 }
 
@@ -12209,6 +13022,7 @@ private struct EntryGridPreviewCard: View {
     var isOpening = false
     var isSelecting = false
     var isSelected = false
+    var isSample = false
     let onOpen: () -> Void
     let onDelete: () -> Void
     var onRename: (() -> Void)?
@@ -12252,6 +13066,12 @@ private struct EntryGridPreviewCard: View {
                     EntryCategoryPill(category: category)
                         .padding(8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                }
+
+                if isSample {
+                    EntrySampleBadge()
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
 
@@ -12327,7 +13147,10 @@ private struct CompletedEntryGridCard: View {
     let isOpening: Bool
     let isSelecting: Bool
     let isSelected: Bool
+    let isSample: Bool
     let onOpen: () -> Void
+    let onDelete: (() -> Void)?
+    let onRename: (() -> Void)?
     let accessibilityLabel: String
 
     init(
@@ -12341,7 +13164,10 @@ private struct CompletedEntryGridCard: View {
         isOpening: Bool = false,
         isSelecting: Bool = false,
         isSelected: Bool = false,
-        onOpen: @escaping () -> Void
+        isSample: Bool = false,
+        onOpen: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil,
+        onRename: (() -> Void)? = nil
     ) {
         self.entry = entry
         self.title = title
@@ -12353,7 +13179,10 @@ private struct CompletedEntryGridCard: View {
         self.isOpening = isOpening
         self.isSelecting = isSelecting
         self.isSelected = isSelected
+        self.isSample = isSample
         self.onOpen = onOpen
+        self.onDelete = onDelete
+        self.onRename = onRename
         accessibilityLabel = "Completed \(title)"
     }
 
@@ -12381,6 +13210,13 @@ private struct CompletedEntryGridCard: View {
                             .zIndex(2)
                     }
 
+                    if isSample {
+                        EntrySampleBadge()
+                            .padding(8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .zIndex(2)
+                    }
+
                     if isSelecting {
                         EntrySelectionBadge(isSelected: isSelected)
                             .padding(8)
@@ -12401,6 +13237,23 @@ private struct CompletedEntryGridCard: View {
         .animation(.spring(response: 0.24, dampingFraction: 0.78), value: isOpening)
         .onTapGesture {
             onOpen()
+        }
+        .contextMenu {
+            if let onRename {
+                Button {
+                    onRename()
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+            }
+
+            if let onDelete {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(accessibilityLabel), \(pageLabel ?? entryPreviewDateText(entry, sortOption: sortOption))")
@@ -13387,6 +14240,7 @@ private struct PrototypeChapterDetailView: View {
     let onCreateEntryRequested: ((CreateEntryPresentation) -> Void)?
     let onChapterUpdated: (PrototypeChapter) -> Void
     let onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)?
+    let isSampleAuthorMode: Bool
     let entryDate: Date
     let presentation: Presentation
 
@@ -13492,6 +14346,15 @@ private struct PrototypeChapterDetailView: View {
             storedCoverImage: customization.storedCoverImage,
             force: customization.storedCoverImage != nil || customization.clearsStoredCover
         )
+        if isSampleAuthorMode {
+            syncSampleJournalCoverCustomization(
+                updatedChapter,
+                storedCoverImage: customization.storedCoverImage,
+                clearsStoredCover: customization.clearsStoredCover
+            )
+            return
+        }
+
         UserChapterStore.updateAppearance(
             id: updatedChapter.id,
             color: updatedChapter.color,
@@ -13503,6 +14366,55 @@ private struct PrototypeChapterDetailView: View {
             uploadsStoredCover: customization.storedCoverImage != nil,
             clearsStoredCover: customization.clearsStoredCover
         ))
+    }
+
+    private func syncSampleJournalCoverCustomization(
+        _ updatedChapter: PrototypeChapter,
+        storedCoverImage: UIImage?,
+        clearsStoredCover: Bool
+    ) {
+        Task {
+            let service = SupabaseSampleStoryService()
+            do {
+                let pack = try await service.loadAuthoringPack()
+                guard let existingJournal = pack.journals.first(where: { $0.id == updatedChapter.id }) else {
+                    return
+                }
+
+                let preservesStoredCover = storedCoverImage == nil
+                    && !clearsStoredCover
+                    && updatedChapter.remoteCover == nil
+                    && updatedChapter.coverImageName?.trimmedOrNil == nil
+                var coverStoragePath = preservesStoredCover ? existingJournal.coverStoragePath : nil
+                if let storedCoverImage {
+                    coverStoragePath = try await service.uploadSampleJournalCover(
+                        storedCoverImage,
+                        journalID: updatedChapter.id
+                    )
+                }
+
+                let sampleJournal = SampleJournal(
+                    id: existingJournal.id,
+                    packID: existingJournal.packID,
+                    title: updatedChapter.title,
+                    subtitle: updatedChapter.subtitle,
+                    colorHex: JournalColorOption.hexString(for: updatedChapter.color),
+                    symbol: updatedChapter.symbol,
+                    coverImageName: updatedChapter.coverImageName,
+                    coverStoragePath: coverStoragePath,
+                    remoteCover: updatedChapter.remoteCover,
+                    kind: updatedChapter.kind == .storyboard ? "storyboard" : "journal",
+                    isFavorite: updatedChapter.isFavorite,
+                    displayOrder: existingJournal.displayOrder,
+                    entries: existingJournal.entries,
+                    createdAt: existingJournal.createdAt,
+                    updatedAt: Date()
+                )
+                try await service.updateSampleJournal(sampleJournal)
+            } catch {
+                print("[Storytopia] Sample journal detail cover sync failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func retryPendingCoverSync() {
@@ -13558,6 +14470,7 @@ private struct PrototypeChapterDetailView: View {
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
+        isSampleAuthorMode: Bool = false,
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         let initialMembershipSnapshot = JournalDetailMembershipSnapshot.make(for: chapter)
@@ -13576,6 +14489,7 @@ private struct PrototypeChapterDetailView: View {
         self.onCreateEntryRequested = onCreateEntryRequested
         self.onChapterUpdated = onChapterUpdated
         self.onOpenExistingEntry = onOpenExistingEntry
+        self.isSampleAuthorMode = isSampleAuthorMode
         self.onCreateStory = onCreateStory
     }
 

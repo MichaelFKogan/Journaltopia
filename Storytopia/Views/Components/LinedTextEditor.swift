@@ -131,6 +131,88 @@ struct NotebookRichTextDocument: Codable, Equatable, Sendable {
         text == plainText ? self : NotebookRichTextDocument(text: plainText)
     }
 
+    func updatingTextPreservingFormatting(for plainText: String) -> NotebookRichTextDocument {
+        guard text != plainText else {
+            return self
+        }
+
+        guard !formattingRuns.isEmpty else {
+            return NotebookRichTextDocument(text: plainText)
+        }
+
+        let oldText = text as NSString
+        let newText = plainText as NSString
+        var sharedPrefixLength = 0
+        let shortestLength = min(oldText.length, newText.length)
+
+        while sharedPrefixLength < shortestLength,
+              oldText.character(at: sharedPrefixLength) == newText.character(at: sharedPrefixLength) {
+            sharedPrefixLength += 1
+        }
+
+        var sharedSuffixLength = 0
+        while sharedSuffixLength < shortestLength - sharedPrefixLength,
+              oldText.character(at: oldText.length - sharedSuffixLength - 1) == newText.character(at: newText.length - sharedSuffixLength - 1) {
+            sharedSuffixLength += 1
+        }
+
+        let replacedOldUpperBound = oldText.length - sharedSuffixLength
+        let replacementDelta = newText.length - oldText.length
+        let updatedRuns = formattingRuns.compactMap { run -> NotebookTextFormattingRun? in
+            let runUpperBound = run.location + run.length
+
+            if runUpperBound <= sharedPrefixLength {
+                return run
+            }
+
+            if run.location >= replacedOldUpperBound {
+                return NotebookTextFormattingRun(
+                    location: run.location + replacementDelta,
+                    length: run.length,
+                    isBold: run.isBold,
+                    isItalic: run.isItalic,
+                    isUnderlined: run.isUnderlined,
+                    isStrikethrough: run.isStrikethrough,
+                    textColorHex: run.textColorHex,
+                    textStyleRawValue: run.textStyleRawValue
+                )
+            }
+
+            let keptPrefixLength = max(0, sharedPrefixLength - run.location)
+            let keptSuffixLength = max(0, runUpperBound - replacedOldUpperBound)
+            let keptLength = keptPrefixLength + keptSuffixLength
+            guard keptLength > 0 else {
+                return nil
+            }
+
+            if keptPrefixLength > 0 {
+                return NotebookTextFormattingRun(
+                    location: run.location,
+                    length: keptPrefixLength,
+                    isBold: run.isBold,
+                    isItalic: run.isItalic,
+                    isUnderlined: run.isUnderlined,
+                    isStrikethrough: run.isStrikethrough,
+                    textColorHex: run.textColorHex,
+                    textStyleRawValue: run.textStyleRawValue
+                )
+            }
+
+            return NotebookTextFormattingRun(
+                location: replacedOldUpperBound + replacementDelta,
+                length: keptSuffixLength,
+                isBold: run.isBold,
+                isItalic: run.isItalic,
+                isUnderlined: run.isUnderlined,
+                isStrikethrough: run.isStrikethrough,
+                textColorHex: run.textColorHex,
+                textStyleRawValue: run.textStyleRawValue
+            )
+        }
+
+        return NotebookRichTextDocument(text: plainText, formattingRuns: updatedRuns)
+    }
+
     func trimmingCharacters(in characterSet: CharacterSet) -> NotebookRichTextDocument {
         let nsText = text as NSString
         var lowerBound = 0
@@ -256,6 +338,11 @@ private extension NotebookTextFormattingRun {
 struct NotebookTextFormattingRequest: Equatable {
     let id: Int
     let command: NotebookTextFormattingCommand
+}
+
+struct NotebookDictationTranscriptRequest: Equatable {
+    let id: Int
+    let transcript: String
 }
 
 struct NotebookTextSelectionState: Equatable {
@@ -628,6 +715,15 @@ final class LinedTextView: UITextView {
     private var typingTextRunStyle: NotebookTextRunStyle = .body
     private var storedRichTextDocument = NotebookRichTextDocument(text: "")
 
+    /// Dictation inserts at the caret like system keyboard dictation, instead of rewriting the whole string.
+    private var isDictating = false
+    private var isApplyingDictation = false
+    private var dictationNeedsReanchor = false
+    private var dictationLiveRange: NSRange?
+    private var dictationCommittedTranscript = ""
+    private var dictationLiveTranscript = ""
+    private var dictationLastTranscript = ""
+
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         configureNotebookAppearance()
@@ -705,7 +801,7 @@ final class LinedTextView: UITextView {
             textStyle: notebookTextStyle,
             usesTexturedPaperEffect: usesTexturedPaperEffect
         )
-        self.selectedRange = selectedRange
+        self.selectedRange = Self.clampedSelection(selectedRange, textLength: document.text.utf16.count)
         refreshTypingAttributes()
         layer.compositingFilter = nil
         setNeedsDisplay()
@@ -782,6 +878,216 @@ final class LinedTextView: UITextView {
         scrollCaretIntoEnclosingScrollViewIfNeeded()
     }
 
+    func setDictating(_ dictating: Bool) {
+        guard isDictating != dictating else {
+            return
+        }
+
+        isDictating = dictating
+        if dictating {
+            beginDictationSession()
+        } else {
+            endDictationSession()
+        }
+    }
+
+    func markDictationUserEdit() {
+        guard isDictating, !isApplyingDictation else {
+            return
+        }
+
+        dictationNeedsReanchor = true
+    }
+
+    func markDictationSelectionChange() {
+        guard isDictating, !isApplyingDictation, let liveRange = dictationLiveRange else {
+            return
+        }
+
+        let caret = selectedRange.location
+        let liveEnd = liveRange.location + liveRange.length
+        if selectedRange.length == 0, caret == liveEnd {
+            return
+        }
+
+        dictationNeedsReanchor = true
+    }
+
+    func applyDictationTranscript(_ transcript: String) {
+        guard isDictating else {
+            return
+        }
+
+        let sanitized = Self.sanitizedDictationTranscript(transcript)
+        guard !sanitized.isEmpty else {
+            return
+        }
+
+        if dictationLiveRange == nil || dictationNeedsReanchor {
+            reanchorDictationAtCaret()
+        }
+
+        let nextLiveTranscript = resolvedDictationLiveTranscript(from: sanitized)
+        guard nextLiveTranscript != dictationLiveTranscript else {
+            dictationLastTranscript = sanitized
+            return
+        }
+
+        replaceDictationLiveText(with: nextLiveTranscript)
+        dictationLiveTranscript = nextLiveTranscript
+        dictationLastTranscript = sanitized
+    }
+
+    private func beginDictationSession() {
+        dictationCommittedTranscript = ""
+        dictationLiveTranscript = ""
+        dictationLastTranscript = ""
+        dictationNeedsReanchor = false
+        dictationLiveRange = NSRange(location: selectedRange.location, length: 0)
+    }
+
+    private func endDictationSession() {
+        dictationLiveRange = nil
+        dictationCommittedTranscript = ""
+        dictationLiveTranscript = ""
+        dictationLastTranscript = ""
+        dictationNeedsReanchor = false
+        isApplyingDictation = false
+    }
+
+    private func reanchorDictationAtCaret() {
+        // Keep already-inserted speech; only new words go in at the current caret
+        // (e.g. after the user presses Return).
+        dictationCommittedTranscript = dictationLastTranscript
+        dictationLiveTranscript = ""
+        let caret = max(0, min(selectedRange.location, (text as NSString?)?.length ?? 0))
+        dictationLiveRange = NSRange(location: caret, length: 0)
+        dictationNeedsReanchor = false
+    }
+
+    private func resolvedDictationLiveTranscript(from sessionTranscript: String) -> String {
+        if dictationCommittedTranscript.isEmpty {
+            return sessionTranscript
+        }
+
+        if let remainder = dictationTranscriptRemainder(of: sessionTranscript, after: dictationCommittedTranscript) {
+            return remainder
+        }
+
+        if sessionTranscript.hasPrefix(dictationLastTranscript) {
+            let previousLength = (dictationLastTranscript as NSString).length
+            let delta = (sessionTranscript as NSString)
+                .substring(from: previousLength)
+                .strippingLeadingDictationWhitespace
+            guard !delta.isEmpty else {
+                return dictationLiveTranscript
+            }
+
+            return dictationLiveTranscript.isEmpty
+                ? delta
+                : dictationInsertion(delta, afterText: dictationLiveTranscript)
+        }
+
+        return dictationLiveTranscript
+    }
+
+    private func dictationTranscriptRemainder(of sessionTranscript: String, after committed: String) -> String? {
+        guard sessionTranscript.hasPrefix(committed) else {
+            return nil
+        }
+
+        let committedLength = (committed as NSString).length
+        return (sessionTranscript as NSString)
+            .substring(from: committedLength)
+            .strippingLeadingDictationWhitespace
+    }
+
+    private func replaceDictationLiveText(with live: String) {
+        guard let liveRange = dictationLiveRange else {
+            return
+        }
+
+        let plain = text ?? ""
+        let nsPlain = plain as NSString
+        let textLength = nsPlain.length
+        let location = max(0, min(liveRange.location, textLength))
+        let length = max(0, min(liveRange.length, textLength - location))
+        let safeRange = NSRange(location: location, length: length)
+        let insertion = dictationInsertion(live, afterLocation: location)
+
+        isApplyingDictation = true
+        let mutableText = NSMutableAttributedString(attributedString: attributedText ?? NSAttributedString(string: plain))
+        let attributedInsertion = NSAttributedString(
+            string: insertion,
+            attributes: currentTypingAttributes()
+        )
+        mutableText.replaceCharacters(in: safeRange, with: attributedInsertion)
+        attributedText = mutableText
+        updateStoredRichTextDocument()
+
+        let insertedLength = (insertion as NSString).length
+        dictationLiveRange = NSRange(location: location, length: insertedLength)
+        selectedRange = NSRange(location: location + insertedLength, length: 0)
+        typingAttributes = currentTypingAttributes()
+        notifyTextDidChange()
+        refreshLayoutAfterContentChange()
+        scrollCaretIntoEnclosingScrollViewIfNeeded()
+        isApplyingDictation = false
+    }
+
+    private func dictationInsertion(_ live: String, afterText preceding: String) -> String {
+        guard !live.isEmpty else {
+            return preceding
+        }
+
+        if preceding.isEmpty {
+            return live
+        }
+
+        if preceding.last?.isWhitespace == true || live.startsWithAttachedDictationPunctuation {
+            return preceding + live
+        }
+
+        return preceding + " " + live
+    }
+
+    private func dictationInsertion(_ live: String, afterLocation location: Int) -> String {
+        guard !live.isEmpty else {
+            return ""
+        }
+
+        guard location > 0, let plain = text, !plain.isEmpty else {
+            return live
+        }
+
+        let nsPlain = plain as NSString
+        guard location <= nsPlain.length else {
+            return live
+        }
+
+        let previous = nsPlain.character(at: location - 1)
+        if let scalar = UnicodeScalar(Int(previous)),
+           CharacterSet.whitespacesAndNewlines.contains(scalar)
+            || live.startsWithAttachedDictationPunctuation {
+            return live
+        }
+
+        return " " + live
+    }
+
+    private static func sanitizedDictationTranscript(_ transcript: String) -> String {
+        let withoutLineBreaks = transcript
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\u{2028}", with: " ")
+            .replacingOccurrences(of: "\u{2029}", with: " ")
+
+        return withoutLineBreaks
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
     private func scrollCaretIntoEnclosingScrollViewIfNeeded() {
         guard let selectedTextRange else {
             return
@@ -830,12 +1136,18 @@ final class LinedTextView: UITextView {
         }
     }
 
-    func setNotebookText(_ string: String, richText: NotebookRichTextDocument? = nil) {
+    func setNotebookText(
+        _ string: String,
+        richText: NotebookRichTextDocument? = nil,
+        moveCaretToEnd: Bool = false
+    ) {
         let document = richText?.normalized(for: string) ?? NotebookRichTextDocument(text: string)
         storedRichTextDocument = document
+        let textLength = (string as NSString).length
 
         if string.isEmpty {
             text = ""
+            selectedRange = NSRange(location: 0, length: 0)
             refreshTypingAttributes()
             refreshLayoutAfterContentChange()
             return
@@ -846,9 +1158,23 @@ final class LinedTextView: UITextView {
             textStyle: notebookTextStyle,
             usesTexturedPaperEffect: usesTexturedPaperEffect
         )
-        self.selectedRange = selectedRange
+        if moveCaretToEnd {
+            self.selectedRange = NSRange(location: textLength, length: 0)
+        } else {
+            self.selectedRange = Self.clampedSelection(selectedRange, textLength: textLength)
+        }
         refreshTypingAttributes()
         refreshLayoutAfterContentChange()
+    }
+
+    fileprivate static func clampedSelection(_ range: NSRange, textLength: Int) -> NSRange {
+        guard textLength >= 0, range.location != NSNotFound else {
+            return NSRange(location: 0, length: 0)
+        }
+
+        let location = min(max(range.location, 0), textLength)
+        let length = min(max(range.length, 0), textLength - location)
+        return NSRange(location: location, length: length)
     }
 
     func normalizeAttributesPreservingSelection() {
@@ -863,7 +1189,7 @@ final class LinedTextView: UITextView {
         )
         attributedText = NSAttributedString(string: text, attributes: attributes)
         updateStoredRichTextDocument()
-        self.selectedRange = selectedRange
+        self.selectedRange = Self.clampedSelection(selectedRange, textLength: (text as NSString).length)
         refreshTypingAttributes()
     }
 
@@ -1480,6 +1806,8 @@ struct LinedTextEditor: UIViewRepresentable {
     var blurRequestID: Int = 0
     var formattingRequest: NotebookTextFormattingRequest? = nil
     var followTextEndRequestID: Int = 0
+    var isDictating: Bool = false
+    var dictationTranscriptRequest: NotebookDictationTranscriptRequest? = nil
     var scrollsInternally: Bool = true
     var drawsRuledLines: Bool? = nil
     var minimumHeight: CGFloat = NotebookMetrics.minimumBodyHeight
@@ -1595,17 +1923,39 @@ struct LinedTextEditor: UIViewRepresentable {
             textView.usesTexturedPaperEffect = usesTexturedPaperEffect
         }
 
-        if text == textView.text {
+        // Only treat the binding as caught up when it matches the live text view
+        // (or the last value we pushed). A stale intermediate binding must NOT clear
+        // the waiting flag — that previously rewrote the text view mid-keystroke and
+        // jumped the caret.
+        if text == textView.text || text == coordinator.lastTextPushedToBinding {
             coordinator.isWaitingForTextBindingSync = false
+            coordinator.isUpdatingFromTextView = false
+            coordinator.lastTextPushedToBinding = textView.text
         }
 
+        let shouldFollowTextEnd = followTextEndRequestID != coordinator.handledFollowTextEndRequestID
+
+        // While the text view is first responder it owns the document. SwiftUI bindings
+        // are outbound only during typing. Explicit follow-to-end requests are the
+        // one inbound exception (e.g. programmatic inserts that should move the caret).
         let canApplyBindingText = !coordinator.isUpdatingFromTextView
+            && (!textView.isFirstResponder || shouldFollowTextEnd)
             && !(textView.isFirstResponder && coordinator.isWaitingForTextBindingSync)
 
         if canApplyBindingText {
             if textView.text != text {
-                textView.setNotebookText(text, richText: richText?.wrappedValue)
-                coordinator.currentRichTextDocument = textView.richTextDocument()
+                // While dictating, the text view owns in-flight speech inserts at the caret.
+                // Don't let a stale SwiftUI binding rewrite that work.
+                if !isDictating {
+                    textView.setNotebookText(
+                        text,
+                        richText: richText?.wrappedValue,
+                        moveCaretToEnd: shouldFollowTextEnd
+                    )
+                    coordinator.currentRichTextDocument = textView.richTextDocument()
+                    coordinator.lastTextPushedToBinding = text
+                    coordinator.isWaitingForTextBindingSync = false
+                }
             } else if !didChangeTextStyle,
                       !didChangeTexturedPaperEffect,
                       let richText = richText?.wrappedValue,
@@ -1639,19 +1989,28 @@ struct LinedTextEditor: UIViewRepresentable {
 
         if focusRequestID != coordinator.handledFocusRequestID {
             coordinator.handledFocusRequestID = focusRequestID
-            if !didHandleBlurRequest {
+            if !didHandleBlurRequest, !textView.isFirstResponder {
                 DispatchQueue.main.async {
+                    guard !textView.isFirstResponder else {
+                        return
+                    }
                     textView.becomeFirstResponder()
                 }
             }
         }
 
-        if followTextEndRequestID != coordinator.handledFollowTextEndRequestID {
+        if shouldFollowTextEnd, textView.text == text {
             coordinator.handledFollowTextEndRequestID = followTextEndRequestID
-            DispatchQueue.main.async {
-                textView.layoutIfNeeded()
-                textView.moveCaretToEndAndReveal()
-            }
+            textView.layoutIfNeeded()
+            textView.moveCaretToEndAndReveal()
+        }
+
+        textView.setDictating(isDictating)
+
+        if let dictationTranscriptRequest,
+           dictationTranscriptRequest.id != coordinator.handledDictationTranscriptRequestID {
+            coordinator.handledDictationTranscriptRequestID = dictationTranscriptRequest.id
+            textView.applyDictationTranscript(dictationTranscriptRequest.transcript)
         }
 
         if let formattingRequest,
@@ -1665,6 +2024,7 @@ struct LinedTextEditor: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: LinedTextView, coordinator: Coordinator) {
+        uiView.setDictating(false)
         uiView.resignFirstResponder()
         uiView.releaseKeyboardChrome()
         uiView.delegate = nil
@@ -1695,9 +2055,12 @@ struct LinedTextEditor: UIViewRepresentable {
         var handledBlurRequestID = 0
         var handledFormattingRequestID = 0
         var handledFollowTextEndRequestID = 0
+        var handledDictationTranscriptRequestID = 0
         var currentRichTextDocument: NotebookRichTextDocument?
         var isWaitingForTextBindingSync = false
         var isWaitingForRichTextBindingSync = false
+        /// Last value pushed from the text view into the SwiftUI binding.
+        var lastTextPushedToBinding: String?
         var onTextChange: ((String) -> Void)?
         var onRichTextChange: ((NotebookRichTextDocument) -> Void)?
         var onSelectionStateChange: ((NotebookTextSelectionState) -> Void)?
@@ -1749,8 +2112,13 @@ struct LinedTextEditor: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
+            if let linedTextView = textView as? LinedTextView {
+                linedTextView.markDictationUserEdit()
+            }
+
             isUpdatingFromTextView = true
             isWaitingForTextBindingSync = true
+            lastTextPushedToBinding = textView.text
             onTextChange?(textView.text)
             if let linedTextView = textView as? LinedTextView {
                 linedTextView.refreshStoredRichTextDocumentFromTextStorage()
@@ -1765,8 +2133,16 @@ struct LinedTextEditor: UIViewRepresentable {
                 }
             }
 
-            DispatchQueue.main.async {
-                self.isUpdatingFromTextView = false
+            // Fallback only: the waiting flags are normally cleared in updateUIView once
+            // the SwiftUI binding catches up. Avoid clearing immediately, which opened a
+            // race where a stale binding could rewrite the text view and jump the caret.
+            dispatchToSwiftUI { [weak self] in
+                guard let self else {
+                    return
+                }
+                if !self.isWaitingForTextBindingSync {
+                    self.isUpdatingFromTextView = false
+                }
             }
         }
 
@@ -1791,6 +2167,7 @@ struct LinedTextEditor: UIViewRepresentable {
                 return
             }
 
+            linedTextView.markDictationSelectionChange()
             linedTextView.refreshTypingAttributesFromSelection()
             let selectionState = linedTextView.currentSelectionState()
             dispatchToSwiftUI { [weak self] in
@@ -1814,6 +2191,20 @@ struct LinedTextEditor: UIViewRepresentable {
                 (textView as? LinedTextView)?.onEditingEnded?()
             }
         }
+    }
+}
+
+private extension String {
+    var startsWithAttachedDictationPunctuation: Bool {
+        guard let first else {
+            return false
+        }
+
+        return [".", ",", "!", "?", ";", ":", ")", "]", "}", "%"].contains(first)
+    }
+
+    var strippingLeadingDictationWhitespace: String {
+        String(drop(while: { $0.isWhitespace || $0.isNewline }))
     }
 }
 
@@ -2245,6 +2636,8 @@ struct NotebookEditorContent: View {
     var editorBlurRequestID: Int = 0
     var formattingRequest: NotebookTextFormattingRequest? = nil
     var followTextEndRequestID: Int = 0
+    var isDictating: Bool = false
+    var dictationTranscriptRequest: NotebookDictationTranscriptRequest? = nil
     var bodyPlaceholder: String
     var scrollsInternally: Bool = true
     var pageHeight: CGFloat?
@@ -2341,6 +2734,8 @@ struct NotebookEditorContent: View {
                 blurRequestID: editorBlurRequestID,
                 formattingRequest: formattingRequest,
                 followTextEndRequestID: followTextEndRequestID,
+                isDictating: isDictating,
+                dictationTranscriptRequest: dictationTranscriptRequest,
                 scrollsInternally: scrollsInternally,
                 drawsRuledLines: false,
                 minimumHeight: bodyMinHeight,

@@ -134,6 +134,15 @@ enum CreateEntryPresentation {
     }
 }
 
+enum CreateEntryAuthoringMode: Equatable {
+    case user
+    case sampleStudio
+
+    var isSampleStudio: Bool {
+        self == .sampleStudio
+    }
+}
+
 @MainActor
 private final class EntrySpeechTranscriber: ObservableObject {
     enum RecordingState: Equatable {
@@ -156,21 +165,18 @@ private final class EntrySpeechTranscriber: ObservableObject {
     private let speechRecognizer = SFSpeechRecognizer()
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    private var baselineText = ""
-    private var lastRenderedText = ""
     private var lastTranscript = ""
     private var didInstallAudioTap = false
-    private var currentTextProvider: (() -> String)?
-    private var onTranscriptChanged: ((String) -> Void)?
+    private var onTranscript: ((String) -> Void)?
 
-    func toggle(currentText: @escaping () -> String, onTranscriptChanged: @escaping (String) -> Void) {
+    func toggle(onTranscript: @escaping (String) -> Void) {
         if state.isListening {
             stop()
             return
         }
 
         Task {
-            await start(currentText: currentText, onTranscriptChanged: onTranscriptChanged)
+            await start(onTranscript: onTranscript)
         }
     }
 
@@ -192,8 +198,8 @@ private final class EntrySpeechTranscriber: ObservableObject {
         recognitionTask?.cancel()
         recognitionRequest = nil
         recognitionTask = nil
-        currentTextProvider = nil
-        onTranscriptChanged = nil
+        onTranscript = nil
+        lastTranscript = ""
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default, options: [])
@@ -203,7 +209,7 @@ private final class EntrySpeechTranscriber: ObservableObject {
         }
     }
 
-    private func start(currentText: @escaping () -> String, onTranscriptChanged: @escaping (String) -> Void) async {
+    private func start(onTranscript: @escaping (String) -> Void) async {
         state = .idle
 
         guard let speechRecognizer else {
@@ -239,11 +245,8 @@ private final class EntrySpeechTranscriber: ObservableObject {
             return
         }
 
-        baselineText = currentText()
-        lastRenderedText = baselineText
         lastTranscript = ""
-        currentTextProvider = currentText
-        self.onTranscriptChanged = onTranscriptChanged
+        self.onTranscript = onTranscript
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
@@ -274,7 +277,12 @@ private final class EntrySpeechTranscriber: ObservableObject {
 
     private func handleRecognitionResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
         if let result {
-            appendTranscript(result.bestTranscription.formattedString)
+            let transcript = result.bestTranscription.formattedString
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !transcript.isEmpty, transcript != lastTranscript {
+                lastTranscript = transcript
+                onTranscript?(transcript)
+            }
             if result.isFinal {
                 stop()
             }
@@ -284,47 +292,6 @@ private final class EntrySpeechTranscriber: ObservableObject {
             stop()
             state = .unavailable("Dictation stopped. Please try again.")
         }
-    }
-
-    private func appendTranscript(_ transcript: String) {
-        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTranscript.isEmpty else {
-            return
-        }
-
-        let currentText = currentTextProvider?() ?? lastRenderedText
-        let updatedText: String
-
-        if trimmedTranscript == lastTranscript {
-            return
-        } else if lastTranscript.isEmpty {
-            updatedText = appendingDictation(trimmedTranscript, to: currentText)
-        } else if let previousTranscriptRange = currentText.range(of: lastTranscript, options: .backwards) {
-            updatedText = currentText.replacingCharacters(in: previousTranscriptRange, with: trimmedTranscript)
-        } else if currentText == lastRenderedText {
-            updatedText = appendingDictation(trimmedTranscript, to: baselineText)
-        } else {
-            updatedText = appendingDictation(trimmedTranscript, to: currentText)
-        }
-
-        lastTranscript = trimmedTranscript
-        lastRenderedText = updatedText
-        onTranscriptChanged?(updatedText)
-    }
-
-    private func appendingDictation(_ dictatedText: String, to currentText: String) -> String {
-        let separator: String
-        if currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            separator = ""
-        } else if currentText.last?.isWhitespace == true {
-            separator = ""
-        } else if dictatedText.startsWithAttachedPunctuation {
-            separator = ""
-        } else {
-            separator = " "
-        }
-
-        return currentText + separator + dictatedText
     }
 
     private func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
@@ -341,16 +308,6 @@ private final class EntrySpeechTranscriber: ObservableObject {
                 continuation.resume(returning: isGranted)
             }
         }
-    }
-}
-
-private extension String {
-    var startsWithAttachedPunctuation: Bool {
-        guard let first else {
-            return false
-        }
-
-        return [".", ",", "!", "?", ";", ":", ")", "]", "}", "%"].contains(first)
     }
 }
 
@@ -1392,12 +1349,40 @@ private enum CreateFormattingPalette {
 }
 
 private enum CreateEntryTextSize {
-    static let defaultSliderValue: Double = 0.25
+    static let defaultSliderValue: Double = 0.5
+    static let legacyDefaultSliderValue: Double = 0.25
     static let minimumFontSize: CGFloat = 14
-    static let fontSizeRange: CGFloat = 8
+    static let defaultFontSize: CGFloat = 16
+    static let maximumFontSize: CGFloat = 22
+    static let snapThreshold: Double = 0.035
 
     static func fontSize(for sliderValue: Double) -> CGFloat {
-        minimumFontSize + CGFloat(sliderValue) * fontSizeRange
+        let normalizedValue = normalizedSliderValue(for: sliderValue)
+        if normalizedValue <= defaultSliderValue {
+            let progress = CGFloat(normalizedValue / defaultSliderValue)
+            return minimumFontSize + progress * (defaultFontSize - minimumFontSize)
+        }
+
+        let progress = CGFloat((normalizedValue - defaultSliderValue) / (1 - defaultSliderValue))
+        return defaultFontSize + progress * (maximumFontSize - defaultFontSize)
+    }
+
+    static func normalizedSliderValue(for sliderValue: Double?) -> Double {
+        guard let sliderValue else {
+            return defaultSliderValue
+        }
+
+        if abs(sliderValue - legacyDefaultSliderValue) < 0.0001 {
+            return defaultSliderValue
+        }
+
+        return min(max(sliderValue, 0), 1)
+    }
+
+    static func snappedSliderValue(for sliderValue: Double) -> Double {
+        abs(sliderValue - defaultSliderValue) <= snapThreshold
+            ? defaultSliderValue
+            : min(max(sliderValue, 0), 1)
     }
 }
 
@@ -1422,7 +1407,7 @@ enum DraftThumbnailRenderer {
     ) -> UIImage? {
         let fontChoice = CreateFontChoice.savedValue(fontChoiceRawValue)
         let normalizedTextColorIndex = min(max(textColorIndex ?? 0, 0), CreateFormattingPalette.textColors.count - 1)
-        let normalizedTextSize = min(max(textSize ?? CreateEntryTextSize.defaultSliderValue, 0), 1)
+        let normalizedTextSize = CreateEntryTextSize.normalizedSliderValue(for: textSize)
         let paperStyle = paperStyleRawValue.flatMap(CreatePaperStyleChoice.init(rawValue:)) ?? .defaultChoice
         let normalizedPaperColorIndex = min(max(paperColorIndex ?? 0, 0), CreateFormattingPalette.paperColors.count - 1)
         let paperColor = CreateFormattingPalette.paperColors[normalizedPaperColorIndex]
@@ -1706,6 +1691,7 @@ struct CreateEntryView: View {
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
+    var authoringMode: CreateEntryAuthoringMode = .user
     var existingEntryStartsReadOnly = false
     let dismissCreate: () -> Void
     var onJournalEntryCreated: (String, PrototypeEntry) -> Void = { _, _ in }
@@ -1759,6 +1745,10 @@ struct CreateEntryView: View {
     @State private var previewedStoryboardPhoto: UIImage?
     @State private var entryCharacters: [EntryCharacter] = []
     @State private var characterEditorSession: CharacterEditorSession?
+    @State private var isShowingReusableCharactersSheet = false
+    @State private var reusableCharacters: [EntryCharacter] = []
+    @State private var isLoadingReusableCharacters = false
+    @State private var reusableCharactersErrorMessage: String?
     @State private var isPreviewingCompletedStoryboard = false
     @State private var selectedEntryStoryboardIndex: Int?
     @State private var completedEntryStoryboardDragOffset: CGSize = .zero
@@ -1773,7 +1763,8 @@ struct CreateEntryView: View {
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
-    @State private var dictationFollowRequestID = 0
+    @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
+    @State private var dictationTranscriptRequestID = 0
     @State private var speechRecognitionAlertMessage: String?
     @StateObject private var speechTranscriber = EntrySpeechTranscriber()
     @State private var editorBlurRequestID = 0
@@ -2144,6 +2135,18 @@ struct CreateEntryView: View {
             .sheet(isPresented: isCharacterEditorSheetPresented) {
                 characterEditorSheetContent()
             }
+            .sheet(isPresented: $isShowingReusableCharactersSheet) {
+                ReusableCharactersSheet(
+                    characters: availableReusableCharacters,
+                    isLoading: isLoadingReusableCharacters,
+                    errorMessage: reusableCharactersErrorMessage,
+                    onSelect: addReusableCharacter,
+                    onRefresh: refreshReusableCharacters
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Color.homePageBackground)
+            }
     }
 
     private var editorWithPhotoAndGenerationSheets: some View {
@@ -2395,13 +2398,23 @@ struct CreateEntryView: View {
 
         Task {
             do {
-                let prepareResult = try await EntrySaveService().prepareEntryForGeneration(
-                    payload: generationPayload,
-                    isSignedIn: authStore.userID != nil,
-                    currentStatus: currentEntryStatus,
-                    requiresSave: requiresEntrySave,
-                    syncReferencePhotos: requiresReferencePhotoSync
-                )
+                let prepareResult: EntrySaveResult
+                if authoringMode.isSampleStudio {
+                    prepareResult = try await SupabaseSampleStoryService().prepareSampleEntryForGeneration(
+                        payload: generationPayload,
+                        currentStatus: currentEntryStatus,
+                        requiresSave: requiresEntrySave,
+                        syncReferencePhotos: requiresReferencePhotoSync
+                    )
+                } else {
+                    prepareResult = try await EntrySaveService().prepareEntryForGeneration(
+                        payload: generationPayload,
+                        isSignedIn: authStore.userID != nil,
+                        currentStatus: currentEntryStatus,
+                        requiresSave: requiresEntrySave,
+                        syncReferencePhotos: requiresReferencePhotoSync
+                    )
+                }
                 activeDraftID = prepareResult.localDraftID
                 setStoryboardGenerationGlobalStatus(
                     kind: .running,
@@ -2415,7 +2428,10 @@ struct CreateEntryView: View {
                 if case .photoUploadFailed(let message) = prepareResult.state {
                     throw StoryboardGenerationError.openAIMessage(message)
                 }
-                if authStore.userID != nil, requiresEntrySave, prepareResult.cloudEntry == nil {
+                if !authoringMode.isSampleStudio,
+                   authStore.userID != nil,
+                   requiresEntrySave,
+                   prepareResult.cloudEntry == nil {
                     throw StoryboardGenerationError.openAIMessage("Could not prepare this entry in Storytopia cloud.")
                 }
 
@@ -2460,7 +2476,8 @@ struct CreateEntryView: View {
                     artStyle: selectedArtStyle,
                     generationQuality: generationQuality,
                     panelLayout: nil,
-                    sourcePhotoCount: min(photoImages.count + entryCharacters.count, EntryCharacterRules.maxGenerationImageCount)
+                    sourcePhotoCount: min(photoImages.count + entryCharacters.count, EntryCharacterRules.maxGenerationImageCount),
+                    isSampleContent: authoringMode.isSampleStudio
                 )
                 print("[Storytopia] Storyboard saved.")
 
@@ -2468,39 +2485,65 @@ struct CreateEntryView: View {
                 GeneratedStoryboardStore.save(storyboardsAfterLocalSave)
 
                 let storyboardForCompletion: GeneratedStoryboard
-                do {
-                    let cloudStoryboard = try await SupabaseStoryboardService().persistPrimaryStoryboard(storyboard)
-                    storyboardForCompletion = GeneratedStoryboard(
-                        id: storyboard.id,
-                        clientEntryID: storyboard.clientEntryID,
-                        image: storyboard.image,
-                        promptText: storyboard.promptText,
-                        artStyle: storyboard.artStyle,
-                        generationQuality: storyboard.generationQuality,
-                        panelLayout: storyboard.panelLayout,
-                        sourcePhotoCount: storyboard.sourcePhotoCount,
-                        createdAt: storyboard.createdAt,
-                        imageFileName: storyboard.imageFileName,
-                        storagePath: cloudStoryboard.storagePath,
-                        cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
-                        isPrimary: true
-                    )
-                } catch {
-                    storyboardForCompletion = GeneratedStoryboard(
-                        id: storyboard.id,
-                        clientEntryID: storyboard.clientEntryID,
-                        image: storyboard.image,
-                        promptText: storyboard.promptText,
-                        artStyle: storyboard.artStyle,
-                        generationQuality: storyboard.generationQuality,
-                        panelLayout: storyboard.panelLayout,
-                        sourcePhotoCount: storyboard.sourcePhotoCount,
-                        createdAt: storyboard.createdAt,
-                        imageFileName: storyboard.imageFileName,
-                        storagePath: storyboard.storagePath,
-                        cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
-                        isPrimary: storyboard.isPrimary
-                    )
+                if authoringMode.isSampleStudio {
+                    do {
+                        storyboardForCompletion = try await SupabaseSampleStoryService().persistSampleStoryboard(storyboard)
+                    } catch {
+                        print("[Storytopia] Sample storyboard cloud sync failed after local save: \(error.localizedDescription)")
+                        storyboardForCompletion = GeneratedStoryboard(
+                            id: storyboard.id,
+                            clientEntryID: storyboard.clientEntryID,
+                            image: storyboard.image,
+                            promptText: storyboard.promptText,
+                            artStyle: storyboard.artStyle,
+                            generationQuality: storyboard.generationQuality,
+                            panelLayout: storyboard.panelLayout,
+                            sourcePhotoCount: storyboard.sourcePhotoCount,
+                            createdAt: storyboard.createdAt,
+                            imageFileName: storyboard.imageFileName,
+                            storagePath: storyboard.storagePath,
+                            cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
+                            isPrimary: storyboard.isPrimary,
+                            isSampleContent: storyboard.isSampleContent
+                        )
+                    }
+                } else {
+                    do {
+                        let cloudStoryboard = try await SupabaseStoryboardService().persistPrimaryStoryboard(storyboard)
+                        storyboardForCompletion = GeneratedStoryboard(
+                            id: storyboard.id,
+                            clientEntryID: storyboard.clientEntryID,
+                            image: storyboard.image,
+                            promptText: storyboard.promptText,
+                            artStyle: storyboard.artStyle,
+                            generationQuality: storyboard.generationQuality,
+                            panelLayout: storyboard.panelLayout,
+                            sourcePhotoCount: storyboard.sourcePhotoCount,
+                            createdAt: storyboard.createdAt,
+                            imageFileName: storyboard.imageFileName,
+                            storagePath: cloudStoryboard.storagePath,
+                            cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                            isPrimary: true,
+                            isSampleContent: storyboard.isSampleContent
+                        )
+                    } catch {
+                        storyboardForCompletion = GeneratedStoryboard(
+                            id: storyboard.id,
+                            clientEntryID: storyboard.clientEntryID,
+                            image: storyboard.image,
+                            promptText: storyboard.promptText,
+                            artStyle: storyboard.artStyle,
+                            generationQuality: storyboard.generationQuality,
+                            panelLayout: storyboard.panelLayout,
+                            sourcePhotoCount: storyboard.sourcePhotoCount,
+                            createdAt: storyboard.createdAt,
+                            imageFileName: storyboard.imageFileName,
+                            storagePath: storyboard.storagePath,
+                            cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
+                            isPrimary: storyboard.isPrimary,
+                            isSampleContent: storyboard.isSampleContent
+                        )
+                    }
                 }
                 storyboardsAfterLocalSave = GeneratedStoryboardStore.merging(storyboardForCompletion, into: storyboardsAfterLocalSave)
                 GeneratedStoryboardStore.save(storyboardsAfterLocalSave)
@@ -2544,10 +2587,23 @@ struct CreateEntryView: View {
                     )
                 }
 
-                let completionResult = try await EntrySaveService().markEntryCompletedAfterStoryboardSaved(
-                    payload: completionPayload,
-                    isSignedIn: authStore.userID != nil
-                )
+                let completionResult: EntrySaveResult
+                if authoringMode.isSampleStudio {
+                    completionResult = try await SupabaseSampleStoryService().markSampleEntryCompletedAfterStoryboardSaved(
+                        payload: completionPayload
+                    )
+                    if case .failed(let message) = completionResult.state {
+                        throw StoryboardGenerationError.openAIMessage(message)
+                    }
+                    if case .photoUploadFailed(let message) = completionResult.state {
+                        throw StoryboardGenerationError.openAIMessage(message)
+                    }
+                } else {
+                    completionResult = try await EntrySaveService().markEntryCompletedAfterStoryboardSaved(
+                        payload: completionPayload,
+                        isSignedIn: authStore.userID != nil
+                    )
+                }
                 print("[Storytopia] Entry completion succeeded.")
 
                 await MainActor.run {
@@ -2573,6 +2629,7 @@ struct CreateEntryView: View {
                         entryID: completionResult.localDraftID,
                         storyboard: storyboardForCompletion
                     )
+                    NotificationCenter.default.post(name: .storytopiaGeneratedStoryboardsChanged, object: nil)
                     print("[Storytopia] Storyboard completion refreshed on Create page.")
                 }
             } catch {
@@ -2738,7 +2795,8 @@ struct CreateEntryView: View {
                         editorFocusRequestID: editorFocusRequestID,
                         editorBlurRequestID: editorBlurRequestID,
                         formattingRequest: textFormattingRequest,
-                        followTextEndRequestID: dictationFollowRequestID,
+                        isDictating: speechTranscriber.state.isListening,
+                        dictationTranscriptRequest: dictationTranscriptRequest,
                         bodyPlaceholder: "Start writing...",
                         scrollsInternally: false,
                         pageHeight: scrollContentHeight,
@@ -3421,11 +3479,19 @@ struct CreateEntryView: View {
         setCloudSaveState(payload.photos.isEmpty ? .saving : .uploadingPhotos)
 
         do {
-            let result = try await EntrySaveService().saveEntryPreservingStatus(
-                payload: payload,
-                isSignedIn: authStore.userID != nil,
-                status: currentEntryStatus
-            )
+            let result: EntrySaveResult
+            if authoringMode.isSampleStudio {
+                result = try await SupabaseSampleStoryService().saveSampleEntry(
+                    payload: payload,
+                    status: currentEntryStatus
+                )
+            } else {
+                result = try await EntrySaveService().saveEntryPreservingStatus(
+                    payload: payload,
+                    isSignedIn: authStore.userID != nil,
+                    status: currentEntryStatus
+                )
+            }
             activeDraftID = result.localDraftID
             isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
             recentEntryLocations = EntryLocationRecentStore.all
@@ -3575,7 +3641,7 @@ struct CreateEntryView: View {
         isPrivateEntry = draft.isPrivate
         selectedFontChoice = CreateFontChoice.savedValue(draft.fontChoiceRawValue)
         selectedTextColorIndex = min(max(draft.textColorIndex ?? 0, 0), CreateFormattingPalette.textColors.count - 1)
-        previewTextSize = min(max(draft.textSize ?? CreateEntryTextSize.defaultSliderValue, 0), 1)
+        previewTextSize = CreateEntryTextSize.normalizedSliderValue(for: draft.textSize)
         selectedPaperStyleChoice = draft.paperStyleRawValue.flatMap(CreatePaperStyleChoice.init(rawValue:)) ?? .defaultChoice
         selectedPaperColorIndex = min(max(draft.paperColorIndex ?? 0, 0), CreateFormattingPalette.paperColors.count - 1)
         loadedDraftSnapshot = currentDraftSnapshot(id: draft.id)
@@ -3648,7 +3714,8 @@ struct CreateEntryView: View {
                             editorFocusRequestID: editorFocusRequestID,
                             editorBlurRequestID: editorBlurRequestID,
                             formattingRequest: textFormattingRequest,
-                            followTextEndRequestID: dictationFollowRequestID,
+                            isDictating: speechTranscriber.state.isListening,
+                            dictationTranscriptRequest: dictationTranscriptRequest,
                             bodyPlaceholder: "Start writing...",
                             scrollsInternally: false,
                             pageHeight: scrollContentHeight,
@@ -3955,10 +4022,12 @@ struct CreateEntryView: View {
             editorFocusRequestID += 1
         }
 
-        speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
-            entryText = dictatedText
-            entryRichText = NotebookRichTextDocument(text: dictatedText)
-            dictationFollowRequestID += 1
+        speechTranscriber.toggle { transcript in
+            dictationTranscriptRequestID += 1
+            dictationTranscriptRequest = NotebookDictationTranscriptRequest(
+                id: dictationTranscriptRequestID,
+                transcript: transcript
+            )
         }
     }
 
@@ -5685,11 +5754,19 @@ struct CreateEntryView: View {
                 )
             }
 
-            let result = try? await EntrySaveService().saveEntryPreservingStatus(
-                payload: payload,
-                isSignedIn: authStore.userID != nil,
-                status: currentEntryStatus
-            )
+            let result: EntrySaveResult?
+            if authoringMode.isSampleStudio {
+                result = try? await SupabaseSampleStoryService().saveSampleEntry(
+                    payload: payload,
+                    status: currentEntryStatus
+                )
+            } else {
+                result = try? await EntrySaveService().saveEntryPreservingStatus(
+                    payload: payload,
+                    isSignedIn: authStore.userID != nil,
+                    status: currentEntryStatus
+                )
+            }
 
             guard let result else {
                 setCloudSaveState(.failed("Could not save this entry locally."))
@@ -5768,11 +5845,19 @@ struct CreateEntryView: View {
                 for: entry.id
             )
 
-            let result = try? await EntrySaveService().saveEntryPreservingStatus(
-                payload: payload,
-                isSignedIn: authStore.userID != nil,
-                status: currentEntryStatus
-            )
+            let result: EntrySaveResult?
+            if authoringMode.isSampleStudio {
+                result = try? await SupabaseSampleStoryService().saveSampleEntry(
+                    payload: payload,
+                    status: currentEntryStatus
+                )
+            } else {
+                result = try? await EntrySaveService().saveEntryPreservingStatus(
+                    payload: payload,
+                    isSignedIn: authStore.userID != nil,
+                    status: currentEntryStatus
+                )
+            }
             if let result {
                 setCloudSaveState(result.state)
                 activeDraftID = result.localDraftID
@@ -6078,16 +6163,34 @@ struct CreateEntryView: View {
     }
 
     private var characterStripHeader: some View {
-        HStack(alignment: .center, spacing: 6) {
-            Image(systemName: "person.crop.circle")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color.storyInk.opacity(0.84))
-                .frame(width: 20, height: 20)
+        HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.84))
+                    .frame(width: 20, height: 20)
 
-            Text("Characters")
-                .font(.system(size: 14, weight: .semibold, design: .serif))
-                .foregroundStyle(Color.storyInk)
+                Text("Characters")
+                    .font(.system(size: 14, weight: .semibold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+            }
+
+            Spacer(minLength: 8)
+
+            myCharactersButton
         }
+    }
+
+    private var myCharactersButton: some View {
+        Button {
+            openReusableCharactersSheet()
+        } label: {
+            Text("My Characters")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("My Characters")
     }
 
     private var referencePhotoExplainerText: some View {
@@ -6540,7 +6643,8 @@ struct CreateEntryView: View {
                     promptText: entryText,
                     artStyle: selectedArtStyle,
                     sourcePhotoCount: 0,
-                    isPrimary: true
+                    isPrimary: true,
+                    isSampleContent: authoringMode.isSampleStudio
                 )
             )
         }
@@ -6572,7 +6676,8 @@ struct CreateEntryView: View {
                     promptText: entryText,
                     artStyle: selectedArtStyle,
                     sourcePhotoCount: 0,
-                    isPrimary: true
+                    isPrimary: true,
+                    isSampleContent: authoringMode.isSampleStudio
                 )
             ]
             : storyboards
@@ -6791,6 +6896,89 @@ struct CreateEntryView: View {
     private func saveCharacter(_ character: EntryCharacter) {
         entryCharacters = EntryCharacterRules.applyingSingleMainCharacter(character, to: entryCharacters)
         characterEditorSession = nil
+    }
+
+    private var availableReusableCharacters: [EntryCharacter] {
+        let attachedNames = Set(entryCharacters.map { EntryCharacterRules.normalizedName($0.name) })
+        return reusableCharacters.filter { character in
+            let normalizedName = EntryCharacterRules.normalizedName(character.name)
+            return !normalizedName.isEmpty && !attachedNames.contains(normalizedName)
+        }
+    }
+
+    private func openReusableCharactersSheet() {
+        dismissKeyboard()
+        isShowingReusableCharactersSheet = true
+        reusableCharacters = mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
+        refreshReusableCharacters()
+    }
+
+    private func refreshReusableCharacters() {
+        let localCharacters = localReusableCharacters()
+        reusableCharacters = mergedReusableCharacters(localCharacters, reusableCharacters)
+        reusableCharactersErrorMessage = nil
+
+        guard let userID = authStore.userID else {
+            isLoadingReusableCharacters = false
+            return
+        }
+
+        isLoadingReusableCharacters = true
+        Task {
+            do {
+                let cloudCharacters = try await SupabaseEntryCharacterService().loadAllCharacters(userID: userID)
+                await MainActor.run {
+                    reusableCharacters = mergedReusableCharacters(cloudCharacters, localCharacters)
+                    isLoadingReusableCharacters = false
+                }
+            } catch {
+                await MainActor.run {
+                    reusableCharacters = localCharacters
+                    reusableCharactersErrorMessage = localCharacters.isEmpty ? "Could not load your saved characters." : nil
+                    isLoadingReusableCharacters = false
+                }
+            }
+        }
+    }
+
+    private func addReusableCharacter(_ character: EntryCharacter) {
+        let now = Date()
+        let reusableCharacter = EntryCharacter(
+            name: character.name,
+            role: character.role,
+            image: character.image,
+            createdAt: now,
+            updatedAt: now
+        )
+        saveCharacter(reusableCharacter)
+        isShowingReusableCharactersSheet = false
+    }
+
+    private func localReusableCharacters() -> [EntryCharacter] {
+        CreateEntryDraftStore.loadAll().flatMap(\.characters)
+    }
+
+    private func mergedReusableCharacters(_ characterGroups: [EntryCharacter]...) -> [EntryCharacter] {
+        var seenNames: Set<String> = []
+        var mergedCharacters: [EntryCharacter] = []
+
+        for character in characterGroups.flatMap({ $0 }) {
+            let normalizedName = EntryCharacterRules.normalizedName(character.name)
+            guard !normalizedName.isEmpty, !seenNames.contains(normalizedName) else {
+                continue
+            }
+
+            seenNames.insert(normalizedName)
+            mergedCharacters.append(character)
+        }
+
+        return mergedCharacters.sorted {
+            if $0.updatedAt != $1.updatedAt {
+                return $0.updatedAt > $1.updatedAt
+            }
+
+            return $0.createdAt > $1.createdAt
+        }
     }
 
     private func deleteCharacter(_ character: EntryCharacter) {
@@ -7605,10 +7793,7 @@ private struct StoryboardGenerationProgressScreen: View {
                         .foregroundStyle(Color.storyInk)
                         .multilineTextAlignment(.center)
 
-                    Text(phase.progressTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-                        .multilineTextAlignment(.center)
+                    StoryboardGenerationStatusRotator(phase: phase)
                 }
 
                 StoryboardGenerationProgressBar(phase: phase)
@@ -7629,7 +7814,7 @@ private struct StoryboardGenerationProgressScreen: View {
                     Spacer()
 
                     Button(action: onClose) {
-                        Image(systemName: "xmark")
+                        Image(systemName: "chevron.down")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(Color.storyInk.opacity(0.68))
                             .frame(width: 40, height: 40)
@@ -7642,7 +7827,7 @@ private struct StoryboardGenerationProgressScreen: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Close generation progress")
+                    .accessibilityLabel("Dismiss generation progress")
                 }
 
                 Spacer()
@@ -7681,6 +7866,46 @@ private struct AnimatedStoryboardSparkleIcon: View {
         }
     }
 
+}
+
+private struct StoryboardGenerationStatusRotator: View {
+    let phase: StoryboardGenerationPhase
+
+    @State private var statusIndex = 0
+
+    private let statusMessages = [
+        "Sending your image details...",
+        "Generating your image...",
+        "Building storyboard panels...",
+        "Adding finishing touches...",
+        "Still in progress..."
+    ]
+
+    private var statusText: String {
+        switch phase {
+        case .completed, .failed:
+            return phase.progressTitle
+        default:
+            return statusMessages[statusIndex % statusMessages.count]
+        }
+    }
+
+    var body: some View {
+        Text(statusText)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.homeMutedText)
+            .multilineTextAlignment(.center)
+            .frame(minHeight: 18)
+            .contentTransition(.opacity)
+            .animation(.easeInOut(duration: 0.28), value: statusText)
+            .onReceive(Timer.publish(every: 3.0, on: .main, in: .common).autoconnect()) { _ in
+                guard phase != .completed, phase != .failed else {
+                    return
+                }
+
+                statusIndex = (statusIndex + 1) % statusMessages.count
+            }
+    }
 }
 
 private struct StoryboardGenerationProgressBar: View {
@@ -7734,105 +7959,101 @@ private struct StoryboardGenerationProgressFillBar: View {
     let isActive: Bool
 
     @State private var isAnimating = false
+    @State private var startedAt = Date()
 
-    private var progress: CGFloat {
-        switch phase {
-        case .ready:
-            return 0.12
-        case .preparingEntry:
-            return 0.26
-        case .uploadingReferencePhotos:
-            return 0.42
-        case .generating:
-            return 0.74
-        case .savingResult:
-            return 0.9
-        case .completed:
-            return 1
-        case .failed:
+    private func progress(at date: Date) -> CGFloat {
+        guard isActive else {
             return 0.18
         }
+
+        let elapsed = max(0, date.timeIntervalSince(startedAt))
+        let estimatedDuration: TimeInterval = 110
+        let normalizedProgress = min(elapsed / estimatedDuration, 1)
+        return 0.08 + (0.88 * CGFloat(normalizedProgress))
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let fillWidth = max(width * progress, 12)
-            let highlightWidth = max(fillWidth * 0.28, 22)
+        TimelineView(.animation) { timeline in
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                let progress = progress(at: timeline.date)
+                let fillWidth = max(width * progress, 12)
+                let highlightWidth = max(fillWidth * 0.28, 22)
 
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.storyPurple.opacity(0.14))
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.storyPurple.opacity(0.14))
 
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.storyPurple.opacity(0.78),
-                                Color.storyPurple,
-                                Color.storyPurple.opacity(0.86)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: fillWidth)
-                    .overlay(alignment: .leading) {
-                        if isActive {
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(0),
-                                            Color.white.opacity(0.48),
-                                            Color.white.opacity(0)
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                                .frame(width: highlightWidth)
-                                .offset(x: isAnimating ? fillWidth : -highlightWidth)
-                                .mask(Capsule().frame(width: fillWidth))
-                        }
-                    }
-                    .animation(.easeInOut(duration: 0.45), value: progress)
-
-                if phase == .failed {
                     Capsule()
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.storyPurple.opacity(0.44),
-                                    Color.storyPurple.opacity(0.24)
+                                    Color.storyPurple.opacity(0.78),
+                                    Color.storyPurple,
+                                    Color.storyPurple.opacity(0.86)
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             )
                         )
-                        .frame(width: width)
-                }
-            }
-            .clipShape(Capsule())
-            .onAppear {
-                guard isActive else {
-                    return
-                }
+                        .frame(width: fillWidth)
+                        .overlay(alignment: .leading) {
+                            if isActive {
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color.white.opacity(0),
+                                                Color.white.opacity(0.48),
+                                                Color.white.opacity(0)
+                                            ],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                                    .frame(width: highlightWidth)
+                                    .offset(x: isAnimating ? fillWidth : -highlightWidth)
+                                    .mask(Capsule().frame(width: fillWidth))
+                            }
+                        }
 
-                isAnimating = false
-                withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
-                    isAnimating = true
+                    if phase == .failed {
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.storyPurple.opacity(0.44),
+                                        Color.storyPurple.opacity(0.24)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(width: width)
+                    }
                 }
-            }
-            .onChange(of: isActive) { newValue in
-                guard newValue else {
+                .clipShape(Capsule())
+                .onAppear {
+                    startedAt = Date()
+                    guard isActive else {
+                        return
+                    }
+
                     isAnimating = false
-                    return
+                    withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+                        isAnimating = true
+                    }
                 }
+                .onChange(of: isActive) { newValue in
+                    guard newValue else {
+                        isAnimating = false
+                        return
+                    }
 
-                isAnimating = false
-                withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
-                    isAnimating = true
+                    isAnimating = false
+                    withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+                        isAnimating = true
+                    }
                 }
             }
         }
@@ -9033,7 +9254,8 @@ struct ExpandedEntryEditor: View {
 
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
-    @State private var dictationFollowRequestID = 0
+    @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
+    @State private var dictationTranscriptRequestID = 0
     @State private var speechRecognitionAlertMessage: String?
     @StateObject private var speechTranscriber = EntrySpeechTranscriber()
 
@@ -9091,7 +9313,8 @@ struct ExpandedEntryEditor: View {
                         entryRichText: entryRichText,
                         isTitleFocused: $isTitleFocused,
                         editorFocusRequestID: editorFocusRequestID,
-                        followTextEndRequestID: dictationFollowRequestID,
+                        isDictating: speechTranscriber.state.isListening,
+                        dictationTranscriptRequest: dictationTranscriptRequest,
                         bodyPlaceholder: "Start writing...",
                         scrollsInternally: false,
                         pageHeight: proxy.size.height,
@@ -9181,10 +9404,12 @@ struct ExpandedEntryEditor: View {
             editorFocusRequestID += 1
         }
 
-        speechTranscriber.toggle(currentText: { entryText }) { dictatedText in
-            entryText = dictatedText
-            entryRichText?.wrappedValue = NotebookRichTextDocument(text: dictatedText)
-            dictationFollowRequestID += 1
+        speechTranscriber.toggle { transcript in
+            dictationTranscriptRequestID += 1
+            dictationTranscriptRequest = NotebookDictationTranscriptRequest(
+                id: dictationTranscriptRequestID,
+                transcript: transcript
+            )
         }
     }
 }
@@ -9312,6 +9537,13 @@ private struct CreateFormattingSheet: View {
         CreateEntryTextSize.fontSize(for: previewTextSize)
     }
 
+    private var snappingPreviewTextSize: Binding<Double> {
+        Binding(
+            get: { previewTextSize },
+            set: { previewTextSize = CreateEntryTextSize.snappedSliderValue(for: $0) }
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
@@ -9366,6 +9598,8 @@ private struct CreateFormattingSheet: View {
 
     private var fontStyleContent: some View {
         VStack(alignment: .leading, spacing: 22) {
+            fontSizeControl
+
             LazyVGrid(
                 columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2),
                 spacing: 12
@@ -9382,6 +9616,43 @@ private struct CreateFormattingSheet: View {
                 }
             }
             .padding(.top, 1)
+        }
+    }
+
+    private var fontSizeControl: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sheetSectionTitle("Font Size")
+
+            HStack(spacing: 14) {
+                Text("A")
+                    .font(selectedFont.swiftUIFont(size: 17, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.68))
+                    .frame(width: 18, alignment: .center)
+
+                ZStack {
+                    Slider(value: snappingPreviewTextSize, in: 0...1)
+                        .tint(Color.storyPurple)
+                        .accessibilityLabel("Font Size")
+
+                    Rectangle()
+                        .fill(Color.storyPurple.opacity(0.52))
+                        .frame(width: 2, height: 18)
+                        .clipShape(Capsule())
+                        .allowsHitTesting(false)
+                }
+
+                Text("A")
+                    .font(selectedFont.swiftUIFont(size: 31, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.82))
+                    .frame(width: 28, alignment: .center)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 56)
+            .background(Color.homeInputGray.opacity(0.56), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.storyBorder.opacity(0.46), lineWidth: 1)
+            )
         }
     }
 
@@ -9863,6 +10134,7 @@ struct CharacterStripThumbnail: View {
 private struct EntryDetailsCharactersCard: View {
     let characters: [EntryCharacter]
     let onAddCharacter: () -> Void
+    let onMyCharacters: () -> Void
     let onEditCharacter: (EntryCharacter) -> Void
     let onDeleteCharacter: (EntryCharacter) -> Void
 
@@ -9901,6 +10173,14 @@ private struct EntryDetailsCharactersCard: View {
                 .foregroundStyle(Color.storyInk)
 
             Spacer(minLength: 0)
+
+            Button(action: onMyCharacters) {
+                Text("My Characters")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("My Characters")
         }
         .padding(.horizontal, 16)
     }
@@ -9975,6 +10255,161 @@ private struct EntryDetailsCharactersCard: View {
                 }
             }
         }
+    }
+}
+
+private struct ReusableCharactersSheet: View {
+    let characters: [EntryCharacter]
+    let isLoading: Bool
+    let errorMessage: String?
+    let onSelect: (EntryCharacter) -> Void
+    let onRefresh: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if characters.isEmpty && !isLoading {
+                    emptyState
+                } else {
+                    characterList
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Color.homePageBackground.ignoresSafeArea())
+            .navigationTitle("My Characters")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                    .foregroundStyle(Color.storyPurple)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        onRefresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .foregroundStyle(Color.storyPurple)
+                    .disabled(isLoading)
+                    .accessibilityLabel("Refresh characters")
+                }
+            }
+        }
+    }
+
+    private var characterList: some View {
+        ScrollView {
+            LazyVStack(spacing: 10) {
+                if isLoading {
+                    loadingRow
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.red.opacity(0.86))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                }
+
+                ForEach(characters) { character in
+                    Button {
+                        onSelect(character)
+                    } label: {
+                        reusableCharacterRow(character)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .tint(Color.storyPurple)
+
+            Text("Loading characters")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.68))
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 52)
+        .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "person.crop.circle.badge.questionmark")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(Color.storyPurple.opacity(0.9))
+
+            Text("No saved characters yet")
+                .font(.system(size: 17, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.red.opacity(0.86))
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("Characters you add to entries will appear here.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.storyInk.opacity(0.62))
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 30)
+    }
+
+    private func reusableCharacterRow(_ character: EntryCharacter) -> some View {
+        HStack(spacing: 12) {
+            Image(uiImage: character.image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 58, height: 58)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(character.name)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Text(character.role.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.58))
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 76)
+        .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
     }
 }
 
@@ -10478,16 +10913,22 @@ struct ReferencePhotoViewer: View {
             Button {
                 closeAction()
             } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
-                    .background(.gray.opacity(0.62), in: Circle())
+                ZStack {
+                    Circle()
+                        .fill(.gray.opacity(0.62))
+                        .frame(width: 40, height: 40)
+
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 56, height: 56)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close photo viewer")
-            .padding(.top, 14)
-            .padding(.trailing, 16)
+            .padding(.top, 8)
+            .padding(.trailing, 8)
         }
         .preferredColorScheme(.dark)
         .statusBarHidden()

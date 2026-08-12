@@ -1,9 +1,23 @@
+import AVFoundation
 import SwiftUI
 import UIKit
 
 struct HomeView: View {
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+
     @Binding var selectedPage: StoryPage
+    @Binding var generatedStoryboards: [GeneratedStoryboard]
+    var isSampleAuthorMode = false
+    var openCreatePage: () -> Void = {}
+    var openEntriesPage: () -> Void = {}
+    var openJournalsPage: () -> Void = {}
+    var openProfilePage: () -> Void = {}
+    var openStorySoFarPage: () -> Void = {}
+
     @State private var fullScreenImageName: String?
+    @State private var isLoadingHomeStoryboards = false
+
+    private let homeStoryboardLoadLimit = 50
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -14,11 +28,15 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     header
                     heroCard
-                    socialFeedSection
+                        .zIndex(3)
+                    homeNavigationCards
+                        .zIndex(2)
+                    journalCoverSection
+                        .zIndex(1)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
-                .padding(.bottom, 92)
+                .padding(.bottom, 104)
             }
 
             BottomNavigationBar(selectedPage: $selectedPage)
@@ -39,7 +57,26 @@ struct HomeView: View {
                 }
             }
         }
+        .task(id: homeStoryboardLoadID) {
+            await loadHomeStoryboards()
+        }
         .preferredColorScheme(.light)
+    }
+
+    private var showsSampleHomeContent: Bool {
+        isSampleAuthorMode || authStore.userID == nil
+    }
+
+    private var homeStoryboardLoadID: String {
+        if isSampleAuthorMode {
+            return "sample-author"
+        }
+
+        if let userID = authStore.userID {
+            return "user-\(userID.uuidString)"
+        }
+
+        return "signed-out-samples"
     }
 
     private var header: some View {
@@ -56,64 +93,179 @@ struct HomeView: View {
 
             Spacer()
 
-            HStack(spacing: 10) {
-                HeaderIconButton(systemName: "bell")
-                HeaderIconButton(systemName: "person.fill")
-            }
+            HeaderIconButton(systemName: "person.fill", action: openProfilePage)
             .padding(.top, 5)
         }
     }
 
     private var heroCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Create your\nfirst story")
-                .font(.system(size: 26, weight: .bold, design: .serif))
-                .lineSpacing(2)
-                .foregroundStyle(.white)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Write about your day \nand turn it into a story.")
-                .font(.system(size: 14, weight: .medium))
-                .lineSpacing(2)
-                .foregroundStyle(.white.opacity(0.92))
-
-            Button {
-                selectedPage = .create
-            } label: {
-                Label("New Story", systemImage: "plus")
-                    .font(.system(size: 14, weight: .bold))
+        Button {
+            openCreatePage()
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Create\nStory")
+                    .font(.system(size: 26, weight: .bold, design: .serif))
+                    .lineSpacing(2)
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .frame(height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.homeAccent)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Write about your day\nand turn it into a storyboard.")
+                    .font(.system(size: 14, weight: .medium))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, minHeight: 190, alignment: .leading)
+            .background {
+                HomeLoopingVideoBackground(resourceName: "homepage_banner")
+                    .overlay(
+                        LinearGradient(
+                            colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
                     )
             }
-            .buttonStyle(.plain)
-            .padding(.top, 2)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                HomeCardNavigationIndicator(systemName: "plus", style: .accent)
+                    .padding(14)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, minHeight: 190, alignment: .leading)
-        .background {
-            Image("homepage_banner")
-                .resizable()
-                .scaledToFill()
-                .overlay(
-                    LinearGradient(
-                        colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
+        .buttonStyle(.plain)
+        .accessibilityLabel("Create Story")
+        .accessibilityHint("Opens Create Story")
+    }
+
+    private var homeNavigationCards: some View {
+        VStack(spacing: 14) {
+            HomeNavigationCard(
+                title: "My Entries",
+                subtitle: "Write, edit, and turn your\nthoughts into storyboards.",
+                backgroundImageName: "home_entries_card_bg",
+                backgroundVideoName: "home_entries_card_bg",
+                contentAlignment: .leading,
+                showsGradient: true
+            ) {
+                openEntriesPage()
+            }
+
+            HomeNavigationCard(
+                title: "My Journals",
+                subtitle: "Organize your stories\ninto meaningful journals.",
+                backgroundImageName: "home_journals_card_bg",
+                backgroundVideoName: "home_journals_card_bg",
+                contentAlignment: .leading,
+                showsGradient: false
+            ) {
+                openJournalsPage()
+            }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.homeBorder, lineWidth: 1)
+    }
+
+    private var journalCoverSection: some View {
+        HomeStorySoFarCard(
+            isEnabled: !generatedStoryboards.isEmpty,
+            isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
+            action: openStorySoFarPage
         )
-        .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+        .frame(height: 190)
+        .clipped()
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+    }
+
+    @MainActor
+    private func loadHomeStoryboards() async {
+        if showsSampleHomeContent {
+            await loadSampleHomeStoryboards()
+            return
+        }
+
+        isLoadingHomeStoryboards = true
+        defer { isLoadingHomeStoryboards = false }
+
+        do {
+            let service = SupabaseStoryboardService()
+            let sampleEntryIDs = (try? await SupabaseSampleStoryService().loadActiveSampleEntryIDs()) ?? []
+            let loadedStoryboards = try await service.loadCompletedJournalStoryboardImages(
+                limit: homeStoryboardLoadLimit,
+                offset: 0
+            )
+            .filter { storyboard in
+                isHomeEligibleStoryboard(storyboard, sampleEntryIDs: sampleEntryIDs)
+            }
+            .sorted(by: homeStoryboardSort)
+
+            generatedStoryboards = loadedStoryboards
+        } catch is CancellationError {
+            return
+        } catch {
+            print("[Storytopia] Home storyboard cover load failed: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    private func loadSampleHomeStoryboards() async {
+        isLoadingHomeStoryboards = true
+        defer { isLoadingHomeStoryboards = false }
+
+        do {
+            let service = SupabaseSampleStoryService()
+            let pack: SampleStoryPack
+            if isSampleAuthorMode {
+                pack = try await service.loadAuthoringPack()
+            } else {
+                pack = try await service.loadActivePack()
+            }
+            generatedStoryboards = pack.storyboardsByEntryID.values
+                .flatMap { $0 }
+                .sorted(by: homeStoryboardSort)
+        } catch is CancellationError {
+            return
+        } catch {
+            print("[Storytopia] Sample home storyboard load failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func isHomeEligibleStoryboard(
+        _ storyboard: GeneratedStoryboard,
+        sampleEntryIDs: Set<UUID>
+    ) -> Bool {
+        guard !storyboard.isSampleContent else {
+            return false
+        }
+
+        guard storyboard.cloudSyncState != StoryboardCloudSyncState.failed.rawValue else {
+            return false
+        }
+
+        if let clientEntryID = storyboard.clientEntryID,
+           sampleEntryIDs.contains(clientEntryID) {
+            return false
+        }
+
+        if let storagePath = storyboard.storagePath {
+            return !storagePath.hasPrefix("storytopia-first-run/")
+        }
+
+        return false
+    }
+
+    private func homeStoryboardSort(_ lhs: GeneratedStoryboard, _ rhs: GeneratedStoryboard) -> Bool {
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
+        }
+
+        return lhs.id.uuidString > rhs.id.uuidString
     }
 
     private var socialFeedSection: some View {
@@ -185,6 +337,527 @@ struct HomeView: View {
 
     private var homeFeedPosts: [HomeFeedPost] {
         storyboardFeedPosts
+    }
+}
+
+private struct HomeLoopingVideoBackground: UIViewRepresentable {
+    let resourceName: String
+    var resourceExtension = "mp4"
+
+    func makeUIView(context: Context) -> HomeLoopingVideoPlayerView {
+        let view = HomeLoopingVideoPlayerView()
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.configure(resourceName: resourceName, resourceExtension: resourceExtension)
+        return view
+    }
+
+    func updateUIView(_ uiView: HomeLoopingVideoPlayerView, context: Context) {
+        uiView.playIfNeeded()
+    }
+
+    static func dismantleUIView(_ uiView: HomeLoopingVideoPlayerView, coordinator: ()) {
+        uiView.stop()
+    }
+}
+
+private final class HomeLoopingVideoPlayerView: UIView {
+    private var queuePlayer: AVQueuePlayer?
+    private var playerLooper: AVPlayerLooper?
+    private var becomeActiveObserver: NSObjectProtocol?
+
+    override class var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+
+    private var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        clipsToBounds = true
+        playerLayer.videoGravity = .resizeAspectFill
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        stop()
+    }
+
+    func configure(resourceName: String, resourceExtension: String) {
+        guard queuePlayer == nil else {
+            playIfNeeded()
+            return
+        }
+
+        guard let url = Bundle.main.url(forResource: resourceName, withExtension: resourceExtension) else {
+            print("[Storytopia] Missing bundled video: \(resourceName).\(resourceExtension)")
+            return
+        }
+
+        let queuePlayer = AVQueuePlayer()
+        queuePlayer.isMuted = true
+        let templateItem = AVPlayerItem(url: url)
+        playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: templateItem)
+        playerLayer.player = queuePlayer
+        self.queuePlayer = queuePlayer
+
+        becomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.playIfNeeded()
+        }
+
+        playIfNeeded()
+    }
+
+    func playIfNeeded() {
+        guard let queuePlayer else {
+            return
+        }
+
+        if queuePlayer.timeControlStatus != .playing {
+            queuePlayer.play()
+        }
+    }
+
+    func stop() {
+        if let becomeActiveObserver {
+            NotificationCenter.default.removeObserver(becomeActiveObserver)
+            self.becomeActiveObserver = nil
+        }
+
+        queuePlayer?.pause()
+        playerLooper?.disableLooping()
+        playerLooper = nil
+        playerLayer.player = nil
+        queuePlayer?.removeAllItems()
+        queuePlayer = nil
+    }
+}
+
+private struct HomeCardNavigationIndicator: View {
+    var isEnabled = true
+    var systemName = "chevron.right"
+    var style: Style = .standard
+
+    enum Style {
+        case standard
+        case accent
+    }
+
+    private var foregroundOpacity: Double {
+        isEnabled ? 0.96 : 0.54
+    }
+
+    private var background: some ShapeStyle {
+        switch style {
+        case .standard:
+            return Color.black.opacity(isEnabled ? 0.36 : 0.22)
+        case .accent:
+            return Color.homeAccent.opacity(isEnabled ? 0.98 : 0.45)
+        }
+    }
+
+    private var strokeOpacity: Double {
+        switch style {
+        case .standard:
+            return isEnabled ? 0.38 : 0.2
+        case .accent:
+            return isEnabled ? 0.56 : 0.24
+        }
+    }
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: style == .accent ? 15 : 12, weight: .black))
+            .foregroundStyle(.white.opacity(foregroundOpacity))
+            .frame(width: 32, height: 32)
+            .background(background, in: Circle())
+            .overlay(
+                Circle()
+                    .stroke(.white.opacity(strokeOpacity), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.22), radius: 5, y: 2)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct HomeNavigationCard: View {
+    let title: String
+    let subtitle: String
+    let backgroundImageName: String
+    var backgroundVideoName: String? = nil
+    let contentAlignment: HorizontalAlignment
+    var showsGradient: Bool = false
+    let action: () -> Void
+
+    private var isTrailingAligned: Bool {
+        contentAlignment == .trailing
+    }
+
+    private var textAlignment: TextAlignment {
+        isTrailingAligned ? .trailing : .leading
+    }
+
+    private var frameAlignment: Alignment {
+        isTrailingAligned ? .trailing : .leading
+    }
+
+    private var gradientStartPoint: UnitPoint {
+        isTrailingAligned ? .trailing : .leading
+    }
+
+    private var gradientEndPoint: UnitPoint {
+        isTrailingAligned ? .leading : .trailing
+    }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: contentAlignment, spacing: 8) {
+                Text(title)
+                    .font(.system(size: 26, weight: .bold, design: .serif))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(textAlignment)
+                    .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
+
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.96))
+                    .multilineTextAlignment(textAlignment)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: frameAlignment)
+            .background {
+                cardBackground
+                    .overlay {
+                        if showsGradient {
+                            LinearGradient(
+                                colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
+                                startPoint: gradientStartPoint,
+                                endPoint: gradientEndPoint
+                            )
+                        }
+                    }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                HomeCardNavigationIndicator()
+                    .padding(14)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityHint("Opens \(title)")
+    }
+
+    @ViewBuilder
+    private var cardBackground: some View {
+        if let backgroundVideoName {
+            HomeLoopingVideoBackground(resourceName: backgroundVideoName)
+        } else {
+            Image(backgroundImageName)
+                .resizable()
+                .scaledToFill()
+        }
+    }
+}
+
+private struct HomeStorySoFarCard: View {
+    let isEnabled: Bool
+    let isLoading: Bool
+    let action: () -> Void
+
+    private var subtitle: String {
+        if isLoading {
+            return "Loading your completed\nstoryboards."
+        }
+
+        if isEnabled {
+            return "Revisit your completed\nstoryboards in one view."
+        }
+
+        return "Completed storyboards\nwill appear here."
+    }
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text("The Story So Far...")
+                        .font(.system(size: 26, weight: .bold, design: .serif))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
+
+                    if isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .scaleEffect(0.92)
+                    }
+                }
+
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.96))
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: .leading)
+            .background {
+                HomeLoopingVideoBackground(resourceName: "home_story_so_far")
+                    .overlay(
+                        LinearGradient(
+                            colors: [.black.opacity(0.68), .black.opacity(0.24), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .overlay(Color.black.opacity(isEnabled ? 0 : 0.18))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                HomeCardNavigationIndicator(isEnabled: isEnabled)
+                    .padding(14)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .frame(height: 190)
+        .clipped()
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .disabled(!isEnabled)
+        .accessibilityLabel("The Story So Far")
+        .accessibilityHint(isEnabled ? "Opens your storyboards in a vertical view" : "Completed storyboards will appear here")
+    }
+}
+
+struct HomeStoryboardVerticalViewer: View {
+    let storyboards: [GeneratedStoryboard]
+    @Binding var currentPageIndex: Int
+    let title: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var visiblePageIndex: Int
+    @State private var viewportHeight: CGFloat = 0
+
+    init(
+        storyboards: [GeneratedStoryboard],
+        currentPageIndex: Binding<Int>,
+        title: String
+    ) {
+        self.storyboards = storyboards
+        _currentPageIndex = currentPageIndex
+        self.title = title
+        _visiblePageIndex = State(initialValue: currentPageIndex.wrappedValue)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black
+                .ignoresSafeArea()
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    // VStack avoids LazyVStack blank-until-scroll layout bugs with
+                    // flexible-height UIImage rows.
+                    VStack(spacing: 0) {
+                        verticalCoverPage
+                            .id(0)
+                            .background(pagePositionReader(index: 0))
+
+                        ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                            let pageIndex = index + 1
+                            let image = storyboard.image
+                            let aspectRatio = image.size.height > 0
+                                ? image.size.width / image.size.height
+                                : 1
+
+                            pageBoundary(pageIndex: pageIndex)
+
+                            Image(uiImage: image)
+                                .resizable()
+                                .aspectRatio(aspectRatio, contentMode: .fit)
+                                .frame(maxWidth: .infinity)
+                                .background(Color.black)
+                                .id(pageIndex)
+                                .background(pagePositionReader(index: pageIndex))
+                        }
+
+                        Color.black
+                            .frame(height: 44)
+                    }
+                }
+                .coordinateSpace(name: "homeVerticalComicScroll")
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: HomeVerticalComicViewportHeightPreferenceKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                }
+                .onAppear {
+                    visiblePageIndex = clampedPageIndex(currentPageIndex)
+                    guard visiblePageIndex > 0 else {
+                        return
+                    }
+
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(visiblePageIndex, anchor: .center)
+                    }
+                }
+                .onPreferenceChange(HomeVerticalComicViewportHeightPreferenceKey.self) { height in
+                    viewportHeight = height
+                }
+                .onPreferenceChange(HomeVerticalComicPagePositionPreferenceKey.self) { positions in
+                    updateVisiblePageIndex(from: positions, viewportHeight: viewportHeight)
+                }
+            }
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(.black.opacity(0.62), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close vertical story view")
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var verticalCoverPage: some View {
+        VStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 34, weight: .bold, design: .serif))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+
+            Text("A continuous view of your completed storyboards.")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.86))
+                .multilineTextAlignment(.center)
+
+            Text(storyboards.count == 1 ? "1 storyboard" : "\(storyboards.count) storyboards")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.62))
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 56)
+        .padding(.bottom, 44)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(Color.black)
+    }
+
+    private func pageBoundary(pageIndex: Int) -> some View {
+        ZStack {
+            Color(white: 0.035)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.86))
+                .frame(height: 1)
+                .padding(.horizontal, 28)
+
+            Text("\(pageIndex) / \(storyboards.count)")
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .frame(height: 24)
+                .background(Color(white: 0.035), in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                )
+        }
+        .frame(height: 42)
+    }
+
+    private func pagePositionReader(index: Int) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: HomeVerticalComicPagePositionPreferenceKey.self,
+                value: [index: proxy.frame(in: .named("homeVerticalComicScroll")).midY]
+            )
+        }
+    }
+
+    private func updateVisiblePageIndex(from positions: [Int: CGFloat], viewportHeight: CGFloat) {
+        guard viewportHeight > 0 else {
+            return
+        }
+
+        guard let closest = positions.min(by: { left, right in
+            abs(left.value - (viewportHeight / 2)) < abs(right.value - (viewportHeight / 2))
+        })?.key else {
+            return
+        }
+
+        let nextIndex = clampedPageIndex(closest)
+        guard nextIndex != visiblePageIndex else {
+            return
+        }
+
+        visiblePageIndex = nextIndex
+        currentPageIndex = nextIndex
+    }
+
+    private func clampedPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, totalPageCount - 1))
+    }
+
+    private var totalPageCount: Int {
+        storyboards.count + 1
+    }
+}
+
+private struct HomeVerticalComicPagePositionPreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGFloat] = [:]
+
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
+private struct HomeVerticalComicViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
