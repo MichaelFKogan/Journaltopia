@@ -53,6 +53,18 @@ struct ContentView: View {
                 .navigationDestination(isPresented: isCreatePagePresented) {
                     createPage
                 }
+                .navigationDestination(isPresented: isHomeStorySoFarPresented) {
+                    if let homeStorySoFarPresentation {
+                        HomeStoryboardVerticalViewer(
+                            storyboards: homeStorySoFarPresentation.storyboards,
+                            currentPageIndex: $homeStorySoFarPageIndex,
+                            title: "The Story So Far..."
+                        )
+                        .navigationBarBackButtonHidden(true)
+                        .toolbar(.hidden, for: .navigationBar)
+                        .enableInteractivePopGesture()
+                    }
+                }
         }
         .overlay(alignment: .bottom) {
             StoryboardGenerationBottomBanner(status: storyboardGenerationStatus) { action in
@@ -60,13 +72,6 @@ struct ContentView: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 18)
-        }
-        .fullScreenCover(item: $homeStorySoFarPresentation) { presentation in
-            HomeStoryboardVerticalViewer(
-                storyboards: presentation.storyboards,
-                currentPageIndex: $homeStorySoFarPageIndex,
-                title: "The Story So Far..."
-            )
         }
         .fullScreenCover(isPresented: isOpenedStoryboardGenerationImagePresented) {
             if let openedStoryboardGenerationImage {
@@ -114,28 +119,43 @@ struct ContentView: View {
         Binding(
             get: { selectedPage },
             set: { newPage in
-                if newPage == .create {
-                    if selectedPage != .create {
-                        pageBehindCreate = selectedPage
-                    }
-
-                    if !isOpeningEntryFromEntries {
-                        activeDraftID = nil
-                        completedEntryOpenedStoryboardImage = nil
-                    } else if !isOpeningCompletedEntryFromEntries {
-                        completedEntryOpenedStoryboardImage = nil
-                    }
-                } else {
-                    pageBehindCreate = newPage
-                    journalCreatePresentation = nil
-                    isOpeningEntryFromEntries = false
-                    isOpeningCompletedEntryFromEntries = false
-                    completedEntryOpenedStoryboardImage = nil
-                }
-
-                selectedPage = newPage
+                selectPage(newPage)
             }
         )
+    }
+
+    private var isHomeStorySoFarPresented: Binding<Bool> {
+        Binding(
+            get: { homeStorySoFarPresentation != nil },
+            set: { isPresented in
+                if !isPresented {
+                    homeStorySoFarPresentation = nil
+                }
+            }
+        )
+    }
+
+    private func selectPage(_ newPage: StoryPage) {
+        if newPage == .create {
+            if selectedPage != .create {
+                pageBehindCreate = selectedPage
+            }
+
+            if !isOpeningEntryFromEntries {
+                activeDraftID = nil
+                completedEntryOpenedStoryboardImage = nil
+            } else if !isOpeningCompletedEntryFromEntries {
+                completedEntryOpenedStoryboardImage = nil
+            }
+        } else {
+            pageBehindCreate = newPage
+            journalCreatePresentation = nil
+            isOpeningEntryFromEntries = false
+            isOpeningCompletedEntryFromEntries = false
+            completedEntryOpenedStoryboardImage = nil
+        }
+
+        selectedPage = newPage
     }
 
     @ViewBuilder
@@ -146,7 +166,10 @@ struct ContentView: View {
                 selectedPage: pageSelection,
                 generatedStoryboards: $generatedStoryboards,
                 isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil,
+                openCreatePage: openCreatePageFromHome,
+                openEntriesPage: openEntriesPageFromHome,
                 openJournalsPage: openJournalsPage,
+                openProfilePage: openProfilePageFromHome,
                 openStorySoFarPage: openStorySoFarPage
             )
                 .transition(.identity)
@@ -243,13 +266,29 @@ struct ContentView: View {
         )
     }
 
-    private func openJournalsPage() {
-        pageBehindCreate = .journal
-        selectedPage = .journal
+    private func openCreatePageFromHome() {
+        resetHomeCardState()
+        activeDraftID = nil
         journalCreatePresentation = nil
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil
+        selectPage(.create)
+    }
+
+    private func openEntriesPageFromHome() {
+        resetHomeCardState()
+        selectPage(.entries)
+    }
+
+    private func openJournalsPage() {
+        resetHomeCardState()
+        selectPage(.journal)
+    }
+
+    private func openProfilePageFromHome() {
+        resetHomeCardState()
+        selectPage(.profile)
     }
 
     private func openStorySoFarPage() {
@@ -257,7 +296,7 @@ struct ContentView: View {
             return
         }
 
-        // Snapshot at open time so a Home reload under the cover can't wipe the viewer.
+        // Snapshot at open time so a Home reload can't wipe the pushed page.
         homeStorySoFarPageIndex = 0
         homeStorySoFarPresentation = HomeStorySoFarPresentation(storyboards: generatedStoryboards)
     }
@@ -301,6 +340,14 @@ struct ContentView: View {
             .flatMap(\.windows)
             .first(where: \.isKeyWindow)?
             .endEditing(true)
+    }
+
+    private func resetHomeCardState() {
+        homeStorySoFarPresentation = nil
+        journalCreatePresentation = nil
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
     }
 
     private func reloadScopedLocalState() {

@@ -40,10 +40,10 @@ struct CircleIconButton: View {
 
 struct HeaderIconButton: View {
     let systemName: String
+    var action: () -> Void = {}
 
     var body: some View {
-        Button {
-        } label: {
+        Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 22, weight: .regular))
                 .foregroundStyle(Color.storyInk)

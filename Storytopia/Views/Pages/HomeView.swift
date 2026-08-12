@@ -8,7 +8,10 @@ struct HomeView: View {
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     var isSampleAuthorMode = false
+    var openCreatePage: () -> Void = {}
+    var openEntriesPage: () -> Void = {}
     var openJournalsPage: () -> Void = {}
+    var openProfilePage: () -> Void = {}
     var openStorySoFarPage: () -> Void = {}
 
     @State private var fullScreenImageName: String?
@@ -33,7 +36,7 @@ struct HomeView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
-                .padding(.bottom, 92)
+                .padding(.bottom, 104)
             }
 
             BottomNavigationBar(selectedPage: $selectedPage)
@@ -90,17 +93,14 @@ struct HomeView: View {
 
             Spacer()
 
-            HStack(spacing: 10) {
-                HeaderIconButton(systemName: "bell")
-                HeaderIconButton(systemName: "person.fill")
-            }
+            HeaderIconButton(systemName: "person.fill", action: openProfilePage)
             .padding(.top, 5)
         }
     }
 
     private var heroCard: some View {
         Button {
-            selectedPage = .create
+            openCreatePage()
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Create\nStory")
@@ -154,7 +154,7 @@ struct HomeView: View {
                 contentAlignment: .leading,
                 showsGradient: true
             ) {
-                selectedPage = .entries
+                openEntriesPage()
             }
 
             HomeNavigationCard(
