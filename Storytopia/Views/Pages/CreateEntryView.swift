@@ -2190,7 +2190,7 @@ struct CreateEntryView: View {
             NavigationStack {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
-                        Text("Add photos of people, places, objects, or scenery you want the storyboard to reference. Any person or animal in these photos may be added to your storyboard. To isolate a specific person or pet, use Characters instead.")
+                        Text("Add photos of people, places, objects, or scenery you want the storyboard to reference. Any person in these photos will be added to your storyboard. To isolate a specific person or pet, use Characters instead.")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Color.storyInk.opacity(0.68))
                             .fixedSize(horizontal: false, vertical: true)
