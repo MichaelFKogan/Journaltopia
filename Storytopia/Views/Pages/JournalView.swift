@@ -145,6 +145,9 @@ struct JournalView: View {
                         header
                             .padding(.horizontal, 16)
 
+                        journalReorderHint
+                            .padding(.horizontal, 16)
+
                         if isCoverSyncInProgress || pendingCoverSync != nil {
                             JournalCoverSyncNotice(
                                 isInProgress: isCoverSyncInProgress,
@@ -366,6 +369,13 @@ struct JournalView: View {
             }
         }
         .padding(.top, 12)
+    }
+
+    @ViewBuilder
+    private var journalReorderHint: some View {
+        if !chapters.isEmpty {
+            ReorderHintText(usesLightForeground: hasJournalPageBackground)
+        }
     }
 
     private var hasJournalPageBackground: Bool {
@@ -1954,6 +1964,29 @@ private struct JournalDragHandle: View {
             .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+    }
+}
+
+private struct ReorderHintText: View {
+    var usesLightForeground = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 11, weight: .bold))
+
+            Text("Hold and drag to re-order")
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.86)
+        }
+        .foregroundStyle(foregroundColor)
+        .shadow(color: usesLightForeground ? Color.black.opacity(0.22) : Color.clear, radius: 3, y: 1)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var foregroundColor: Color {
+        usesLightForeground ? Color.white : Color.homeMutedText
     }
 }
 
@@ -9588,6 +9621,9 @@ struct EntriesView: View {
                     layoutSwitcherRow
                         .padding(.horizontal, 16)
 
+                    entriesReorderHint
+                        .padding(.horizontal, 16)
+
                     cloudEntriesNotice
 
                     entriesSampleBanner
@@ -9906,6 +9942,13 @@ struct EntriesView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Sort entries by \(selectedEntrySort.title)")
+    }
+
+    @ViewBuilder
+    private var entriesReorderHint: some View {
+        if selectedEntrySort == .manual && !showsSampleEntries && !filteredEntryItems.isEmpty {
+            ReorderHintText()
+        }
     }
 
     private var entryLayoutSwitcher: some View {

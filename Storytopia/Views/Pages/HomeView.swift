@@ -682,7 +682,6 @@ struct HomeStoryboardVerticalViewer: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var visiblePageIndex: Int
-    @State private var viewportHeight: CGFloat = 0
 
     init(
         storyboards: [GeneratedStoryboard],
@@ -700,62 +699,15 @@ struct HomeStoryboardVerticalViewer: View {
             Color.black
                 .ignoresSafeArea()
 
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: false) {
-                    // VStack avoids LazyVStack blank-until-scroll layout bugs with
-                    // flexible-height UIImage rows.
-                    VStack(spacing: 0) {
-                        verticalCoverPage
-                            .id(0)
-                            .background(pagePositionReader(index: 0))
-
-                        ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
-                            let pageIndex = index + 1
-                            let image = storyboard.image
-                            let aspectRatio = image.size.height > 0
-                                ? image.size.width / image.size.height
-                                : 1
-
-                            pageBoundary(pageIndex: pageIndex)
-
-                            Image(uiImage: image)
-                                .resizable()
-                                .aspectRatio(aspectRatio, contentMode: .fit)
-                                .frame(maxWidth: .infinity)
-                                .background(Color.black)
-                                .id(pageIndex)
-                                .background(pagePositionReader(index: pageIndex))
-                        }
-
-                        Color.black
-                            .frame(height: 44)
-                    }
-                }
-                .coordinateSpace(name: "homeVerticalComicScroll")
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: HomeVerticalComicViewportHeightPreferenceKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
-                .onAppear {
-                    visiblePageIndex = clampedPageIndex(currentPageIndex)
-                    guard visiblePageIndex > 0 else {
-                        return
-                    }
-
-                    DispatchQueue.main.async {
-                        proxy.scrollTo(visiblePageIndex, anchor: .center)
-                    }
-                }
-                .onPreferenceChange(HomeVerticalComicViewportHeightPreferenceKey.self) { height in
-                    viewportHeight = height
-                }
-                .onPreferenceChange(HomeVerticalComicPagePositionPreferenceKey.self) { positions in
-                    updateVisiblePageIndex(from: positions, viewportHeight: viewportHeight)
-                }
+            HomeZoomableVerticalStoryboardView(
+                storyboards: storyboards,
+                title: title,
+                initialPageIndex: clampedPageIndex(currentPageIndex),
+                visiblePageIndex: $visiblePageIndex
+            )
+            .background(Color.black)
+            .onChange(of: visiblePageIndex) { nextIndex in
+                currentPageIndex = clampedPageIndex(nextIndex)
             }
 
             Button {
@@ -775,81 +727,6 @@ struct HomeStoryboardVerticalViewer: View {
         .preferredColorScheme(.dark)
     }
 
-    private var verticalCoverPage: some View {
-        VStack(spacing: 10) {
-            Text(title)
-                .font(.system(size: 34, weight: .bold, design: .serif))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-
-            Text("A continuous view of your completed storyboards.")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.86))
-                .multilineTextAlignment(.center)
-
-            Text(storyboards.count == 1 ? "1 storyboard" : "\(storyboards.count) storyboards")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white.opacity(0.62))
-        }
-        .padding(.horizontal, 28)
-        .padding(.top, 56)
-        .padding(.bottom, 44)
-        .frame(maxWidth: .infinity, alignment: .top)
-        .background(Color.black)
-    }
-
-    private func pageBoundary(pageIndex: Int) -> some View {
-        ZStack {
-            Color(white: 0.035)
-
-            Rectangle()
-                .fill(Color.white.opacity(0.86))
-                .frame(height: 1)
-                .padding(.horizontal, 28)
-
-            Text("\(pageIndex) / \(storyboards.count)")
-                .font(.system(size: 12, weight: .heavy))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(height: 24)
-                .background(Color(white: 0.035), in: Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.white.opacity(0.7), lineWidth: 1)
-                )
-        }
-        .frame(height: 42)
-    }
-
-    private func pagePositionReader(index: Int) -> some View {
-        GeometryReader { proxy in
-            Color.clear.preference(
-                key: HomeVerticalComicPagePositionPreferenceKey.self,
-                value: [index: proxy.frame(in: .named("homeVerticalComicScroll")).midY]
-            )
-        }
-    }
-
-    private func updateVisiblePageIndex(from positions: [Int: CGFloat], viewportHeight: CGFloat) {
-        guard viewportHeight > 0 else {
-            return
-        }
-
-        guard let closest = positions.min(by: { left, right in
-            abs(left.value - (viewportHeight / 2)) < abs(right.value - (viewportHeight / 2))
-        })?.key else {
-            return
-        }
-
-        let nextIndex = clampedPageIndex(closest)
-        guard nextIndex != visiblePageIndex else {
-            return
-        }
-
-        visiblePageIndex = nextIndex
-        currentPageIndex = nextIndex
-    }
-
     private func clampedPageIndex(_ pageIndex: Int) -> Int {
         min(max(0, pageIndex), max(0, totalPageCount - 1))
     }
@@ -859,19 +736,254 @@ struct HomeStoryboardVerticalViewer: View {
     }
 }
 
-private struct HomeVerticalComicPagePositionPreferenceKey: PreferenceKey {
-    static var defaultValue: [Int: CGFloat] = [:]
+private struct HomeZoomableVerticalStoryboardView: UIViewRepresentable {
+    let storyboards: [GeneratedStoryboard]
+    let title: String
+    let initialPageIndex: Int
+    @Binding var visiblePageIndex: Int
 
-    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.backgroundColor = .black
+        scrollView.delegate = context.coordinator
+        scrollView.minimumZoomScale = 1
+        scrollView.maximumZoomScale = 5
+        scrollView.bouncesZoom = true
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.showsHorizontalScrollIndicator = false
+
+        let stackView = UIStackView()
+        stackView.axis = .vertical
+        stackView.alignment = .fill
+        stackView.spacing = 0
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            stackView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            stackView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            stackView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            stackView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
+        ])
+
+        context.coordinator.stackView = stackView
+        context.coordinator.pageViews = []
+
+        let coverView = makeCoverView()
+        stackView.addArrangedSubview(coverView)
+        context.coordinator.pageViews.append(coverView)
+
+        storyboards.enumerated().forEach { index, storyboard in
+            let pageIndex = index + 1
+            stackView.addArrangedSubview(
+                makeImageBoundary(pageIndex: pageIndex, totalCount: storyboards.count)
+            )
+
+            let image = storyboard.image
+            let imageView = UIImageView(image: image)
+            imageView.contentMode = .scaleAspectFit
+            imageView.backgroundColor = .black
+            imageView.clipsToBounds = true
+            imageView.translatesAutoresizingMaskIntoConstraints = false
+
+            let pageView = UIView()
+            pageView.backgroundColor = .black
+            pageView.translatesAutoresizingMaskIntoConstraints = false
+            pageView.addSubview(imageView)
+
+            NSLayoutConstraint.activate([
+                imageView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
+                imageView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
+                imageView.topAnchor.constraint(equalTo: pageView.topAnchor),
+                imageView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
+                pageView.heightAnchor.constraint(
+                    equalTo: pageView.widthAnchor,
+                    multiplier: image.size.height / max(image.size.width, 1)
+                )
+            ])
+
+            stackView.addArrangedSubview(pageView)
+            context.coordinator.pageViews.append(pageView)
+        }
+
+        let bottomSpacer = UIView()
+        bottomSpacer.backgroundColor = .black
+        bottomSpacer.translatesAutoresizingMaskIntoConstraints = false
+        bottomSpacer.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        stackView.addArrangedSubview(bottomSpacer)
+
+        DispatchQueue.main.async {
+            context.coordinator.scrollToInitialPage(in: scrollView)
+        }
+
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    private func makeCoverView() -> UIView {
+        let container = UIView()
+        container.backgroundColor = .black
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.textColor = .white
+        titleLabel.font = .homeStorySoFarTitleFont
+        titleLabel.textAlignment = .center
+        titleLabel.numberOfLines = 0
+
+        let subtitleLabel = UILabel()
+        subtitleLabel.text = "A continuous view of your completed storyboards."
+        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.86)
+        subtitleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        subtitleLabel.textAlignment = .center
+        subtitleLabel.numberOfLines = 0
+
+        let countLabel = UILabel()
+        countLabel.text = storyboards.count == 1 ? "1 storyboard" : "\(storyboards.count) storyboards"
+        countLabel.textColor = UIColor.white.withAlphaComponent(0.62)
+        countLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        countLabel.textAlignment = .center
+        countLabel.numberOfLines = 1
+
+        [titleLabel, subtitleLabel, countLabel].forEach(stack.addArrangedSubview)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -28),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 56),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -44)
+        ])
+
+        return container
+    }
+
+    private func makeImageBoundary(pageIndex: Int, totalCount: Int) -> UIView {
+        let container = UIView()
+        container.backgroundColor = UIColor(white: 0.035, alpha: 1)
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let line = UIView()
+        line.backgroundColor = UIColor.white.withAlphaComponent(0.86)
+        line.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(line)
+
+        let numberLabel = UILabel()
+        numberLabel.translatesAutoresizingMaskIntoConstraints = false
+        numberLabel.text = "\(pageIndex) / \(totalCount)"
+        numberLabel.font = .systemFont(ofSize: 12, weight: .heavy)
+        numberLabel.textColor = .white
+        numberLabel.textAlignment = .center
+        numberLabel.backgroundColor = UIColor(white: 0.035, alpha: 1)
+        numberLabel.layer.cornerRadius = 12
+        numberLabel.layer.borderColor = UIColor.white.withAlphaComponent(0.7).cgColor
+        numberLabel.layer.borderWidth = 1
+        numberLabel.layer.masksToBounds = true
+        container.addSubview(numberLabel)
+
+        NSLayoutConstraint.activate([
+            container.heightAnchor.constraint(equalToConstant: 42),
+            line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
+            line.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -28),
+            line.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            line.heightAnchor.constraint(equalToConstant: 1),
+            numberLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            numberLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            numberLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+            numberLabel.heightAnchor.constraint(equalToConstant: 24)
+        ])
+
+        return container
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        var parent: HomeZoomableVerticalStoryboardView
+        weak var stackView: UIStackView?
+        var pageViews: [UIView] = []
+        private var didScrollToInitialPage = false
+
+        init(parent: HomeZoomableVerticalStoryboardView) {
+            self.parent = parent
+        }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+            stackView
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            updateVisibleIndex(in: scrollView)
+        }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            updateVisibleIndex(in: scrollView)
+        }
+
+        func scrollToInitialPage(in scrollView: UIScrollView) {
+            guard
+                !didScrollToInitialPage,
+                pageViews.indices.contains(parent.initialPageIndex)
+            else {
+                return
+            }
+
+            scrollView.layoutIfNeeded()
+            stackView?.layoutIfNeeded()
+
+            let pageView = pageViews[parent.initialPageIndex]
+            let targetY = max(
+                0,
+                pageView.frame.midY - (scrollView.bounds.height / 2)
+            )
+            scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: false)
+            didScrollToInitialPage = true
+            updateVisibleIndex(in: scrollView)
+        }
+
+        private func updateVisibleIndex(in scrollView: UIScrollView) {
+            guard !pageViews.isEmpty else {
+                return
+            }
+
+            let viewportCenterY = scrollView.contentOffset.y + (scrollView.bounds.height / 2)
+            let zoomScale = scrollView.zoomScale
+            let closestIndex = pageViews.indices.min { left, right in
+                abs((pageViews[left].frame.midY * zoomScale) - viewportCenterY)
+                    < abs((pageViews[right].frame.midY * zoomScale) - viewportCenterY)
+            }
+
+            guard
+                let closestIndex,
+                closestIndex != parent.visiblePageIndex
+            else {
+                return
+            }
+
+            parent.visiblePageIndex = closestIndex
+        }
     }
 }
 
-private struct HomeVerticalComicViewportHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+private extension UIFont {
+    static var homeStorySoFarTitleFont: UIFont {
+        let baseDescriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .largeTitle)
+        let serifDescriptor = baseDescriptor.withDesign(.serif) ?? baseDescriptor
+        let boldDescriptor = serifDescriptor.withSymbolicTraits(.traitBold) ?? serifDescriptor
+        return UIFont(descriptor: boldDescriptor, size: 34)
     }
 }
 
