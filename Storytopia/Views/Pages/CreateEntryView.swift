@@ -1714,6 +1714,7 @@ struct CreateEntryView: View {
     @State private var isShowingArtStyleGrid = false
     @State private var isShowingJournalPromptsSheet = false
     @State private var isShowingCustomizeSheet = false
+    @State private var activeCustomizeTab: CreateFormattingTab = .fontStyle
     @State private var isShowingEntryDateSheet = false
     @State private var isShowingEntryLocationSheet = false
     @State private var isShowingJournalDestinationSheet = false
@@ -4050,8 +4051,16 @@ struct CreateEntryView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            if !isPhotosPanelVisible {
+                entryReferencesShelf
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             floatingEditorMenu
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -4309,24 +4318,23 @@ struct CreateEntryView: View {
     }
 
     private var floatingEditorMenu: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
             floatingMenuActionButton(
-                title: "Photos",
-                systemName: isPhotosPanelVisible ? "photo.fill" : "photo",
-                foregroundColor: isPhotosPanelVisible ? Color.storyPurple : Color.storyInk.opacity(0.82),
-                badgeCount: photosMenuBadgeCount,
-                accessibilityLabel: isPhotosPanelVisible ? "Close photos panel" : "Open photos panel"
+                title: "Font",
+                systemName: CreateFormattingTab.fontStyle.sheetSymbol,
+                foregroundColor: isFormattingSheetActive(.fontStyle) ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                accessibilityLabel: isFormattingSheetActive(.fontStyle) ? "Close font panel" : "Open font panel"
             ) {
-                togglePhotosPanel()
+                openCustomizeOptions(.fontStyle)
             }
 
             floatingMenuActionButton(
-                title: "Customize",
-                systemName: "slider.horizontal.3",
-                foregroundColor: isShowingCustomizeSheet ? Color.storyPurple : Color.storyInk.opacity(0.82),
-                accessibilityLabel: isShowingCustomizeSheet ? "Close customize panel" : "Open customize panel"
+                title: "Paper",
+                systemName: CreateFormattingTab.paperStyle.sheetSymbol,
+                foregroundColor: isFormattingSheetActive(.paperStyle) ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                accessibilityLabel: isFormattingSheetActive(.paperStyle) ? "Close paper panel" : "Open paper panel"
             ) {
-                openCustomizeOptions()
+                openCustomizeOptions(.paperStyle)
             }
 
             floatingMenuActionButton(
@@ -4356,6 +4364,253 @@ struct CreateEntryView: View {
         .padding(.bottom, 10)
         .frame(maxWidth: 420)
         .frame(maxWidth: .infinity)
+    }
+
+    private func isFormattingSheetActive(_ tab: CreateFormattingTab) -> Bool {
+        isShowingCustomizeSheet && activeCustomizeTab == tab
+    }
+
+    private var entryReferencesShelf: some View {
+        HStack(alignment: .bottom, spacing: 13) {
+            referencePhotosShelfButton
+
+            charactersShelfButton
+        }
+        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 7)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var referencePhotosShelfButton: some View {
+        Button {
+            openReferencesPanel(expandPhotos: true)
+        } label: {
+            VStack(spacing: 5) {
+                referencePhotoShelfStack
+
+                Text("Reference Photos")
+                    .font(.system(size: 10, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk.opacity(0.88))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+
+                if hasStoryboardPhotos {
+                    Text(referencePhotoShelfSummary)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: 98, height: 106, alignment: .bottom)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(hasStoryboardPhotos ? "\(referencePhotoShelfSummary), open reference photos" : "Add reference photos")
+    }
+
+    private var referencePhotoShelfStack: some View {
+        let photos = storyboardPhotos.compactMap { $0 }
+
+        return ZStack(alignment: .topTrailing) {
+            if photos.isEmpty {
+                referencePolaroidPlaceholder
+                    .rotationEffect(.degrees(-2.5))
+            } else {
+                ForEach(Array(photos.prefix(3).enumerated()), id: \.element.id) { index, photo in
+                    referencePolaroidImage(photo.image, size: 62)
+                        .offset(x: referenceShelfOffset(for: index).width, y: referenceShelfOffset(for: index).height)
+                        .rotationEffect(.degrees(referenceShelfRotation(for: index)))
+                        .zIndex(Double(index))
+                }
+
+                if photos.count > 1 {
+                    Text("\(photos.count)")
+                        .font(.system(size: 10, weight: .heavy))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 22, height: 22)
+                        .background(Color.storyPurple, in: Circle())
+                        .overlay(Circle().stroke(Color.white, lineWidth: 1.6))
+                        .shadow(color: Color.storyInk.opacity(0.14), radius: 4, y: 2)
+                        .offset(x: 9, y: -6)
+                        .zIndex(5)
+                }
+            }
+        }
+        .frame(width: 78, height: 74)
+    }
+
+    private var referencePolaroidPlaceholder: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.white.opacity(0.88))
+                .frame(width: 62, height: 72)
+                .shadow(color: Color.storyInk.opacity(0.12), radius: 6, y: 3)
+
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.storyPurple.opacity(0.06))
+                .frame(width: 50, height: 45)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .stroke(Color.storyPurple.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                )
+                .overlay {
+                    Image(systemName: "camera")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color.storyPurple.opacity(0.76))
+                }
+                .frame(width: 62, height: 72)
+        }
+        .overlay(alignment: .top) {
+            StoryPhotoTape(width: 31, height: 10, rotation: 4)
+                .offset(y: -5)
+        }
+    }
+
+    private func referencePolaroidImage(_ image: UIImage, size: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size - 10, height: size - 14)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .stroke(Color.storyInk.opacity(0.28), lineWidth: 0.7)
+                )
+                .padding(.top, 5)
+
+            Spacer(minLength: 0)
+        }
+        .frame(width: size, height: size + 10)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(Color.white.opacity(0.92), lineWidth: 1)
+        )
+        .shadow(color: Color.storyInk.opacity(0.14), radius: 5, y: 3)
+        .overlay(alignment: .top) {
+            StoryPhotoTape(width: 29, height: 9, rotation: -3)
+                .offset(y: -4)
+        }
+    }
+
+    private func referenceShelfOffset(for index: Int) -> CGSize {
+        switch index {
+        case 0:
+            return CGSize(width: -8, height: 6)
+        case 1:
+            return CGSize(width: 0, height: 1)
+        default:
+            return CGSize(width: 8, height: -3)
+        }
+    }
+
+    private func referenceShelfRotation(for index: Int) -> Double {
+        switch index {
+        case 0:
+            return -8
+        case 1:
+            return -1.5
+        default:
+            return 6
+        }
+    }
+
+    private var referencePhotoShelfSummary: String {
+        let count = storyboardPhotos.compactMap { $0 }.count
+        return "\(count) photo\(count == 1 ? "" : "s")"
+    }
+
+    private var charactersShelfButton: some View {
+        Button {
+            openCharactersFromShelf()
+        } label: {
+            VStack(spacing: 5) {
+                characterShelfAvatars
+
+                Text(entryCharacters.count == 1 ? "Character" : "Characters")
+                    .font(.system(size: 10, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk.opacity(0.88))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+
+                if !entryCharacters.isEmpty {
+                    Text(characterShelfSummary)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            }
+            .frame(width: 82, height: 103, alignment: .bottom)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(entryCharacters.isEmpty ? "Add character" : "\(characterShelfSummary), open characters")
+    }
+
+    private var characterShelfAvatars: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if entryCharacters.isEmpty {
+                StoryboardPhotoStripAddButton(
+                    systemName: "person.crop.circle.badge.plus",
+                    iconColor: Color.storyPurple,
+                    size: 56,
+                    iconWeight: .semibold,
+                    shape: .circle
+                )
+                .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
+            } else {
+                ZStack {
+                    ForEach(Array(entryCharacters.prefix(3).enumerated()), id: \.element.id) { index, character in
+                        Image(uiImage: character.image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 52, height: 52)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(index == 0 ? Color.storyPurple.opacity(0.76) : Color.white.opacity(0.94), lineWidth: index == 0 ? 1.6 : 2)
+                            )
+                            .shadow(color: Color.storyInk.opacity(0.12), radius: 5, y: 3)
+                            .offset(x: CGFloat(index) * 14 - CGFloat(min(entryCharacters.count, 3) - 1) * 7, y: CGFloat(index % 2) * -3)
+                            .zIndex(Double(index))
+                    }
+                }
+                .frame(width: 76, height: 60)
+
+                if entryCharacters.count > 1 {
+                    Text("\(entryCharacters.count)")
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 19, height: 19)
+                        .background(Color.storyPurple, in: Circle())
+                        .overlay(Circle().stroke(Color.white, lineWidth: 1.4))
+                        .offset(x: 0, y: -2)
+                } else {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+                        .background(Color.white, in: Circle())
+                        .offset(x: 0, y: -1)
+                }
+            }
+        }
+        .frame(width: 78, height: 65)
+    }
+
+    private var characterShelfSummary: String {
+        guard let firstCharacter = entryCharacters.first else {
+            return "Add"
+        }
+
+        if entryCharacters.count == 1 {
+            return firstCharacter.name
+        }
+
+        return "\(entryCharacters.count) added"
     }
 
     private var photosAndCharactersPanel: some View {
@@ -4391,6 +4646,10 @@ struct CreateEntryView: View {
 
                 referencePhotoExplainerText
 
+                if hasStoryboardPhotos {
+                    referencePhotoFanPreview
+                }
+
                 referencePhotoStripRow
                     .padding(.horizontal, -16)
             }
@@ -4424,7 +4683,7 @@ struct CreateEntryView: View {
 
     private var customizeOptionsPanel: some View {
         CreateFormattingSheet(
-            initialTab: .fontStyle,
+            initialTab: activeCustomizeTab,
             selectedFont: $selectedFontChoice,
             selectedPaperStyle: $selectedPaperStyleChoice,
             selectedTextColorIndex: $selectedTextColorIndex,
@@ -4432,6 +4691,7 @@ struct CreateEntryView: View {
             previewTextSize: $previewTextSize,
             onClose: closeCustomizePanel
         )
+        .id(activeCustomizeTab)
         .frame(maxHeight: customizePanelMaxHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -4464,6 +4724,51 @@ struct CreateEntryView: View {
 
     private var promptsPanelMaxHeight: CGFloat {
         min(UIScreen.main.bounds.height * 0.72, 650)
+    }
+
+    private var referencePhotoFanPreview: some View {
+        let photos = storyboardPhotos.compactMap { $0 }
+
+        return ZStack {
+            ForEach(Array(photos.prefix(5).enumerated()), id: \.element.id) { index, photo in
+                Button {
+                    dismissKeyboard()
+                    previewedStoryboardPhoto = photo.image
+                } label: {
+                    referencePolaroidImage(photo.image, size: 74)
+                }
+                .buttonStyle(.plain)
+                .rotationEffect(.degrees(referenceFanRotation(for: index, count: photos.count)))
+                .offset(referenceFanOffset(for: index, count: photos.count))
+                .zIndex(Double(index))
+                .accessibilityLabel("View reference photo \(index + 1)")
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: photos.count > 1 ? 112 : 88)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
+    }
+
+    private func referenceFanRotation(for index: Int, count: Int) -> Double {
+        guard count > 1 else {
+            return -2
+        }
+
+        let visibleCount = min(count, 5)
+        let center = Double(visibleCount - 1) / 2
+        return (Double(index) - center) * 7
+    }
+
+    private func referenceFanOffset(for index: Int, count: Int) -> CGSize {
+        guard count > 1 else {
+            return .zero
+        }
+
+        let visibleCount = min(count, 5)
+        let center = CGFloat(visibleCount - 1) / 2
+        let distance = CGFloat(index) - center
+        return CGSize(width: distance * 38, height: abs(distance) * 8)
     }
 
     private func floatingMenuActionButton(
@@ -4561,6 +4866,34 @@ struct CreateEntryView: View {
         isShowingPhotoSourceSheet = false
         DispatchQueue.main.async {
             isShowingPhotoLibrary = true
+        }
+    }
+
+    private func openReferencesPanel(expandPhotos: Bool) {
+        dismissKeyboard()
+        withAnimation(.snappy(duration: 0.2)) {
+            isPhotosPanelVisible = true
+            isShowingCustomizeSheet = false
+            isShowingJournalPromptsSheet = false
+            if expandPhotos {
+                isPhotoTabCollapsed = false
+            }
+        }
+    }
+
+    private func openCharactersFromShelf() {
+        dismissKeyboard()
+
+        if entryCharacters.isEmpty {
+            characterEditorSession = CharacterEditorSession(character: nil)
+            return
+        }
+
+        withAnimation(.snappy(duration: 0.2)) {
+            isPhotosPanelVisible = true
+            isShowingCustomizeSheet = false
+            isShowingJournalPromptsSheet = false
+            isCharacterTabCollapsed = false
         }
     }
 
@@ -5206,10 +5539,15 @@ struct CreateEntryView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private func openCustomizeOptions() {
+    private func openCustomizeOptions(_ tab: CreateFormattingTab) {
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.2)) {
-            isShowingCustomizeSheet.toggle()
+            if isShowingCustomizeSheet && activeCustomizeTab == tab {
+                isShowingCustomizeSheet = false
+            } else {
+                activeCustomizeTab = tab
+                isShowingCustomizeSheet = true
+            }
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
         }
@@ -9567,17 +9905,15 @@ private struct CreateFormattingSheet: View {
             }
             .overlay {
                 HStack(spacing: 7) {
-                    Image(systemName: "slider.horizontal.3")
+                    Image(systemName: selectedTab.sheetSymbol)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Color.storyPurple)
 
-                    Text("Customize")
+                    Text(selectedTab.sheetTitle)
                         .font(.system(size: 19, weight: .bold, design: .serif))
                         .foregroundStyle(Color.storyInk)
                 }
             }
-
-            formattingTabSwitcher
 
             ScrollView(showsIndicators: false) {
                 Group {
