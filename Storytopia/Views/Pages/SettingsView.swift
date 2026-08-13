@@ -41,7 +41,7 @@ struct SettingsView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .background(Color.homePageBackground)
+        .background(WatercolorPaperPageBackground())
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
@@ -344,7 +344,7 @@ private struct SettingsExtraView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .background(Color.homePageBackground)
+        .background(WatercolorPaperPageBackground())
         .navigationTitle("Extra")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)

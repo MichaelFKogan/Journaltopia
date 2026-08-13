@@ -105,7 +105,7 @@ struct JournalView: View {
 
     private var columns: [GridItem] {
         Array(
-            repeating: GridItem(.flexible(), spacing: selectedJournalLayout == .grid2x2 ? 24 : 14),
+            repeating: GridItem(.flexible(), spacing: 14),
             count: selectedJournalLayout.gridColumnCount
         )
     }
@@ -330,9 +330,12 @@ struct JournalView: View {
                     RemoteCoverImage(url: remoteCoverURL, placeholderColor: Color.homeCardGray)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .clipped()
-
-                    Color.black.opacity(0.46)
+                } else {
+                    Image(JournalPageBackground.defaultImageName)
+                        .resizable()
+                        .scaledToFill()
                         .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
                 }
             }
         }
@@ -495,12 +498,12 @@ struct JournalView: View {
                 journalGrid
             }
         }
-        .padding(.horizontal, selectedJournalLayout == .grid2x2 ? 26 : 16)
-        .padding(.top, selectedJournalLayout == .grid2x2 ? 12 : 4)
+        .padding(.horizontal, 16)
+        .padding(.top, selectedJournalLayout == .grid2x2 ? 8 : 4)
     }
 
     private var journalGrid: some View {
-        LazyVGrid(columns: columns, spacing: selectedJournalLayout == .grid2x2 ? 26 : 14) {
+        LazyVGrid(columns: columns, spacing: selectedJournalLayout == .grid2x2 ? 18 : 14) {
             ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                 JournalCoverCard(
                     chapter: chapter,
@@ -2155,6 +2158,7 @@ private struct JournalCustomization {
 private struct JournalPageBackground: Codable, Equatable {
     let remoteCover: JournalRemoteCover?
 
+    static let defaultImageName = WatercolorPaperPageBackground.assetName
     static let empty = JournalPageBackground(remoteCover: nil)
 }
 
@@ -2300,7 +2304,11 @@ private struct JournalPageBackgroundSheet: View {
                                 .frame(width: proxy.size.width, height: proxy.size.height)
                                 .clipped()
                         } else {
-                            Color.homePageBackground
+                            Image(JournalPageBackground.defaultImageName)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .clipped()
                         }
 
                         LinearGradient(
@@ -2353,7 +2361,7 @@ private struct JournalPageBackgroundSheet: View {
                     Link("Photo by \(attributionName) on Unsplash", destination: url)
                         .foregroundStyle(Color.homeAccent)
                 } else {
-                    Text("No background selected")
+                    Text("Watercolor Paper")
                         .foregroundStyle(Color.homeMutedText)
                 }
 
@@ -9567,8 +9575,7 @@ struct EntriesView: View {
 
     private var entriesScreen: some View {
         ZStack(alignment: .bottom) {
-            Color.homePageBackground
-                .ignoresSafeArea()
+            WatercolorPaperPageBackground()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
@@ -9589,7 +9596,7 @@ struct EntriesView: View {
                 }
                 .padding(.bottom, 104)
             }
-            .background(Color.homePageBackground)
+            .background(Color.clear)
             .refreshable {
                 refreshEntriesFromCloud()
             }
@@ -13517,7 +13524,7 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
         case .completed:
             return "Completed"
         case .addToJournal:
-            return "Add to Journal"
+            return "Not in Journal"
         }
     }
 
@@ -13530,7 +13537,7 @@ private enum EntriesTab: String, CaseIterable, Identifiable {
         case .completed:
             return "Completed"
         case .addToJournal:
-            return "Add to Journal"
+            return "Not in Journal"
         }
     }
 

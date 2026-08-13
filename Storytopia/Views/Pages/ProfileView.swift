@@ -126,8 +126,7 @@ struct ProfileView: View {
 
     private var profileContent: some View {
         ZStack(alignment: .bottom) {
-            Color.homePageBackground
-                .ignoresSafeArea()
+            WatercolorPaperPageBackground()
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {

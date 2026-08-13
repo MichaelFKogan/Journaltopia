@@ -2,6 +2,26 @@ import SwiftUI
 
 private let isBottomNavigationVisible = true
 
+struct WatercolorPaperPageBackground: View {
+    static let assetName = "watercolor-paper"
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.homePageBackground
+
+                Image(Self.assetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
 struct SectionTitle: View {
     let title: String
     let action: String

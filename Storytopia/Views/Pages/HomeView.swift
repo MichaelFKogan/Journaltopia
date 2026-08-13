@@ -21,8 +21,7 @@ struct HomeView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Color.homePageBackground
-                .ignoresSafeArea()
+            WatercolorPaperPageBackground()
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -82,7 +81,7 @@ struct HomeView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Storytopia")
+                Text("Journaltopia")
                     .font(.system(size: 28, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
 
@@ -115,8 +114,8 @@ struct HomeView: View {
                     .foregroundStyle(.white.opacity(0.92))
             }
             .padding(.horizontal, 18)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, minHeight: 190, alignment: .leading)
+            .padding(.vertical, HomeCardLayout.verticalPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeCardLayout.primaryHeight, alignment: .leading)
             .background {
                 HomeLoopingVideoBackground(resourceName: "homepage_banner")
                     .overlay(
@@ -176,7 +175,7 @@ struct HomeView: View {
             isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
             action: openStorySoFarPage
         )
-        .frame(height: 190)
+        .frame(height: HomeCardLayout.primaryHeight)
         .clipped()
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.top, 4)
@@ -493,6 +492,11 @@ private struct HomeCardNavigationIndicator: View {
     }
 }
 
+private enum HomeCardLayout {
+    static let primaryHeight: CGFloat = 160
+    static let verticalPadding: CGFloat = 14
+}
+
 private struct HomeNavigationCard: View {
     let title: String
     let subtitle: String
@@ -540,8 +544,13 @@ private struct HomeNavigationCard: View {
                     .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
             }
             .padding(.horizontal, 18)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: frameAlignment)
+            .padding(.vertical, HomeCardLayout.verticalPadding)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: HomeCardLayout.primaryHeight,
+                maxHeight: HomeCardLayout.primaryHeight,
+                alignment: frameAlignment
+            )
             .background {
                 cardBackground
                     .overlay {
@@ -626,8 +635,13 @@ private struct HomeStorySoFarCard: View {
                     .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
             }
             .padding(.horizontal, 18)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 190, alignment: .leading)
+            .padding(.vertical, HomeCardLayout.verticalPadding)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: HomeCardLayout.primaryHeight,
+                maxHeight: HomeCardLayout.primaryHeight,
+                alignment: .leading
+            )
             .background {
                 HomeLoopingVideoBackground(resourceName: "home_story_so_far")
                     .overlay(
@@ -652,7 +666,7 @@ private struct HomeStorySoFarCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
-        .frame(height: 190)
+        .frame(height: HomeCardLayout.primaryHeight)
         .clipped()
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .disabled(!isEnabled)
