@@ -13502,7 +13502,7 @@ private struct EntryGridPreviewCard: View {
                 if isSelecting && showsActions {
                     JournalDeleteButton(
                         title: title,
-                        visibleSize: 26,
+                        visibleSize: 29,
                         backgroundColor: Color.white,
                         visualAlignment: .topTrailing,
                         action: onDelete
@@ -13716,7 +13716,7 @@ private struct CompletedEntryGridCard: View {
                     if isSelecting, let onDelete {
                         JournalDeleteButton(
                             title: title,
-                            visibleSize: 26,
+                            visibleSize: 29,
                             backgroundColor: Color.white,
                             visualAlignment: .topTrailing,
                             action: onDelete
