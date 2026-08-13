@@ -10032,17 +10032,7 @@ struct EntriesView: View {
 
                 Spacer()
 
-                Button(role: .destructive) {
-                    requestDeleteSelectedEntries()
-                } label: {
-                    Image(systemName: "trash.fill")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Color.red)
-                        .frame(width: 38, height: 38)
-                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete selected entries")
+                selectedEntriesOverflowMenu
 
                 if !showsSampleEntries {
                     Button {
@@ -10052,10 +10042,12 @@ struct EntriesView: View {
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 14)
+                            .frame(maxWidth: .infinity)
                             .frame(height: 38)
                             .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Add selected entries to a journal")
                 }
             }
             .padding(.horizontal, 14)
@@ -10072,6 +10064,28 @@ struct EntriesView: View {
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .zIndex(3)
         }
+    }
+
+    private var selectedEntriesOverflowMenu: some View {
+        Menu {
+            Button(role: .destructive) {
+                requestDeleteSelectedEntries()
+            } label: {
+                Label(deleteSelectedEntriesMenuTitle, systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(Color.storyInk.opacity(0.76))
+                .frame(width: 38, height: 38)
+                .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.homeBorder, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("More actions for selected entries")
     }
 
     @ViewBuilder
@@ -10175,32 +10189,38 @@ struct EntriesView: View {
             ForEach(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
                 let category = categoryForSampleEntry(entry)
 
-                Button {
+                let isCompletedSample = entry.status == JournalEntryStatus.completed.rawValue
+                Group {
                     if editMode == .active {
-                        toggleEntrySelection(entry.id)
+                        EntryListRow(
+                            entry: entry,
+                            sortOption: selectedEntrySort,
+                            pageLabel: entryManualOrderLabel(for: index),
+                            category: category,
+                            completedStoryboardImage: isCompletedSample
+                                ? sampleStoryboardImage(for: entry)
+                                : nil,
+                            completedStoryboardCount: isCompletedSample ? sampleStoryboardCount(for: entry.id) : 0,
+                            rowHeight: 52,
+                            coverWidth: 34,
+                            coverHeight: 44,
+                            isSelecting: true,
+                            isSelected: selectedEntryIDs.contains(entry.id),
+                            isSample: true,
+                            showsReorderHandle: false,
+                            onSelect: {
+                                toggleEntrySelection(entry.id)
+                            }
+                        )
                     } else {
-                        openSampleEntry(entry)
+                        Button {
+                            openSampleEntry(entry)
+                        } label: {
+                            sampleEntryListRow(entry, category: category, index: index, isCompletedSample: isCompletedSample)
+                        }
+                        .buttonStyle(.plain)
                     }
-                } label: {
-                    let isCompletedSample = entry.status == JournalEntryStatus.completed.rawValue
-                    EntryListRow(
-                        entry: entry,
-                        sortOption: selectedEntrySort,
-                        pageLabel: entryManualOrderLabel(for: index),
-                        category: category,
-                        completedStoryboardImage: isCompletedSample
-                            ? sampleStoryboardImage(for: entry)
-                            : nil,
-                        completedStoryboardCount: isCompletedSample ? sampleStoryboardCount(for: entry.id) : 0,
-                        rowHeight: 52,
-                        coverWidth: 34,
-                        coverHeight: 44,
-                        isSelecting: editMode == .active,
-                        isSelected: selectedEntryIDs.contains(entry.id),
-                        isSample: true
-                    )
                 }
-                .buttonStyle(.plain)
                 .padding(.leading, JournalChapterListMetrics.horizontalInset)
                 .padding(.trailing, JournalChapterListMetrics.trailingInset)
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
@@ -10225,44 +10245,40 @@ struct EntriesView: View {
                 let isCompleted = isCompletedEntryItem(item)
                 let completedFallbackIndex = completedStoryboardFallbackIndex(for: item)
 
-                Button {
+                Group {
                     if editMode == .active {
-                        toggleEntrySelection(item.id)
-                    } else {
-                        openEntryItem(
-                            item,
-                            asCompleted: isCompleted,
-                            storyboardImage: isCompleted ? storyboardUIImage(for: item, fallbackIndex: completedFallbackIndex) : nil
+                        entryListRow(
+                            item: item,
+                            displayEntry: displayEntry,
+                            index: index,
+                            isCompleted: isCompleted,
+                            completedFallbackIndex: completedFallbackIndex
                         )
+                    } else {
+                        Button {
+                            openEntryItem(
+                                item,
+                                asCompleted: isCompleted,
+                                storyboardImage: isCompleted ? storyboardUIImage(for: item, fallbackIndex: completedFallbackIndex) : nil
+                            )
+                        } label: {
+                            entryListRow(
+                                item: item,
+                                displayEntry: displayEntry,
+                                index: index,
+                                isCompleted: isCompleted,
+                                completedFallbackIndex: completedFallbackIndex
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(openingEntryPreview != nil)
                     }
-                } label: {
-                    EntryListRow(
-                        entry: displayEntry,
-                        sortOption: selectedEntrySort,
-                        pageLabel: entryManualOrderLabel(for: index),
-                        category: categoryForEntryItem(item),
-                        completedStoryboardImage: isCompleted ? storyboardImage(for: item, fallbackIndex: completedFallbackIndex) : nil,
-                        completedStoryboardCount: isCompleted ? storyboardCount(for: item) : 0,
-                        showsCompletedStoryboardCount: false,
-                        rowHeight: 52,
-                        coverWidth: 34,
-                        coverHeight: 44,
-                        isSelecting: editMode == .active,
-                        isSelected: selectedEntryIDs.contains(item.id)
-                    )
-                        .opacity(openingEntryPreview?.id == item.id ? 0.58 : 1)
                 }
-                .buttonStyle(.plain)
-                .disabled(openingEntryPreview != nil)
                 .padding(.leading, JournalChapterListMetrics.horizontalInset)
                 .padding(.trailing, JournalChapterListMetrics.trailingInset)
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
                     loadCloudThumbnailIfNeeded(for: item)
-                }
-                .onDrag {
-                    draggingEntryID = item.id
-                    return NSItemProvider(object: item.id.uuidString as NSString)
                 }
                 .onDrop(
                     of: [UTType.text],
@@ -10299,6 +10315,61 @@ struct EntriesView: View {
                     .padding(.trailing, JournalChapterListMetrics.trailingInset)
             }
         }
+    }
+
+    private func sampleEntryListRow(
+        _ entry: CreateEntryDraft,
+        category: EntriesTab?,
+        index: Int,
+        isCompletedSample: Bool
+    ) -> some View {
+        EntryListRow(
+            entry: entry,
+            sortOption: selectedEntrySort,
+            pageLabel: entryManualOrderLabel(for: index),
+            category: category,
+            completedStoryboardImage: isCompletedSample
+                ? sampleStoryboardImage(for: entry)
+                : nil,
+            completedStoryboardCount: isCompletedSample ? sampleStoryboardCount(for: entry.id) : 0,
+            rowHeight: 52,
+            coverWidth: 34,
+            coverHeight: 44,
+            isSelecting: false,
+            isSelected: selectedEntryIDs.contains(entry.id),
+            isSample: true,
+            showsReorderHandle: false
+        )
+    }
+
+    private func entryListRow(
+        item: EntryDisplayItem,
+        displayEntry: CreateEntryDraft,
+        index: Int,
+        isCompleted: Bool,
+        completedFallbackIndex: Int
+    ) -> some View {
+        EntryListRow(
+            entry: displayEntry,
+            sortOption: selectedEntrySort,
+            pageLabel: entryManualOrderLabel(for: index),
+            category: categoryForEntryItem(item),
+            completedStoryboardImage: isCompleted ? storyboardImage(for: item, fallbackIndex: completedFallbackIndex) : nil,
+            completedStoryboardCount: isCompleted ? storyboardCount(for: item) : 0,
+            showsCompletedStoryboardCount: false,
+            rowHeight: 52,
+            coverWidth: 34,
+            coverHeight: 44,
+            isSelecting: editMode == .active,
+            isSelected: selectedEntryIDs.contains(item.id),
+            showsReorderHandle: showsManualReorderControls,
+            reorderEntryID: item.id,
+            draggingEntryID: $draggingEntryID,
+            onSelect: {
+                toggleEntrySelection(item.id)
+            }
+        )
+        .opacity(openingEntryPreview?.id == item.id ? 0.58 : 1)
     }
 
     @ViewBuilder
@@ -10346,10 +10417,6 @@ struct EntriesView: View {
                         .onAppear {
                             loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
                             loadCloudThumbnailIfNeeded(for: item)
-                        }
-                        .onDrag {
-                            draggingEntryID = item.id
-                            return NSItemProvider(object: item.id.uuidString as NSString)
                         }
                         .onDrop(
                             of: [UTType.text],
@@ -10404,21 +10471,23 @@ struct EntriesView: View {
                     isSelecting: editMode == .active && !showsSampleEntries,
                     isSelected: selectedEntryIDs.contains(item.id),
                     selectionBadgeStyle: .prominentGrid,
+                    showsReorderHandle: showsManualReorderControls,
+                    reorderEntryID: item.id,
+                    draggingEntryID: $draggingEntryID,
                     onOpen: {
                         if editMode == .active {
                             toggleEntrySelection(item.id)
                         } else {
                             openEntryItem(item, asCompleted: true, storyboardImage: storyboardUIImage(for: item, fallbackIndex: index))
                         }
+                    },
+                    onSelect: {
+                        toggleEntrySelection(item.id)
                     }
                 )
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
                     loadCloudThumbnailIfNeeded(for: item)
-                }
-                .onDrag {
-                    draggingEntryID = item.id
-                    return NSItemProvider(object: item.id.uuidString as NSString)
                 }
                 .onDrop(
                     of: [UTType.text],
@@ -10466,6 +10535,9 @@ struct EntriesView: View {
                 },
                 onRename: {
                     beginRenaming(entry)
+                },
+                onSelect: {
+                    toggleEntrySelection(entry.id)
                 }
             )
         } else {
@@ -10494,6 +10566,9 @@ struct EntriesView: View {
                 },
                 onRename: {
                     beginRenaming(entry)
+                },
+                onSelect: {
+                    toggleEntrySelection(entry.id)
                 }
             )
         }
@@ -10516,6 +10591,9 @@ struct EntriesView: View {
                 isSelecting: editMode == .active && !showsSampleEntries,
                 isSelected: selectedEntryIDs.contains(item.id),
                 selectionBadgeStyle: .prominentGrid,
+                showsReorderHandle: showsManualReorderControls,
+                reorderEntryID: item.id,
+                draggingEntryID: $draggingEntryID,
                 onOpen: {
                     if editMode == .active {
                         toggleEntrySelection(item.id)
@@ -10526,6 +10604,9 @@ struct EntriesView: View {
                             storyboardImage: storyboardUIImage(for: item, fallbackIndex: fallbackIndex)
                         )
                     }
+                },
+                onSelect: {
+                    toggleEntrySelection(item.id)
                 }
             )
         } else {
@@ -10541,6 +10622,9 @@ struct EntriesView: View {
                 isSelecting: editMode == .active && !showsSampleEntries,
                 isSelected: selectedEntryIDs.contains(item.id),
                 selectionBadgeStyle: .prominentGrid,
+                showsReorderHandle: showsManualReorderControls,
+                reorderEntryID: item.id,
+                draggingEntryID: $draggingEntryID,
                 onOpen: {
                     if showsSampleEntries {
                         openSampleEntry(displayEntry)
@@ -10559,6 +10643,9 @@ struct EntriesView: View {
                     if !showsSampleEntries {
                         beginRenaming(displayEntry)
                     }
+                },
+                onSelect: {
+                    toggleEntrySelection(item.id)
                 }
             )
         }
@@ -10566,6 +10653,10 @@ struct EntriesView: View {
 
     private func entryManualOrderLabel(for index: Int) -> String? {
         selectedEntrySort == .manual ? "\(index + 1)" : nil
+    }
+
+    private var showsManualReorderControls: Bool {
+        editMode == .active && selectedEntrySort == .manual && !showsSampleEntries
     }
 
     private var entryGridLoadingPlaceholders: some View {
@@ -11260,7 +11351,11 @@ struct EntriesView: View {
             return "Are you sure you want to delete \"\(entryDisplayTitle(entry.entry))\"? This can't be undone."
         }
 
-        return "Are you sure you want to delete these entries? This can't be undone."
+        return "Are you sure you want to delete \(entriesPendingDeletion.count) entries? This can't be undone."
+    }
+
+    private var deleteSelectedEntriesMenuTitle: String {
+        selectedEntryIDs.count == 1 ? "Delete Entry" : "Delete \(selectedEntryIDs.count) Entries"
     }
 
     private func requestDeleteEntry(_ entry: EntryDisplayItem) {
@@ -12661,14 +12756,63 @@ private struct EntryListRow: View {
     var isSelecting = false
     var isSelected = false
     var isSample = false
+    var showsReorderHandle = false
+    var reorderEntryID: UUID?
+    @Binding var draggingEntryID: UUID?
+    var onSelect: (() -> Void)?
+
+    init(
+        entry: CreateEntryDraft,
+        sortOption: EntrySortOption,
+        pageLabel: String? = nil,
+        category: EntriesTab? = nil,
+        completedStoryboardImage: CompletedStoryboardImage? = nil,
+        completedStoryboardCount: Int = 0,
+        showsCompletedStoryboardCount: Bool = true,
+        rowHeight: CGFloat = JournalChapterListMetrics.rowHeight,
+        coverWidth: CGFloat = JournalChapterListMetrics.coverWidth,
+        coverHeight: CGFloat = JournalChapterListMetrics.coverHeight,
+        isSelecting: Bool = false,
+        isSelected: Bool = false,
+        isSample: Bool = false,
+        showsReorderHandle: Bool = false,
+        reorderEntryID: UUID? = nil,
+        draggingEntryID: Binding<UUID?> = .constant(nil),
+        onSelect: (() -> Void)? = nil
+    ) {
+        self.entry = entry
+        self.sortOption = sortOption
+        self.pageLabel = pageLabel
+        self.category = category
+        self.completedStoryboardImage = completedStoryboardImage
+        self.completedStoryboardCount = completedStoryboardCount
+        self.showsCompletedStoryboardCount = showsCompletedStoryboardCount
+        self.rowHeight = rowHeight
+        self.coverWidth = coverWidth
+        self.coverHeight = coverHeight
+        self.isSelecting = isSelecting
+        self.isSelected = isSelected
+        self.isSample = isSample
+        self.showsReorderHandle = showsReorderHandle
+        self.reorderEntryID = reorderEntryID
+        _draggingEntryID = draggingEntryID
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             if isSelecting {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(isSelected ? Color.storyPurple : Color.homeBorder)
-                    .frame(width: 22, height: 22)
+                if let onSelect {
+                    Button {
+                        onSelect()
+                    } label: {
+                        listSelectionBadge
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isSelected ? "Deselect \(entryDisplayTitle(entry))" : "Select \(entryDisplayTitle(entry))")
+                } else {
+                    listSelectionBadge
+                }
             }
 
             entryIcon
@@ -12710,11 +12854,22 @@ private struct EntryListRow: View {
             .multilineTextAlignment(.trailing)
             .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(1)
+
+            if showsReorderHandle, let reorderEntryID {
+                EntryReorderHandle(entryID: reorderEntryID, draggingEntryID: $draggingEntryID)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: rowHeight, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityLabel("\(entryDisplayTitle(entry)), \(pageLabel ?? entryDateDisplay.inlineText)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var listSelectionBadge: some View {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(isSelected ? Color.storyPurple : Color.homeBorder)
+            .frame(width: 28, height: 34)
     }
 
     private var entryIcon: some View {
@@ -12873,6 +13028,30 @@ private struct EntrySelectionBadge: View {
             .shadow(color: Color.white.opacity(0.95), radius: 5, y: 0)
             .shadow(color: Color.storyInk.opacity(0.2), radius: 4, y: 2)
         }
+    }
+}
+
+private struct EntryReorderHandle: View {
+    let entryID: UUID
+    @Binding var draggingEntryID: UUID?
+
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 15, weight: .heavy))
+            .foregroundStyle(Color.storyInk.opacity(0.58))
+            .frame(width: 34, height: 34)
+            .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.08), radius: 4, y: 2)
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .onDrag {
+                draggingEntryID = entryID
+                return NSItemProvider(object: entryID.uuidString as NSString)
+            }
+            .accessibilityLabel("Reorder entry")
     }
 }
 
@@ -13106,9 +13285,55 @@ private struct EntryGridPreviewCard: View {
     var isSelected = false
     var isSample = false
     var selectionBadgeStyle: EntrySelectionBadgeStyle = .standard
+    var showsReorderHandle = false
+    var reorderEntryID: UUID?
+    @Binding var draggingEntryID: UUID?
     let onOpen: () -> Void
     let onDelete: () -> Void
     var onRename: (() -> Void)?
+    var onSelect: (() -> Void)?
+
+    init(
+        entry: CreateEntryDraft,
+        sortOption: EntrySortOption,
+        pageLabel: String? = nil,
+        isEditing: Bool,
+        showsActions: Bool,
+        title: String,
+        category: EntriesTab? = nil,
+        isOpening: Bool = false,
+        isSelecting: Bool = false,
+        isSelected: Bool = false,
+        isSample: Bool = false,
+        selectionBadgeStyle: EntrySelectionBadgeStyle = .standard,
+        showsReorderHandle: Bool = false,
+        reorderEntryID: UUID? = nil,
+        draggingEntryID: Binding<UUID?> = .constant(nil),
+        onOpen: @escaping () -> Void,
+        onDelete: @escaping () -> Void,
+        onRename: (() -> Void)? = nil,
+        onSelect: (() -> Void)? = nil
+    ) {
+        self.entry = entry
+        self.sortOption = sortOption
+        self.pageLabel = pageLabel
+        self.isEditing = isEditing
+        self.showsActions = showsActions
+        self.title = title
+        self.category = category
+        self.isOpening = isOpening
+        self.isSelecting = isSelecting
+        self.isSelected = isSelected
+        self.isSample = isSample
+        self.selectionBadgeStyle = selectionBadgeStyle
+        self.showsReorderHandle = showsReorderHandle
+        self.reorderEntryID = reorderEntryID
+        _draggingEntryID = draggingEntryID
+        self.onOpen = onOpen
+        self.onDelete = onDelete
+        self.onRename = onRename
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -13123,26 +13348,28 @@ private struct EntryGridPreviewCard: View {
                             .offset(y: -7)
                     }
 
-                if isEditing {
-                    Button(role: .destructive) {
-                        onDelete()
-                    } label: {
-                        Image(systemName: "trash.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 30, height: 30)
-                            .background(Color.red.opacity(0.92), in: Circle())
-                            .shadow(color: Color.storyInk.opacity(0.16), radius: 5, y: 2)
+                if isSelecting {
+                    Group {
+                        if let onSelect {
+                            Button {
+                                onSelect()
+                            } label: {
+                                EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(isSelected ? "Deselect \(title)" : "Select \(title)")
+                        } else {
+                            EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
+                        }
                     }
-                    .buttonStyle(.plain)
                     .padding(8)
-                    .accessibilityLabel("Delete \(title)")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
 
-                if isSelecting {
-                    EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
+                if showsReorderHandle, let reorderEntryID {
+                    EntryReorderHandle(entryID: reorderEntryID, draggingEntryID: $draggingEntryID)
                         .padding(8)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
 
                 if let category {
@@ -13151,7 +13378,7 @@ private struct EntryGridPreviewCard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 }
 
-                if isSample {
+                if isSample && !isSelecting {
                     EntrySampleBadge()
                         .padding(8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -13165,7 +13392,11 @@ private struct EntryGridPreviewCard: View {
         .opacity(isOpening ? 0.62 : 1)
         .animation(.spring(response: 0.24, dampingFraction: 0.78), value: isOpening)
         .onTapGesture {
-            onOpen()
+            if isSelecting, onSelect != nil {
+                return
+            } else {
+                onOpen()
+            }
         }
         .contextMenu {
             if showsActions {
@@ -13232,9 +13463,13 @@ private struct CompletedEntryGridCard: View {
     let isSelected: Bool
     let isSample: Bool
     let selectionBadgeStyle: EntrySelectionBadgeStyle
+    let showsReorderHandle: Bool
+    let reorderEntryID: UUID?
+    @Binding var draggingEntryID: UUID?
     let onOpen: () -> Void
     let onDelete: (() -> Void)?
     let onRename: (() -> Void)?
+    let onSelect: (() -> Void)?
     let accessibilityLabel: String
 
     init(
@@ -13250,9 +13485,13 @@ private struct CompletedEntryGridCard: View {
         isSelected: Bool = false,
         isSample: Bool = false,
         selectionBadgeStyle: EntrySelectionBadgeStyle = .standard,
+        showsReorderHandle: Bool = false,
+        reorderEntryID: UUID? = nil,
+        draggingEntryID: Binding<UUID?> = .constant(nil),
         onOpen: @escaping () -> Void,
         onDelete: (() -> Void)? = nil,
-        onRename: (() -> Void)? = nil
+        onRename: (() -> Void)? = nil,
+        onSelect: (() -> Void)? = nil
     ) {
         self.entry = entry
         self.title = title
@@ -13266,9 +13505,13 @@ private struct CompletedEntryGridCard: View {
         self.isSelected = isSelected
         self.isSample = isSample
         self.selectionBadgeStyle = selectionBadgeStyle
+        self.showsReorderHandle = showsReorderHandle
+        self.reorderEntryID = reorderEntryID
+        _draggingEntryID = draggingEntryID
         self.onOpen = onOpen
         self.onDelete = onDelete
         self.onRename = onRename
+        self.onSelect = onSelect
         accessibilityLabel = "Completed \(title)"
     }
 
@@ -13296,7 +13539,7 @@ private struct CompletedEntryGridCard: View {
                             .zIndex(2)
                     }
 
-                    if isSample {
+                    if isSample && !isSelecting {
                         EntrySampleBadge()
                             .padding(8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -13304,9 +13547,28 @@ private struct CompletedEntryGridCard: View {
                     }
 
                     if isSelecting {
-                        EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
+                        Group {
+                            if let onSelect {
+                                Button {
+                                    onSelect()
+                                } label: {
+                                    EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(isSelected ? "Deselect \(title)" : "Select \(title)")
+                            } else {
+                                EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
+                            }
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .zIndex(3)
+                    }
+
+                    if showsReorderHandle, let reorderEntryID {
+                        EntryReorderHandle(entryID: reorderEntryID, draggingEntryID: $draggingEntryID)
                             .padding(8)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             .zIndex(3)
                     }
                 }
@@ -13322,7 +13584,11 @@ private struct CompletedEntryGridCard: View {
         .opacity(isOpening ? 0.62 : 1)
         .animation(.spring(response: 0.24, dampingFraction: 0.78), value: isOpening)
         .onTapGesture {
-            onOpen()
+            if isSelecting, onSelect != nil {
+                return
+            } else {
+                onOpen()
+            }
         }
         .contextMenu {
             if let onRename {
