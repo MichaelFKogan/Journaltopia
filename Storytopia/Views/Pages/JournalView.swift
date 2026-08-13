@@ -13015,7 +13015,7 @@ private struct EntrySelectionBadge: View {
                     .fill(isSelected ? Color.storyPurple : Color.white)
                     .overlay(
                         Circle()
-                            .stroke(isSelected ? Color.clear : Color.homeBorder, lineWidth: 2)
+                            .stroke(isSelected ? Color.clear : Color.homeBorder, lineWidth: 2.5)
                     )
 
                 if isSelected {
