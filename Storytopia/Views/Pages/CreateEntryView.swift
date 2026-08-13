@@ -6940,7 +6940,7 @@ struct CreateEntryView: View {
 
     private var characterPhotoSourceSection: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Text("Character")
+            Text("Add Character")
                 .font(.system(size: 16, weight: .bold, design: .serif))
                 .foregroundStyle(Color.storyInk)
 
