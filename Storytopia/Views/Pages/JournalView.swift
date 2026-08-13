@@ -475,7 +475,7 @@ struct JournalView: View {
                 .font(.system(size: 24, weight: .regular))
                 .foregroundStyle(Color.white)
                 .frame(width: 60, height: 60)
-                .background(Color.black, in: Circle())
+                .background(Color.storyPurple, in: Circle())
                 .shadow(color: Color.storyInk.opacity(0.18), radius: 12, y: 6)
         }
         .buttonStyle(.plain)
@@ -9810,7 +9810,7 @@ struct EntriesView: View {
                 .foregroundStyle(.white)
                 .frame(width: 60, height: 60)
                 .offset(x: 0, y: -2)
-                .background(Color.black, in: Circle())
+                .background(Color.storyPurple, in: Circle())
                 .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
         }
         .buttonStyle(.plain)
