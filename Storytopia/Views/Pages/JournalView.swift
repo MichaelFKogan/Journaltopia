@@ -140,28 +140,7 @@ struct JournalView: View {
             ZStack(alignment: .bottom) {
                 journalPageBackgroundView
 
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        header
-                            .padding(.horizontal, 16)
-
-                        journalReorderHint
-                            .padding(.horizontal, 16)
-
-                        if isCoverSyncInProgress || pendingCoverSync != nil {
-                            JournalCoverSyncNotice(
-                                isInProgress: isCoverSyncInProgress,
-                                message: pendingCoverSync?.message,
-                                onRetry: retryPendingCoverSync
-                            )
-                            .padding(.horizontal, 16)
-                        }
-
-                        journalPageContent
-                    }
-                    .padding(.bottom, showsPrototypeData ? 140 : 118)
-                }
-                .background(Color.clear)
+                journalMainContent
 
                 BottomNavigationBar(selectedPage: $selectedPage)
 
@@ -329,11 +308,11 @@ struct JournalView: View {
             ZStack {
                 Color.homePageBackground
 
-                if let remoteCoverURL = journalPageBackground.remoteCover?.imageNSURL {
+                if showsJournalImageBackground, let remoteCoverURL = journalPageBackground.remoteCover?.imageNSURL {
                     RemoteCoverImage(url: remoteCoverURL, placeholderColor: Color.homeCardGray)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .clipped()
-                } else {
+                } else if showsJournalImageBackground {
                     Image(JournalPageBackground.defaultImageName)
                         .resizable()
                         .scaledToFill()
@@ -348,15 +327,22 @@ struct JournalView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
                 Text("Journals")
                     .font(.system(size: 24, weight: .bold, design: .serif))
-                    .foregroundStyle(hasJournalPageBackground ? Color.white : Color.storyInk)
+                    .foregroundStyle(usesLightJournalHeader ? Color.white : Color.storyInk)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
-                    .shadow(color: hasJournalPageBackground ? Color.black.opacity(0.28) : Color.clear, radius: 4, y: 2)
+                    .shadow(color: usesLightJournalHeader ? Color.black.opacity(0.28) : Color.clear, radius: 4, y: 2)
 
                 Spacer()
+
+                if selectedJournalLayout == .list && canEditJournals {
+                    EditButton()
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(usesLightJournalHeader ? Color.white : Color.homeAccent)
+                        .shadow(color: usesLightJournalHeader ? Color.black.opacity(0.24) : Color.clear, radius: 3, y: 1)
+                }
 
                 journalLayoutSwitcher
             }
@@ -367,7 +353,7 @@ struct JournalView: View {
     @ViewBuilder
     private var journalReorderHint: some View {
         if !chapters.isEmpty {
-            ReorderHintText(usesLightForeground: hasJournalPageBackground)
+            ReorderHintText(usesLightForeground: usesLightJournalHeader)
         }
     }
 
@@ -375,8 +361,20 @@ struct JournalView: View {
         journalPageBackground.remoteCover != nil
     }
 
+    private var showsJournalImageBackground: Bool {
+        selectedJournalLayout != .list
+    }
+
+    private var usesLightJournalHeader: Bool {
+        showsJournalImageBackground && hasJournalPageBackground
+    }
+
     private var usesSampleJournalContent: Bool {
         isSampleAuthorMode || authStore.userID == nil
+    }
+
+    private var canEditJournals: Bool {
+        isSampleAuthorMode || authStore.userID != nil
     }
 
     private var journalSelectButton: some View {
@@ -421,7 +419,7 @@ struct JournalView: View {
             journalLayoutButton(.list)
         }
         .padding(4)
-        .frame(height: 34)
+        .frame(height: 32)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -440,7 +438,7 @@ struct JournalView: View {
             Image(systemName: layout.systemImage)
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(isSelected ? Color.white : Color.homeMutedText)
-                .frame(width: 34, height: 26)
+                .frame(width: 32, height: 24)
                 .background(
                     Group {
                         if isSelected {
@@ -485,12 +483,71 @@ struct JournalView: View {
     }
 
     @ViewBuilder
-    private var journalPageContent: some View {
+    private var journalMainContent: some View {
         if selectedJournalLayout == .list {
-            chapterList
+            journalListContent
         } else {
-            journalGridContent
+            journalScrollableContent
         }
+    }
+
+    private var journalScrollableContent: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 10) {
+                journalPageChrome
+
+                journalPageContent
+            }
+            .padding(.bottom, showsPrototypeData ? 140 : 118)
+        }
+        .background(Color.clear)
+    }
+
+    private var journalListContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            journalPageChrome
+
+            List {
+                Section {
+                    if chapters.isEmpty {
+                        noSearchResults
+                            .listRowBackground(Color.homePageBackground)
+                    } else {
+                        journalRows
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: showsPrototypeData ? 140 : 118)
+            }
+        }
+    }
+
+    private var journalPageChrome: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+                .padding(.horizontal, 16)
+
+            journalReorderHint
+                .padding(.horizontal, 16)
+
+            if isCoverSyncInProgress || pendingCoverSync != nil {
+                JournalCoverSyncNotice(
+                    isInProgress: isCoverSyncInProgress,
+                    message: pendingCoverSync?.message,
+                    onRetry: retryPendingCoverSync
+                )
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var journalPageContent: some View {
+        journalGridContent
     }
 
     private var journalGridContent: some View {
@@ -601,39 +658,12 @@ struct JournalView: View {
         }
     }
 
-    private var chapterList: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            if chapters.isEmpty {
-                noSearchResults
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-            } else {
-                journalRows
-            }
-        }
-        .padding(.top, 4)
-    }
-
     private var journalRows: some View {
         ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
             journalListRow(for: chapter, at: index)
-            .padding(.leading, JournalChapterListMetrics.horizontalInset)
-            .padding(.trailing, JournalChapterListMetrics.trailingInset)
-            .modifier(JournalDragModifier(
-                chapter: chapter,
-                isEnabled: true,
-                draggingJournalID: $draggingJournalID
-            ))
-            .onDrop(
-                of: [UTType.text],
-                delegate: JournalGridDropDelegate(
-                    chapter: chapter,
-                    chapters: $chapters,
-                    draggingJournalID: $draggingJournalID,
-                    isEnabled: true,
-                    onReorder: persistManualJournalOrder
-                )
-            )
+            .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 12))
+            .listRowBackground(Color.homePageBackground)
+            .listRowSeparatorTint(Color.storyInk.opacity(0.10))
             .swipeActions(edge: .leading, allowsFullSwipe: false) {
                 Button {
                     beginRenaming(chapter)
@@ -643,6 +673,10 @@ struct JournalView: View {
                 .tint(Color.homeAccent)
             }
         }
+        .onDelete(perform: deleteChapters)
+        .onMove(perform: moveChapters)
+        .deleteDisabled(!canEditJournals)
+        .moveDisabled(!canEditJournals)
     }
 
     @ViewBuilder
@@ -652,18 +686,13 @@ struct JournalView: View {
             coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
             remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
             fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index),
-            isEditing: editMode == .active,
-            onDelete: { requestDeleteJournals([chapter]) }
+            isEditing: false
         )
 
-        if editMode == .active {
+        NavigationLink {
+            dailyJournalDetail(for: chapter, dayOffset: index)
+        } label: {
             row
-        } else {
-            NavigationLink {
-                dailyJournalDetail(for: chapter, dayOffset: index)
-            } label: {
-                row
-            }
         }
     }
 
@@ -1970,24 +1999,44 @@ private struct JournalDragHandle: View {
 private struct JournalDeleteButton: View {
     let title: String
     var visibleSize = JournalEditControlMetrics.visibleSize
+    var showsBackground = true
+    var backgroundColor = JournalEditControlMetrics.background
+    var visualAlignment: Alignment = .center
     let action: () -> Void
 
     var body: some View {
         Button(role: .destructive, action: action) {
-            Image(systemName: "trash.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.red)
-                .frame(width: visibleSize, height: visibleSize)
-                .background(JournalEditControlMetrics.background, in: Circle())
+            deleteIcon
+                .frame(
+                    width: JournalEditControlMetrics.touchSize,
+                    height: JournalEditControlMetrics.touchSize,
+                    alignment: visualAlignment
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete \(title)")
+    }
+
+    @ViewBuilder
+    private var deleteIcon: some View {
+        if showsBackground {
+            baseIcon
+                .background(backgroundColor, in: Circle())
                 .shadow(
                     color: JournalEditControlMetrics.shadowColor,
                     radius: JournalEditControlMetrics.shadowRadius,
                     y: JournalEditControlMetrics.shadowYOffset
                 )
-                .frame(width: JournalEditControlMetrics.touchSize, height: JournalEditControlMetrics.touchSize)
+        } else {
+            baseIcon
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Delete \(title)")
+    }
+
+    private var baseIcon: some View {
+        Image(systemName: "trash.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(Color.red)
+            .frame(width: visibleSize, height: visibleSize)
     }
 }
 
@@ -9609,6 +9658,7 @@ struct EntriesView: View {
         entriesScreen
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
+            .environment(\.editMode, $editMode)
             .onAppear {
                 loadEntriesForCurrentPageIfNeeded()
             }
@@ -9643,34 +9693,12 @@ struct EntriesView: View {
 
     private var entriesScreen: some View {
         ZStack(alignment: .bottom) {
-            WatercolorPaperPageBackground()
+            entriesPageBackgroundView
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    header
-                        .padding(.horizontal, 16)
-
-                    tabSwitcher
-                        .padding(.horizontal, 16)
-
-                    layoutSwitcherRow
-                        .padding(.horizontal, 16)
-
-                    entriesReorderHint
-                        .padding(.horizontal, 16)
-
-                    cloudEntriesNotice
-
-                    entriesSampleBanner
-
-                    entriesPageContent
+            entriesMainContent
+                .refreshable {
+                    refreshEntriesFromCloud()
                 }
-                .padding(.bottom, 104)
-            }
-            .background(Color.clear)
-            .refreshable {
-                refreshEntriesFromCloud()
-            }
 
             BottomNavigationBar(selectedPage: $selectedPage)
 
@@ -9692,6 +9720,83 @@ struct EntriesView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .center)))
                     .zIndex(4)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var entriesPageBackgroundView: some View {
+        if selectedEntryLayout == .list {
+            Color.homePageBackground
+                .ignoresSafeArea()
+        } else {
+            WatercolorPaperPageBackground()
+        }
+    }
+
+    @ViewBuilder
+    private var entriesMainContent: some View {
+        if selectedEntryLayout == .list {
+            entriesListContent
+        } else {
+            entriesScrollableContent
+        }
+    }
+
+    private var entriesScrollableContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                entriesPageChrome
+
+                entriesPageContent
+            }
+            .padding(.bottom, 104)
+        }
+        .background(Color.clear)
+    }
+
+    private var entriesListContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            entriesPageChrome
+
+            List {
+                Section {
+                    if showsCloudLoadingPlaceholder {
+                        entryLoadingRows
+                    } else if filteredEntryItems.isEmpty {
+                        emptyEntriesState
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowBackground(Color.homePageBackground)
+                    } else {
+                        entryRows
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: 104)
+            }
+        }
+    }
+
+    private var entriesPageChrome: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+                .padding(.horizontal, 16)
+
+            tabSwitcher
+                .padding(.horizontal, 16)
+
+            layoutSwitcherRow
+                .padding(.horizontal, 16)
+
+            entriesReorderHint
+                .padding(.horizontal, 16)
+
+            cloudEntriesNotice
+
+            entriesSampleBanner
         }
     }
 
@@ -9981,7 +10086,10 @@ struct EntriesView: View {
 
     @ViewBuilder
     private var entriesReorderHint: some View {
-        if selectedEntrySort == .manual && !showsSampleEntries && !filteredEntryItems.isEmpty {
+        if selectedEntrySort == .manual
+            && !showsSampleEntries
+            && !filteredEntryItems.isEmpty
+            && (selectedEntryLayout != .list || editMode == .active) {
             ReorderHintText()
         }
     }
@@ -10194,28 +10302,11 @@ struct EntriesView: View {
 
     @ViewBuilder
     private var entriesPageContent: some View {
-        if selectedEntryLayout == .list {
-            entryList
-        } else if selectedEntryTab == .completed {
+        if selectedEntryTab == .completed {
             completedEntryGrid
         } else {
             entryGrid
         }
-    }
-
-    private var entryList: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
-            if showsCloudLoadingPlaceholder {
-                entryLoadingRows
-            } else if filteredEntryItems.isEmpty {
-                emptyEntriesState
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-            } else {
-                entryRows
-            }
-        }
-        .padding(.top, 12)
     }
 
     @ViewBuilder
@@ -10256,8 +10347,9 @@ struct EntriesView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.leading, JournalChapterListMetrics.horizontalInset)
-                .padding(.trailing, JournalChapterListMetrics.trailingInset)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
+                .listRowBackground(Color.homePageBackground)
+                .listRowSeparatorTint(Color.storyInk.opacity(0.10))
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
                     Button {
                         beginRenaming(entry)
@@ -10309,22 +10401,13 @@ struct EntriesView: View {
                         .disabled(openingEntryPreview != nil)
                     }
                 }
-                .padding(.leading, JournalChapterListMetrics.horizontalInset)
-                .padding(.trailing, JournalChapterListMetrics.trailingInset)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
+                .listRowBackground(Color.homePageBackground)
+                .listRowSeparatorTint(Color.storyInk.opacity(0.10))
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
                     loadCloudThumbnailIfNeeded(for: item)
                 }
-                .onDrop(
-                    of: [UTType.text],
-                    delegate: EntryDropDelegate(
-                        item: item,
-                        items: filteredEntryItems,
-                        draggingEntryID: $draggingEntryID,
-                        isEnabled: selectedEntrySort == .manual,
-                        onReorder: moveEntryItem
-                    )
-                )
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
                     Button {
                         beginRenaming(displayEntry)
@@ -10343,11 +10426,13 @@ struct EntriesView: View {
             }
             .onDelete(perform: deleteEntries)
             .onMove(perform: moveEntries)
+            .moveDisabled(selectedEntrySort != .manual || showsSampleEntries)
 
             if isLoadingMoreCloudEntries {
                 EntryListLoadingRow()
-                    .padding(.leading, JournalChapterListMetrics.horizontalInset)
-                    .padding(.trailing, JournalChapterListMetrics.trailingInset)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
+                    .listRowBackground(Color.homePageBackground)
+                    .listRowSeparatorTint(Color.storyInk.opacity(0.10))
             }
         }
     }
@@ -10397,9 +10482,7 @@ struct EntriesView: View {
             coverHeight: 44,
             isSelecting: editMode == .active,
             isSelected: selectedEntryIDs.contains(item.id),
-            showsReorderHandle: showsManualReorderControls,
-            reorderEntryID: item.id,
-            draggingEntryID: $draggingEntryID,
+            showsReorderHandle: false,
             onSelect: {
                 toggleEntrySelection(item.id)
             }
@@ -10411,8 +10494,9 @@ struct EntriesView: View {
     private var entryLoadingRows: some View {
         ForEach(0..<4, id: \.self) { _ in
             EntryListLoadingRow()
-                .padding(.leading, JournalChapterListMetrics.horizontalInset)
-                .padding(.trailing, JournalChapterListMetrics.trailingInset)
+                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
+                .listRowBackground(Color.homePageBackground)
+                .listRowSeparatorTint(Color.storyInk.opacity(0.10))
         }
     }
 
@@ -13416,7 +13500,13 @@ private struct EntryGridPreviewCard: View {
                 }
 
                 if isSelecting && showsActions {
-                    JournalDeleteButton(title: title, action: onDelete)
+                    JournalDeleteButton(
+                        title: title,
+                        visibleSize: 29,
+                        backgroundColor: Color.white,
+                        visualAlignment: .topTrailing,
+                        action: onDelete
+                    )
                         .padding(8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
@@ -13624,7 +13714,13 @@ private struct CompletedEntryGridCard: View {
                     }
 
                     if isSelecting, let onDelete {
-                        JournalDeleteButton(title: title, action: onDelete)
+                        JournalDeleteButton(
+                            title: title,
+                            visibleSize: 29,
+                            backgroundColor: Color.white,
+                            visualAlignment: .topTrailing,
+                            action: onDelete
+                        )
                             .padding(8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             .zIndex(4)
@@ -14228,11 +14324,11 @@ private enum JournalEntryLayout: String {
 }
 
 private enum JournalChapterListMetrics {
-    static let rowHeight: CGFloat = 50
+    static let rowHeight: CGFloat = 58
     static let horizontalInset: CGFloat = 16
     static let trailingInset: CGFloat = 12
-    static let coverWidth: CGFloat = 26
-    static let coverHeight: CGFloat = 34
+    static let coverWidth: CGFloat = 36
+    static let coverHeight: CGFloat = 48
 }
 
 private struct JournalChapterListRow: View {
@@ -14244,7 +14340,7 @@ private struct JournalChapterListRow: View {
     var onDelete: () -> Void = {}
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if isEditing {
                 JournalDragHandle()
             }
@@ -14260,16 +14356,16 @@ private struct JournalChapterListRow: View {
             .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
 
             Text(chapter.title)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.storyInk)
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
-            .layoutPriority(1)
+                .layoutPriority(1)
 
             Spacer(minLength: 8)
 
             Text("\(chapter.entries.count) \(chapter.entries.count == 1 ? "entry" : "entries")")
-                .font(.system(size: 12, weight: .regular))
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(Color.homeMutedText)
                 .lineLimit(1)
                 .multilineTextAlignment(.trailing)
