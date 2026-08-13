@@ -551,6 +551,12 @@ private struct EntryPreviewFormattingSummary {
 private struct CharacterEditorSession: Identifiable {
     let id = UUID()
     let character: EntryCharacter?
+    var initialPhotoSource: CharacterInitialPhotoSource? = nil
+}
+
+private enum CharacterInitialPhotoSource {
+    case camera
+    case photoLibrary
 }
 
 private enum StoryboardGenerationPhase: Equatable {
@@ -1757,6 +1763,9 @@ struct CreateEntryView: View {
     @State private var completedEntryStoryboardScale: CGFloat = 1
     @State private var completedEntryStoryboardScaleStart: CGFloat?
     @State private var isPhotosPanelVisible = false
+    @State private var isShowingReferencePhotosSheet = false
+    @State private var isShowingEntryCharactersSheet = false
+    @State private var isEntryCharacterAddChoicesVisible = false
     @State private var isPhotoTabCollapsed = true
     @State private var isCharacterTabCollapsed = true
     @State private var isStoryDetailsTabCollapsed = true
@@ -2129,6 +2138,12 @@ struct CreateEntryView: View {
         .sheet(isPresented: $isShowingPhotoSourceSheet) {
             photoSourceSheetContent()
         }
+        .sheet(isPresented: $isShowingReferencePhotosSheet) {
+            referencePhotosSheetContent()
+        }
+        .sheet(isPresented: $isShowingEntryCharactersSheet) {
+            entryCharactersSheetContent()
+        }
     }
 
     private var editorWithCharacterSheet: some View {
@@ -2170,6 +2185,108 @@ struct CreateEntryView: View {
         )
     }
 
+    private func referencePhotosSheetContent() -> AnyView {
+        AnyView(
+            NavigationStack {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Add photos of people, places, objects, or scenery you want the storyboard to reference. Any person or animal in these photos may be added to your storyboard. To isolate a specific person or pet, use Characters instead.")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color.storyInk.opacity(0.68))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if hasStoryboardPhotos {
+                            referencePhotoFanPreview
+                                .frame(maxWidth: .infinity)
+
+                            referencePhotosSheetStripRow
+
+                            Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(Color.storyInk.opacity(0.58))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+
+                        if nextAvailablePhotoSlot != nil {
+                            referencePhotoSourceChoices
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 18)
+                    .padding(.bottom, 28)
+                }
+                .background(Color.homePageBackground.ignoresSafeArea())
+                .navigationTitle("Reference Photos")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            isShowingReferencePhotosSheet = false
+                        }
+                        .foregroundStyle(Color.storyPurple)
+                    }
+                }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.homePageBackground)
+        )
+    }
+
+    private func entryCharactersSheetContent() -> AnyView {
+        AnyView(
+            NavigationStack {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Add people or pets who appear in this story. Character references help keep them recognizable throughout your storyboard.")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color.storyInk.opacity(0.68))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if entryCharacters.isEmpty {
+                            characterPhotoSourceSection
+                        } else {
+                            VStack(alignment: .leading, spacing: 11) {
+                                Text("Characters in this Entry")
+                                    .font(.system(size: 16, weight: .bold, design: .serif))
+                                    .foregroundStyle(Color.storyInk)
+
+                                entryCharactersSheetStripRow
+                            }
+
+                            if isEntryCharacterAddChoicesVisible {
+                                characterPhotoSourceSection
+                            }
+                        }
+
+                        entryCharactersReusableLibrarySection
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 18)
+                    .padding(.bottom, 28)
+                }
+                .background(Color.homePageBackground.ignoresSafeArea())
+                .navigationTitle("Characters")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            isShowingEntryCharactersSheet = false
+                        }
+                        .foregroundStyle(Color.storyPurple)
+                    }
+                }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.homePageBackground)
+            .onAppear {
+                reusableCharacters = mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
+                refreshReusableCharacters()
+            }
+        )
+    }
+
     private func storyboardGenerationProgressSheetContent() -> AnyView {
         AnyView(
             StoryboardGenerationProgressScreen(phase: storyboardGenerationPhase) {
@@ -2188,6 +2305,7 @@ struct CreateEntryView: View {
             CharacterEditorSheet(
                 editingCharacter: session.character,
                 existingCharacters: entryCharacters,
+                initialPhotoSource: session.initialPhotoSource,
                 onSave: { character in
                     saveCharacter(character)
                 },
@@ -4735,7 +4853,7 @@ struct CreateEntryView: View {
                     dismissKeyboard()
                     previewedStoryboardPhoto = photo.image
                 } label: {
-                    referencePolaroidImage(photo.image, size: 74)
+                    referencePolaroidImage(photo.image, size: 104)
                 }
                 .buttonStyle(.plain)
                 .rotationEffect(.degrees(referenceFanRotation(for: index, count: photos.count)))
@@ -4745,7 +4863,7 @@ struct CreateEntryView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: photos.count > 1 ? 112 : 88)
+        .frame(height: photos.count > 1 ? 156 : 124)
         .padding(.top, 2)
         .padding(.bottom, 4)
     }
@@ -4768,7 +4886,7 @@ struct CreateEntryView: View {
         let visibleCount = min(count, 5)
         let center = CGFloat(visibleCount - 1) / 2
         let distance = CGFloat(index) - center
-        return CGSize(width: distance * 38, height: abs(distance) * 8)
+        return CGSize(width: distance * 54, height: abs(distance) * 12)
     }
 
     private func floatingMenuActionButton(
@@ -4872,28 +4990,52 @@ struct CreateEntryView: View {
     private func openReferencesPanel(expandPhotos: Bool) {
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.2)) {
-            isPhotosPanelVisible = true
+            isShowingReferencePhotosSheet = true
             isShowingCustomizeSheet = false
             isShowingJournalPromptsSheet = false
-            if expandPhotos {
-                isPhotoTabCollapsed = false
-            }
+            isPhotosPanelVisible = false
         }
     }
 
     private func openCharactersFromShelf() {
         dismissKeyboard()
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingEntryCharactersSheet = true
+            isEntryCharacterAddChoicesVisible = entryCharacters.isEmpty
+            isShowingCustomizeSheet = false
+            isShowingJournalPromptsSheet = false
+            isPhotosPanelVisible = false
+        }
+    }
 
-        if entryCharacters.isEmpty {
-            characterEditorSession = CharacterEditorSession(character: nil)
+    private func presentCameraFromReferencePhotosSheet() {
+        guard let nextAvailablePhotoSlot else {
             return
         }
 
-        withAnimation(.snappy(duration: 0.2)) {
-            isPhotosPanelVisible = true
-            isShowingCustomizeSheet = false
-            isShowingJournalPromptsSheet = false
-            isCharacterTabCollapsed = false
+        selectedPhotoSlot = nextAvailablePhotoSlot
+        isShowingReferencePhotosSheet = false
+        DispatchQueue.main.async {
+            isShowingCamera = true
+        }
+    }
+
+    private func presentPhotoLibraryFromReferencePhotosSheet() {
+        guard let nextAvailablePhotoSlot else {
+            return
+        }
+
+        selectedPhotoSlot = nextAvailablePhotoSlot
+        isShowingReferencePhotosSheet = false
+        DispatchQueue.main.async {
+            isShowingPhotoLibrary = true
+        }
+    }
+
+    private func presentCreateCharacterFromEntryCharactersSheet(source: CharacterInitialPhotoSource) {
+        isShowingEntryCharactersSheet = false
+        DispatchQueue.main.async {
+            characterEditorSession = CharacterEditorSession(character: nil, initialPhotoSource: source)
         }
     }
 
@@ -6694,6 +6836,295 @@ struct CreateEntryView: View {
                 addPhotoStripButton
             }
         }
+    }
+
+    private var referencePhotosSheetStripRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 9) {
+                ForEach(Array(storyboardPhotos.compactMap { $0 }.enumerated()), id: \.element.id) { index, photo in
+                    StoryboardPhotoStripThumbnail(
+                        image: photo.image,
+                        size: 78,
+                        bottomPadding: 16,
+                        overflow: 12,
+                        removeAction: {
+                            removeStoryboardPhoto(at: index)
+                        },
+                        tapAction: {
+                            dismissKeyboard()
+                            previewedStoryboardPhoto = photo.image
+                        }
+                    )
+                    .onDrag {
+                        draggedStoryboardPhotoIndex = index
+                        return NSItemProvider(object: String(index) as NSString)
+                    }
+                    .onDrop(
+                        of: [.text],
+                        delegate: StoryboardPhotoDropDelegate(
+                            photos: $storyboardPhotos,
+                            draggedIndex: $draggedStoryboardPhotoIndex,
+                            destinationIndex: index
+                        )
+                    )
+                }
+
+            }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 4)
+        }
+        .frame(height: 110)
+    }
+
+    private var referencePhotoSourceChoices: some View {
+        HStack(spacing: 12) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                entryInputActionCard(
+                    title: "Camera",
+                    subtitle: "Take a photo",
+                    systemName: "camera.fill"
+                ) {
+                    presentCameraFromReferencePhotosSheet()
+                }
+            }
+
+            entryInputActionCard(
+                title: "Photo Library",
+                subtitle: "Choose an existing photo",
+                systemName: "photo.on.rectangle.angled"
+            ) {
+                presentPhotoLibraryFromReferencePhotosSheet()
+            }
+        }
+    }
+
+    private var entryCharactersSheetStripRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(entryCharacters) { character in
+                    CharacterStripThumbnail(
+                        character: character,
+                        tapAction: {
+                            isShowingEntryCharactersSheet = false
+                            DispatchQueue.main.async {
+                                characterEditorSession = CharacterEditorSession(character: character)
+                            }
+                        },
+                        removeAction: {
+                            deleteCharacter(character)
+                        }
+                    )
+                }
+
+                Button {
+                    isEntryCharacterAddChoicesVisible = true
+                } label: {
+                    StoryboardPhotoStripAddButton(
+                        systemName: "plus",
+                        iconColor: Color.storyInk.opacity(0.82),
+                        size: 58,
+                        iconWeight: .light,
+                        shape: .circle
+                    )
+                    .padding(.top, 5)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add character")
+                .frame(width: 68, height: 88, alignment: .top)
+            }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
+        }
+        .frame(height: 92)
+    }
+
+    private var characterPhotoSourceSection: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("Character")
+                .font(.system(size: 16, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            HStack(spacing: 12) {
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    entryInputActionCard(
+                        title: "Camera",
+                        subtitle: "Take a portrait",
+                        systemName: "camera.fill"
+                    ) {
+                        presentCreateCharacterFromEntryCharactersSheet(source: .camera)
+                    }
+                }
+
+                entryInputActionCard(
+                    title: "Photo Library",
+                    subtitle: "Choose a portrait",
+                    systemName: "photo.on.rectangle.angled"
+                ) {
+                    presentCreateCharacterFromEntryCharactersSheet(source: .photoLibrary)
+                }
+            }
+        }
+    }
+
+    private var entryCharactersReusableLibrarySection: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 8) {
+                Text("My Characters")
+                    .font(.system(size: 16, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+
+                Spacer(minLength: 8)
+
+                Button {
+                    refreshReusableCharacters()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.storyPurple)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isLoadingReusableCharacters)
+                .accessibilityLabel("Refresh My Characters")
+            }
+
+            Text("Choose someone you've already created to attach them to this entry.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.62))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if isLoadingReusableCharacters {
+                reusableCharacterStatusRow(systemName: nil, text: "Loading characters", showsProgress: true)
+            }
+
+            if let reusableCharactersErrorMessage {
+                reusableCharacterStatusRow(systemName: "exclamationmark.triangle", text: reusableCharactersErrorMessage, showsProgress: false)
+            }
+
+            if availableReusableCharacters.isEmpty && !isLoadingReusableCharacters {
+                reusableCharacterStatusRow(
+                    systemName: "person.crop.circle.badge.questionmark",
+                    text: entryCharacters.isEmpty ? "No saved characters yet." : "No more saved characters to add.",
+                    showsProgress: false
+                )
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(availableReusableCharacters) { character in
+                        Button {
+                            addReusableCharacter(character)
+                        } label: {
+                            reusableCharacterAttachRow(character)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func reusableCharacterStatusRow(systemName: String?, text: String, showsProgress: Bool) -> some View {
+        HStack(spacing: 10) {
+            if showsProgress {
+                ProgressView()
+                    .tint(Color.storyPurple)
+            } else if let systemName {
+                Image(systemName: systemName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple.opacity(0.82))
+                    .frame(width: 20)
+            }
+
+            Text(text)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.66))
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 52)
+        .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func reusableCharacterAttachRow(_ character: EntryCharacter) -> some View {
+        HStack(spacing: 12) {
+            Image(uiImage: character.image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 58, height: 58)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(character.name)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Text(character.role.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.58))
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 76)
+        .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
+    }
+
+    private func entryInputActionCard(
+        title: String,
+        subtitle: String,
+        systemName: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: systemName)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
+                    .frame(height: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.9))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.78)
+
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.62))
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.76)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 122)
+            .padding(.horizontal, 12)
+            .padding(.top, 14)
+            .background(Color.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.storyBorder.opacity(0.7), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -10343,12 +10774,11 @@ struct ArtStyleGridOption: View {
 
 struct StoryboardPhotoStripThumbnail: View {
     let image: UIImage
+    var size: CGFloat = 56
+    var bottomPadding: CGFloat = 12
+    var overflow: CGFloat = 10
     let removeAction: () -> Void
     let tapAction: () -> Void
-
-    private let size: CGFloat = 56
-    private let bottomPadding: CGFloat = 12
-    private let overflow: CGFloat = 6
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -10389,10 +10819,12 @@ struct StoryboardPhotoStripThumbnail: View {
                 removeAction()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 22, height: 22)
                     .background(Color.black.opacity(0.58), in: Circle())
+                    .frame(width: 34, height: 34)
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Remove reference photo")
@@ -10411,7 +10843,7 @@ struct CharacterStripThumbnail: View {
     let removeAction: () -> Void
 
     private let imageSize: CGFloat = 58
-    private let badgeOverflow: CGFloat = 5
+    private let badgeOverflow: CGFloat = 10
 
     var body: some View {
         VStack(spacing: 4) {
@@ -10434,10 +10866,12 @@ struct CharacterStripThumbnail: View {
 
                 Button(action: removeAction) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.white)
-                        .frame(width: 15, height: 15)
+                        .frame(width: 22, height: 22)
                         .background(Color.black.opacity(0.58), in: Circle())
+                        .frame(width: 34, height: 34)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Remove \(character.name)")
@@ -10758,6 +11192,7 @@ private struct CharacterEditorSheet: View {
 
     let editingCharacter: EntryCharacter?
     let existingCharacters: [EntryCharacter]
+    let initialPhotoSource: CharacterInitialPhotoSource?
     let onSave: (EntryCharacter) -> Void
     let onDelete: ((EntryCharacter) -> Void)?
 
@@ -10771,15 +11206,18 @@ private struct CharacterEditorSheet: View {
     @State private var name: String
     @State private var role: CharacterRole
     @State private var validationMessage: String?
+    @State private var didPresentInitialPhotoSource = false
 
     init(
         editingCharacter: EntryCharacter?,
         existingCharacters: [EntryCharacter],
+        initialPhotoSource: CharacterInitialPhotoSource? = nil,
         onSave: @escaping (EntryCharacter) -> Void,
         onDelete: ((EntryCharacter) -> Void)?
     ) {
         self.editingCharacter = editingCharacter
         self.existingCharacters = existingCharacters
+        self.initialPhotoSource = initialPhotoSource
         self.onSave = onSave
         self.onDelete = onDelete
         _step = State(initialValue: editingCharacter == nil ? .choosePhoto : .details)
@@ -10848,6 +11286,29 @@ private struct CharacterEditorSheet: View {
                     setCharacterCropSourceImage(image)
                 }
                 .ignoresSafeArea()
+            }
+            .onAppear {
+                presentInitialPhotoSourceIfNeeded()
+            }
+        }
+    }
+
+    private func presentInitialPhotoSourceIfNeeded() {
+        guard !didPresentInitialPhotoSource, editingCharacter == nil, let initialPhotoSource else {
+            return
+        }
+
+        didPresentInitialPhotoSource = true
+        DispatchQueue.main.async {
+            switch initialPhotoSource {
+            case .camera:
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    isShowingCharacterCamera = true
+                } else {
+                    isShowingCharacterPhotoLibrary = true
+                }
+            case .photoLibrary:
+                isShowingCharacterPhotoLibrary = true
             }
         }
     }
