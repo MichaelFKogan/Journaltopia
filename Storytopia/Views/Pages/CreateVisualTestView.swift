@@ -8,7 +8,7 @@ struct CreateVisualTestView: View {
     @State private var savesDraft = true
     @State private var isPrivate = false
 
-    private let styles = ["Anime", "Graphic Novel", "Manga", "Cozy"]
+    private let styles = ["Anime", "Graphic Novel", "Manga"]
     private let layouts = ["3 Panel", "5 Panel", "6 Panel"]
 
     var body: some View {

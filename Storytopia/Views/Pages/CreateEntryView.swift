@@ -1687,7 +1687,7 @@ private struct DraftPageThumbnail: View {
 
 struct CreateEntryView: View {
     private static let defaultArtStyle = "Anime"
-    private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Cozy Storybook", "Pop Art", "Colored Journal"]
+    private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Pop Art"]
     let presentation: CreateEntryPresentation
 
     @Binding var entryText: String
@@ -3762,7 +3762,7 @@ struct CreateEntryView: View {
         storyboardPhotos = photos.map(Optional.some)
             + Array(repeating: nil, count: max(0, 5 - photos.count))
         entryCharacters = EntryCharacterRules.orderedCharacters(draft.characters)
-        selectedArtStyle = draft.artStyle
+        selectedArtStyle = artStyles.contains(draft.artStyle) ? draft.artStyle : Self.defaultArtStyle
         storyLocation = draft.location
         storyDate = draft.date
         storyDatePrecision = draft.datePrecision
@@ -12200,12 +12200,8 @@ func inlineArtStyleAssetName(for title: String) -> String {
         return "inline_art_style_pixel_art"
     case "Manga":
         return "inline_art_style_manga"
-    case "Cozy Storybook":
-        return "inline_art_style_cozy_storybook"
     case "Pop Art":
         return "inline_art_style_pop_art"
-    case "Colored Journal":
-        return "inline_art_style_colored_journal"
     default:
         return "inline_art_style_anime"
     }
@@ -12246,28 +12242,12 @@ switch title {
         The final result should look like pages from a published manga series, not a realistic black-and-white photograph.
         """
 
-    case "Cozy Storybook":
-        return """
-        Whimsical storybook illustration. Hand-painted watercolor and gouache textures, warm colors, soft edges, charming character designs, dreamy environments, and magical storybook atmosphere.
-        NOT photorealistic.
-        Characters should feel illustrated, charming, and slightly idealized rather than realistic.
-        The final result should look like artwork from a beautifully illustrated children's storybook.
-        """
-
     case "Pop Art":
         return """
         Bold pop art comic artwork inspired by classic comic books and gallery pop art. Thick black outlines, flat saturated colors, strong graphic shapes, Ben-Day dots, poster-like composition, and exaggerated visual impact.
         NOT photorealistic.
         Simplify forms into graphic comic-book shapes and bold color blocks.
         The final result should look like authentic pop art illustration, not a photo with color effects.
-        """
-
-    case "Colored Journal":
-        return """
-        Hand-drawn illustrated journal artwork. Loose sketch lines, colored pencil textures, marker rendering, handwritten sketchbook energy, personal diary charm, and expressive imperfect drawing.
-        NOT photorealistic.
-        Everything should feel hand-drawn by an artist in a personal journal. Visible sketch lines, artistic imperfections, and traditional drawing textures are encouraged.
-        The final result should look like illustrated journal pages, not realistic digital artwork.
         """
 
     default:
@@ -12289,12 +12269,8 @@ func artStyleAssetName(for title: String) -> String {
         return "art_style_pixel_art"
     case "Manga":
         return "art_style_manga"
-    case "Cozy Storybook":
-        return "art_style_cozy_storybook"
     case "Pop Art":
         return "art_style_pop_art"
-    case "Colored Journal":
-        return "art_style_colored_journal"
     default:
         return "art_style_anime"
     }

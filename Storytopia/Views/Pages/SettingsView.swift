@@ -9,7 +9,7 @@ struct SettingsView: View {
     @State private var isSigningIn = false
     @State private var isSigningOut = false
 
-    private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Cozy Storybook", "Pop Art", "Colored Journal"]
+    private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Pop Art"]
 
     var body: some View {
         List {
