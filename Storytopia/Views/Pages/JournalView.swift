@@ -10403,6 +10403,7 @@ struct EntriesView: View {
                     isOpening: openingEntryPreview?.id == item.id,
                     isSelecting: editMode == .active && !showsSampleEntries,
                     isSelected: selectedEntryIDs.contains(item.id),
+                    selectionBadgeStyle: .prominentGrid,
                     onOpen: {
                         if editMode == .active {
                             toggleEntrySelection(item.id)
@@ -10452,6 +10453,7 @@ struct EntriesView: View {
                 isSelecting: editMode == .active,
                 isSelected: selectedEntryIDs.contains(entry.id),
                 isSample: true,
+                selectionBadgeStyle: .prominentGrid,
                 onOpen: {
                     if editMode == .active {
                         toggleEntrySelection(entry.id)
@@ -10479,6 +10481,7 @@ struct EntriesView: View {
                 isSelecting: editMode == .active,
                 isSelected: selectedEntryIDs.contains(entry.id),
                 isSample: true,
+                selectionBadgeStyle: .prominentGrid,
                 onOpen: {
                     if editMode == .active {
                         toggleEntrySelection(entry.id)
@@ -10512,6 +10515,7 @@ struct EntriesView: View {
                 isOpening: openingEntryPreview?.id == item.id,
                 isSelecting: editMode == .active && !showsSampleEntries,
                 isSelected: selectedEntryIDs.contains(item.id),
+                selectionBadgeStyle: .prominentGrid,
                 onOpen: {
                     if editMode == .active {
                         toggleEntrySelection(item.id)
@@ -10536,6 +10540,7 @@ struct EntriesView: View {
                 isOpening: openingEntryPreview?.id == item.id,
                 isSelecting: editMode == .active && !showsSampleEntries,
                 isSelected: selectedEntryIDs.contains(item.id),
+                selectionBadgeStyle: .prominentGrid,
                 onOpen: {
                     if showsSampleEntries {
                         openSampleEntry(displayEntry)
@@ -12830,17 +12835,44 @@ private struct EntrySampleBadge: View {
     }
 }
 
+private enum EntrySelectionBadgeStyle {
+    case standard
+    case prominentGrid
+}
+
 private struct EntrySelectionBadge: View {
     let isSelected: Bool
+    var style: EntrySelectionBadgeStyle = .standard
 
     var body: some View {
-        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-            .font(.system(size: 23, weight: .semibold))
-            .symbolRenderingMode(.palette)
-            .foregroundStyle(isSelected ? Color.white : Color.homeBorder, isSelected ? Color.storyPurple : Color.white)
-            .frame(width: 32, height: 32)
-            .background(Color.white.opacity(0.9), in: Circle())
-            .shadow(color: Color.storyInk.opacity(0.14), radius: 5, y: 2)
+        switch style {
+        case .standard:
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 23, weight: .semibold))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(isSelected ? Color.white : Color.homeBorder, isSelected ? Color.storyPurple : Color.white)
+                .frame(width: 32, height: 32)
+                .background(Color.white.opacity(0.9), in: Circle())
+                .shadow(color: Color.storyInk.opacity(0.14), radius: 5, y: 2)
+        case .prominentGrid:
+            ZStack {
+                Circle()
+                    .fill(isSelected ? Color.storyPurple : Color.white)
+                    .overlay(
+                        Circle()
+                            .stroke(isSelected ? Color.clear : Color.homeBorder, lineWidth: 2)
+                    )
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(Color.white)
+                }
+            }
+            .frame(width: 26, height: 26)
+            .shadow(color: Color.white.opacity(0.95), radius: 5, y: 0)
+            .shadow(color: Color.storyInk.opacity(0.2), radius: 4, y: 2)
+        }
     }
 }
 
@@ -13073,6 +13105,7 @@ private struct EntryGridPreviewCard: View {
     var isSelecting = false
     var isSelected = false
     var isSample = false
+    var selectionBadgeStyle: EntrySelectionBadgeStyle = .standard
     let onOpen: () -> Void
     let onDelete: () -> Void
     var onRename: (() -> Void)?
@@ -13107,7 +13140,7 @@ private struct EntryGridPreviewCard: View {
                 }
 
                 if isSelecting {
-                    EntrySelectionBadge(isSelected: isSelected)
+                    EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
                         .padding(8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -13198,6 +13231,7 @@ private struct CompletedEntryGridCard: View {
     let isSelecting: Bool
     let isSelected: Bool
     let isSample: Bool
+    let selectionBadgeStyle: EntrySelectionBadgeStyle
     let onOpen: () -> Void
     let onDelete: (() -> Void)?
     let onRename: (() -> Void)?
@@ -13215,6 +13249,7 @@ private struct CompletedEntryGridCard: View {
         isSelecting: Bool = false,
         isSelected: Bool = false,
         isSample: Bool = false,
+        selectionBadgeStyle: EntrySelectionBadgeStyle = .standard,
         onOpen: @escaping () -> Void,
         onDelete: (() -> Void)? = nil,
         onRename: (() -> Void)? = nil
@@ -13230,6 +13265,7 @@ private struct CompletedEntryGridCard: View {
         self.isSelecting = isSelecting
         self.isSelected = isSelected
         self.isSample = isSample
+        self.selectionBadgeStyle = selectionBadgeStyle
         self.onOpen = onOpen
         self.onDelete = onDelete
         self.onRename = onRename
@@ -13268,7 +13304,7 @@ private struct CompletedEntryGridCard: View {
                     }
 
                     if isSelecting {
-                        EntrySelectionBadge(isSelected: isSelected)
+                        EntrySelectionBadge(isSelected: isSelected, style: selectionBadgeStyle)
                             .padding(8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .zIndex(3)
