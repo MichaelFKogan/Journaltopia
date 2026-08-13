@@ -458,6 +458,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
     let location: String
     let date: Date
     let datePrecision: EntryDatePrecision
+    let createdAt: Date
     let savesDraft: Bool
     let isPrivate: Bool
     let fontChoiceRawValue: String?
@@ -477,6 +478,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
         location: String,
         date: Date,
         datePrecision: EntryDatePrecision,
+        createdAt: Date,
         savesDraft: Bool,
         isPrivate: Bool,
         fontChoiceRawValue: String?,
@@ -503,6 +505,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
         self.location = location
         self.date = date
         self.datePrecision = datePrecision
+        self.createdAt = createdAt
         self.savesDraft = savesDraft
         self.isPrivate = isPrivate
         self.fontChoiceRawValue = fontChoiceRawValue
@@ -2837,7 +2840,8 @@ struct CreateEntryView: View {
             if !isFullScreenEditorVisible {
                 createToolbarItems(
                     title: editorToolbarTitle,
-                    showsCloseButton: true
+                    showsCloseButton: true,
+                    topDateText: editorToolbarDateText
                 )
             }
         }
@@ -3000,7 +3004,8 @@ struct CreateEntryView: View {
     private func createToolbarItems(
         title: String,
         showsCloseButton: Bool,
-        showsEntryDateButton: Bool = false
+        showsEntryDateButton: Bool = false,
+        topDateText: String? = nil
     ) -> some ToolbarContent {
         if showsCloseButton {
             ToolbarItem(placement: .topBarLeading) {
@@ -3053,9 +3058,17 @@ struct CreateEntryView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Entry date, \(entryDateMetadataText)")
             } else {
-                Text(title)
-                    .font(.system(size: 18, weight: .semibold, design: .serif))
-                    .foregroundColor(Color.storyGray.opacity(0.46))
+                if let topDateText {
+                    Text(topDateText)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color.storyGray.opacity(0.58))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                } else {
+                    Text(title)
+                        .font(.system(size: 18, weight: .semibold, design: .serif))
+                        .foregroundColor(Color.storyGray.opacity(0.46))
+                }
             }
         }
 
@@ -3787,6 +3800,7 @@ struct CreateEntryView: View {
             location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
             date: storyDate,
             datePrecision: storyDatePrecision,
+            createdAt: CreateEntryDraftStore.load(id: id)?.createdAt ?? loadedDraftSnapshot?.createdAt ?? Date(),
             savesDraft: savesDraft,
             isPrivate: isPrivateEntry,
             fontChoiceRawValue: selectedFontChoice.rawValue,
@@ -4433,6 +4447,14 @@ struct CreateEntryView: View {
         case .yearOnly:
             storyDate.formatted(.dateTime.year())
         }
+    }
+
+    private var editorToolbarDateText: String {
+        if let createdAt = loadedDraftSnapshot?.createdAt, activeDraftID != nil || presentation.isEditDraft || opensExistingEntryReadMode {
+            return createdAt.formatted(.dateTime.month(.wide).day().year())
+        }
+
+        return Date().formatted(.dateTime.month(.wide).day().year())
     }
 
     private var floatingEditorMenu: some View {

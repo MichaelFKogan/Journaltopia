@@ -1460,7 +1460,8 @@ struct JournalView: View {
                 isStrikethrough: entry.isStrikethrough,
                 isHighlighted: entry.isHighlighted,
                 textAlignmentRawValue: entry.textAlignmentRawValue,
-                thumbnail: entry.thumbnail
+                thumbnail: entry.thumbnail,
+                createdAt: entry.createdAt
             )
         }
     }
@@ -1482,7 +1483,8 @@ struct JournalView: View {
             richText: entry.richText,
             time: entry.date.formatted(.dateTime.hour().minute()),
             location: entry.location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : entry.location,
-            imageNames: []
+            imageNames: [],
+            createdAt: entry.createdAt
         )
     }
 
@@ -9082,7 +9084,8 @@ private extension CreateEntryDraft {
             richText: richText,
             time: timeFormatter.string(from: displayDate),
             location: trimmedLocation.isEmpty ? nil : trimmedLocation,
-            imageNames: []
+            imageNames: [],
+            createdAt: createdAt
         )
     }
 
@@ -10868,7 +10871,8 @@ struct EntriesView: View {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entry.thumbnail
+            thumbnail: entry.thumbnail,
+            createdAt: entry.createdAt
         )
 
         guard persistedSampleID != nil else {
@@ -11615,7 +11619,8 @@ struct EntriesView: View {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entryThumbnail
+            thumbnail: entryThumbnail,
+            createdAt: entry.createdAt
         )
 
         if renamedID != nil {
@@ -12516,7 +12521,7 @@ struct EntriesView: View {
     }
 
     private func materializeCloudEntryIfNeeded(_ item: EntryDisplayItem) async -> UUID? {
-        if let localDraftID = item.localDraftID {
+        if item.cloudEntry == nil, let localDraftID = item.localDraftID {
             return localDraftID
         }
 
@@ -12573,7 +12578,8 @@ struct EntriesView: View {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entry.thumbnail
+            thumbnail: entry.thumbnail,
+            createdAt: entry.createdAt
         )
     }
 
@@ -17817,10 +17823,6 @@ private struct JournalDetailEntryBrowser: View {
             return displayEntry
         }
 
-        guard displayEntry.photos.isEmpty || displayEntry.characters.isEmpty else {
-            return displayEntry
-        }
-
         do {
             let fullCloudEntry = try await SupabaseEntryRepository().getEntry(id: cloudEntry.id)
             let cloudDraft = CreateEntryDraft.fromCloud(fullCloudEntry, thumbnail: displayEntry.thumbnail)
@@ -17861,7 +17863,8 @@ private struct JournalDetailEntryBrowser: View {
                 isStrikethrough: cloudDraft.isStrikethrough,
                 isHighlighted: cloudDraft.isHighlighted,
                 textAlignmentRawValue: cloudDraft.textAlignmentRawValue,
-                thumbnail: cloudDraft.thumbnail
+                thumbnail: cloudDraft.thumbnail,
+                createdAt: cloudDraft.createdAt
             )
 
             return CreateEntryDraftStore.load(id: cloudDraft.id) ?? cloudDraft
@@ -18458,6 +18461,11 @@ private struct PrototypeEntryDetailView: View {
 
     private var entryIntroduction: some View {
         VStack(alignment: .leading, spacing: 13) {
+            Text(entry.createdAt.formatted(.dateTime.month(.wide).day().year()))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.56))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             HStack(spacing: 10) {
                 VStack(spacing: 1) {
                     Text(entry.weekday)
@@ -20475,6 +20483,7 @@ struct PrototypeEntry: Identifiable {
     let time: String
     let location: String?
     let imageNames: [String]
+    let createdAt: Date
 
     init(
         id: UUID = UUID(),
@@ -20485,7 +20494,8 @@ struct PrototypeEntry: Identifiable {
         richText: NotebookRichTextDocument? = nil,
         time: String,
         location: String?,
-        imageNames: [String]
+        imageNames: [String],
+        createdAt: Date = Date()
     ) {
         self.id = id
         self.weekday = weekday
@@ -20496,6 +20506,7 @@ struct PrototypeEntry: Identifiable {
         self.time = time
         self.location = location
         self.imageNames = imageNames
+        self.createdAt = createdAt
     }
 
     func copy(imageNames: [String]) -> PrototypeEntry {
@@ -20508,7 +20519,8 @@ struct PrototypeEntry: Identifiable {
             richText: richText,
             time: time,
             location: location,
-            imageNames: imageNames
+            imageNames: imageNames,
+            createdAt: createdAt
         )
     }
 

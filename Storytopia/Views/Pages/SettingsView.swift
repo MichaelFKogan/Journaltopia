@@ -573,7 +573,8 @@ private struct SampleStudioView: View {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entry.thumbnail
+            thumbnail: entry.thumbnail,
+            createdAt: entry.createdAt
         )
         activeDraftID = savedID ?? entry.id
         scratchDraftID = activeDraftID

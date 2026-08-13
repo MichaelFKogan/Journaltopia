@@ -619,7 +619,8 @@ enum CreateEntryDraftStore {
         isStrikethrough: Bool = false,
         isHighlighted: Bool = false,
         textAlignmentRawValue: String = "leading",
-        thumbnail: UIImage? = nil
+        thumbnail: UIImage? = nil,
+        createdAt: Date? = nil
     ) -> UUID? {
         save(
             id: id,
@@ -646,7 +647,8 @@ enum CreateEntryDraftStore {
             isStrikethrough: isStrikethrough,
             isHighlighted: isHighlighted,
             textAlignmentRawValue: textAlignmentRawValue,
-            thumbnail: thumbnail
+            thumbnail: thumbnail,
+            createdAt: createdAt
         )
     }
 
@@ -676,7 +678,8 @@ enum CreateEntryDraftStore {
         isStrikethrough: Bool = false,
         isHighlighted: Bool = false,
         textAlignmentRawValue: String = "leading",
-        thumbnail: UIImage? = nil
+        thumbnail: UIImage? = nil,
+        createdAt: Date? = nil
     ) -> UUID? {
         let draftID = id ?? UUID()
         let draftDirectory = directory(for: draftID)
@@ -770,7 +773,7 @@ enum CreateEntryDraftStore {
                 isStrikethrough: isStrikethrough,
                 isHighlighted: isHighlighted,
                 textAlignmentRawValue: textAlignmentRawValue,
-                createdAt: existingDraft?.createdAt ?? now,
+                createdAt: createdAt ?? existingDraft?.createdAt ?? now,
                 updatedAt: now,
                 displayOrder: existingDraft?.displayOrder ?? defaultDisplayOrder(for: now)
             )
