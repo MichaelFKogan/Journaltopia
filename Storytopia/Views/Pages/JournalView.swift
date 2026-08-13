@@ -358,13 +358,6 @@ struct JournalView: View {
 
                 Spacer()
 
-                journalSelectButton
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(hasJournalPageBackground ? Color.white : Color.homeAccent)
-                    .shadow(color: hasJournalPageBackground ? Color.black.opacity(0.22) : Color.clear, radius: 3, y: 1)
-
-                journalBackgroundButton
-
                 journalLayoutSwitcher
             }
         }
@@ -1955,16 +1948,57 @@ private struct JournalOpeningBook: View {
 }
 
 private struct JournalDragHandle: View {
+    var visibleSize = JournalEditControlMetrics.visibleSize
+
     var body: some View {
         Image(systemName: "line.3.horizontal")
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(Color.storyInk.opacity(0.72))
-            .frame(width: 30, height: 30)
-            .background(Color.white.opacity(0.94), in: Circle())
-            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.homeMutedText.opacity(0.88))
+            .frame(width: visibleSize, height: visibleSize)
+            .background(JournalEditControlMetrics.background, in: Circle())
+            .shadow(
+                color: JournalEditControlMetrics.shadowColor,
+                radius: JournalEditControlMetrics.shadowRadius,
+                y: JournalEditControlMetrics.shadowYOffset
+            )
+            .frame(width: JournalEditControlMetrics.touchSize, height: JournalEditControlMetrics.touchSize)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
     }
+}
+
+private struct JournalDeleteButton: View {
+    let title: String
+    var visibleSize = JournalEditControlMetrics.visibleSize
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: .destructive, action: action) {
+            Image(systemName: "trash.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .frame(width: visibleSize, height: visibleSize)
+                .background(JournalEditControlMetrics.background, in: Circle())
+                .shadow(
+                    color: JournalEditControlMetrics.shadowColor,
+                    radius: JournalEditControlMetrics.shadowRadius,
+                    y: JournalEditControlMetrics.shadowYOffset
+                )
+                .frame(width: JournalEditControlMetrics.touchSize, height: JournalEditControlMetrics.touchSize)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete \(title)")
+    }
+}
+
+private enum JournalEditControlMetrics {
+    static let visibleSize: CGFloat = 36
+    static let compactVisibleSize: CGFloat = 32
+    static let touchSize: CGFloat = 44
+    static let background = Color.white.opacity(0.94)
+    static let shadowColor = Color.black.opacity(0.14)
+    static let shadowRadius: CGFloat = 4
+    static let shadowYOffset: CGFloat = 2
 }
 
 private struct ReorderHintText: View {
@@ -2019,20 +2053,17 @@ private struct JournalCoverCard: View {
                 }
 
             if isEditing {
-                JournalDragHandle()
-                    .padding(8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.system(size: 24, weight: .bold))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, Color.red)
-                        .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+                if usesWideGridStyle {
+                    JournalDragHandle(visibleSize: editControlVisibleSize)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-                .buttonStyle(.plain)
-                .padding(8)
-                .accessibilityLabel("Delete \(chapter.title)")
+
+                JournalDeleteButton(title: chapter.title, visibleSize: editControlVisibleSize, action: onDelete)
+                    .padding(.top, 8)
+                    .padding(.leading, 8)
+                    .padding(.trailing, usesWideGridStyle ? 8 : 2)
+                    .padding(.bottom, 8)
             } else {
                 Menu {
                     Button(action: onCustomize) {
@@ -2075,6 +2106,10 @@ private struct JournalCoverCard: View {
             radius: usesWideGridStyle ? 20 : 10,
             y: usesWideGridStyle ? 12 : 5
         )
+    }
+
+    private var editControlVisibleSize: CGFloat {
+        usesWideGridStyle ? JournalEditControlMetrics.visibleSize : JournalEditControlMetrics.compactVisibleSize
     }
 
     private var journalTitleScrim: some View {
@@ -10481,6 +10516,9 @@ struct EntriesView: View {
                             openEntryItem(item, asCompleted: true, storyboardImage: storyboardUIImage(for: item, fallbackIndex: index))
                         }
                     },
+                    onDelete: {
+                        requestDeleteEntry(item)
+                    },
                     onSelect: {
                         toggleEntrySelection(item.id)
                     }
@@ -10604,6 +10642,9 @@ struct EntriesView: View {
                             storyboardImage: storyboardUIImage(for: item, fallbackIndex: fallbackIndex)
                         )
                     }
+                },
+                onDelete: {
+                    requestDeleteEntry(item)
                 },
                 onSelect: {
                     toggleEntrySelection(item.id)
@@ -13368,6 +13409,14 @@ private struct EntryGridPreviewCard: View {
 
                 if showsReorderHandle, let reorderEntryID {
                     EntryReorderHandle(entryID: reorderEntryID, draggingEntryID: $draggingEntryID)
+                        .padding(.top, isSelecting && showsActions ? 42 : 8)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                }
+
+                if isSelecting && showsActions {
+                    JournalDeleteButton(title: title, action: onDelete)
                         .padding(8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
@@ -13567,9 +13616,18 @@ private struct CompletedEntryGridCard: View {
 
                     if showsReorderHandle, let reorderEntryID {
                         EntryReorderHandle(entryID: reorderEntryID, draggingEntryID: $draggingEntryID)
-                            .padding(8)
+                            .padding(.top, isSelecting && onDelete != nil ? 42 : 8)
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             .zIndex(3)
+                    }
+
+                    if isSelecting, let onDelete {
+                        JournalDeleteButton(title: title, action: onDelete)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            .zIndex(4)
                     }
                 }
             }
@@ -14217,14 +14275,7 @@ private struct JournalChapterListRow: View {
                 .multilineTextAlignment(.trailing)
 
             if isEditing {
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.system(size: 22, weight: .bold))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, Color.red)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete \(chapter.title)")
+                JournalDeleteButton(title: chapter.title, action: onDelete)
             }
         }
         .frame(height: JournalChapterListMetrics.rowHeight)
