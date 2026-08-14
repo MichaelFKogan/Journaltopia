@@ -169,7 +169,6 @@ struct ContentView: View {
                 openCreatePage: openCreatePageFromHome,
                 openEntriesPage: openEntriesPageFromHome,
                 openJournalsPage: openJournalsPage,
-                openProfilePage: openProfilePageFromHome,
                 openStorySoFarPage: openStorySoFarPage
             )
                 .transition(.identity)
@@ -284,11 +283,6 @@ struct ContentView: View {
     private func openJournalsPage() {
         resetHomeCardState()
         selectPage(.journal)
-    }
-
-    private func openProfilePageFromHome() {
-        resetHomeCardState()
-        selectPage(.profile)
     }
 
     private func openStorySoFarPage() {

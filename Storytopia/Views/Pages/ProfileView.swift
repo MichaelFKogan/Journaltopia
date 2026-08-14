@@ -113,13 +113,6 @@ struct ProfileView: View {
                             .font(.system(size: 24, weight: .bold, design: .serif))
                             .foregroundStyle(Color.storyInk)
                     }
-
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        HStack(spacing: 4) {
-                            creditsButton
-                            settingsButton
-                        }
-                    }
                 }
         }
     }
@@ -154,47 +147,10 @@ struct ProfileView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center) {
-            Text("Profile")
-                .font(.system(size: 24, weight: .bold, design: .serif))
-                .foregroundStyle(Color.storyInk)
-
-            Spacer()
-
-            creditsButton
-
-            settingsButton
-        }
-        .padding(.top, 2)
-    }
-
-    private var creditsButton: some View {
-        NavigationLink {
-            GenerationCreditsView()
-                .enableInteractivePopGesture()
-        } label: {
-            CreditBalanceBadge(
-                balance: generationCreditStore.balance,
-                isRefreshing: generationCreditStore.isRefreshing
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open generation credits")
-    }
-
-    private var settingsButton: some View {
-        NavigationLink {
-            SettingsView(selectedPage: $selectedPage)
-                .enableInteractivePopGesture()
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Color.storyInk.opacity(0.65))
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open settings")
+        Text("Profile")
+            .font(.system(size: 24, weight: .bold, design: .serif))
+            .foregroundStyle(Color.storyInk)
+            .padding(.top, 2)
     }
 
     private var profileSummary: some View {

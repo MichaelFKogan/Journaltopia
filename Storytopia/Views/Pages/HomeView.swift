@@ -4,6 +4,7 @@ import UIKit
 
 struct HomeView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
@@ -11,7 +12,6 @@ struct HomeView: View {
     var openCreatePage: () -> Void = {}
     var openEntriesPage: () -> Void = {}
     var openJournalsPage: () -> Void = {}
-    var openProfilePage: () -> Void = {}
     var openStorySoFarPage: () -> Void = {}
 
     @State private var fullScreenImageName: String?
@@ -58,6 +58,7 @@ struct HomeView: View {
         }
         .task(id: homeStoryboardLoadID) {
             await loadHomeStoryboards()
+            await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
         .preferredColorScheme(.light)
     }
@@ -92,9 +93,41 @@ struct HomeView: View {
 
             Spacer()
 
-            HeaderIconButton(systemName: "person.fill", action: openProfilePage)
-            .padding(.top, 5)
+            HStack(spacing: 4) {
+                creditsButton
+                settingsButton
+            }
+            .padding(.top, 2)
         }
+    }
+
+    private var creditsButton: some View {
+        NavigationLink {
+            GenerationCreditsView()
+                .enableInteractivePopGesture()
+        } label: {
+            CreditBalanceBadge(
+                balance: generationCreditStore.balance,
+                isRefreshing: generationCreditStore.isRefreshing
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open generation credits")
+    }
+
+    private var settingsButton: some View {
+        NavigationLink {
+            SettingsView(selectedPage: $selectedPage)
+                .enableInteractivePopGesture()
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.65))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open settings")
     }
 
     private var heroCard: some View {
