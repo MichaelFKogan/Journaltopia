@@ -300,6 +300,10 @@ struct SupabaseStoryboardService {
     }
 
     func persistPrimaryStoryboard(_ storyboard: GeneratedStoryboard) async throws -> EntryStoryboard {
+        try await persistStoryboard(storyboard.withPrimaryStatus(true))
+    }
+
+    func persistStoryboard(_ storyboard: GeneratedStoryboard) async throws -> EntryStoryboard {
         guard let clientEntryID = storyboard.clientEntryID else {
             throw SupabaseStoryboardError.syncFailed
         }
@@ -327,14 +331,16 @@ struct SupabaseStoryboardService {
                         contentType: CreateEntryReferencePhoto.mimeType,
                         upsert: true
                     )
-                )
+            )
             print("[Storytopia] Storage upload succeeded.")
 
-            try await markPriorStoryboardsNonPrimary(
-                userID: userID,
-                clientEntryID: clientEntryID,
-                excluding: storyboard.id
-            )
+            if storyboard.isPrimary {
+                try await markPriorStoryboardsNonPrimary(
+                    userID: userID,
+                    clientEntryID: clientEntryID,
+                    excluding: storyboard.id
+                )
+            }
 
             print("[Storytopia] Storyboard metadata insert started.")
             let row: EntryStoryboard = try await client
@@ -349,7 +355,7 @@ struct SupabaseStoryboardService {
                         generationQuality: storyboard.generationQuality,
                         panelLayout: storyboard.panelLayout.flatMap { trimmedOrNil($0) },
                         prompt: nil,
-                        isPrimary: true,
+                        isPrimary: storyboard.isPrimary,
                         generationStatus: "completed"
                     ),
                     onConflict: "id"

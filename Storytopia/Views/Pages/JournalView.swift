@@ -51,6 +51,108 @@ private func sampleStoryboardsByMergingLocalFallbacks(
     }
 }
 
+private func duplicateStoryboardsForEntry(
+    sourceClientEntryID: UUID,
+    duplicateClientEntryID: UUID,
+    isSignedIn: Bool
+) async -> [GeneratedStoryboard] {
+    var sourceStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: [sourceClientEntryID])
+        .filter { !$0.isSampleContent }
+
+    if isSignedIn {
+        do {
+            let cloudStoryboards = try await SupabaseStoryboardService().loadStoryboardImages(for: [sourceClientEntryID])
+            sourceStoryboards = mergedStoryboardsByID(sourceStoryboards + cloudStoryboards)
+        } catch {
+            print("[Storytopia] Could not load cloud storyboards for duplicate: \(error.localizedDescription)")
+        }
+    }
+
+    guard !sourceStoryboards.isEmpty else {
+        return []
+    }
+
+    let primarySourceID = sourceStoryboards.first(where: \.isPrimary)?.id ?? sourceStoryboards.first?.id
+    let orderedSources = sourceStoryboards.sorted { lhs, rhs in
+        if lhs.id == primarySourceID {
+            return false
+        }
+        if rhs.id == primarySourceID {
+            return true
+        }
+        return lhs.createdAt < rhs.createdAt
+    }
+
+    let storyboardService = SupabaseStoryboardService()
+    var persistedStoryboards = GeneratedStoryboardStore.load()
+    var duplicatedStoryboards: [GeneratedStoryboard] = []
+
+    for source in orderedSources {
+        let duplicateStoryboardID = UUID()
+        let isPrimary = source.id == primarySourceID
+
+        do {
+            var duplicate = try GeneratedStoryboardStore.persistedStoryboard(
+                image: source.image,
+                clientEntryID: duplicateClientEntryID,
+                promptText: source.promptText,
+                artStyle: source.artStyle,
+                generationQuality: source.generationQuality,
+                panelLayout: source.panelLayout,
+                sourcePhotoCount: source.sourcePhotoCount,
+                createdAt: Date(),
+                id: duplicateStoryboardID,
+                storagePath: nil,
+                cloudSyncState: isSignedIn ? StoryboardCloudSyncState.pending.rawValue : source.cloudSyncState,
+                isPrimary: isPrimary
+            )
+
+            if isSignedIn {
+                let row = try await storyboardService.persistStoryboard(duplicate)
+                duplicate = try GeneratedStoryboardStore.persistedStoryboard(
+                    image: source.image,
+                    clientEntryID: duplicateClientEntryID,
+                    promptText: source.promptText,
+                    artStyle: source.artStyle,
+                    generationQuality: source.generationQuality,
+                    panelLayout: source.panelLayout,
+                    sourcePhotoCount: source.sourcePhotoCount,
+                    createdAt: row.createdAt,
+                    id: duplicateStoryboardID,
+                    storagePath: row.storagePath,
+                    cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                    isPrimary: row.isPrimary
+                )
+            }
+
+            persistedStoryboards = GeneratedStoryboardStore.merging(duplicate, into: persistedStoryboards)
+            duplicatedStoryboards.append(duplicate)
+        } catch {
+            print("[Storytopia] Could not duplicate storyboard \(source.id): \(error.localizedDescription)")
+        }
+    }
+
+    if !duplicatedStoryboards.isEmpty {
+        GeneratedStoryboardStore.save(persistedStoryboards)
+    }
+
+    return duplicatedStoryboards
+}
+
+private func mergedStoryboardsByID(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
+    var mergedByID: [UUID: GeneratedStoryboard] = [:]
+    var orderedIDs: [UUID] = []
+
+    for storyboard in storyboards {
+        if mergedByID[storyboard.id] == nil {
+            orderedIDs.append(storyboard.id)
+        }
+        mergedByID[storyboard.id] = storyboard
+    }
+
+    return orderedIDs.compactMap { mergedByID[$0] }
+}
+
 struct JournalView: View {
     @Binding var selectedPage: StoryPage
     @Binding var isDraftSaved: Bool
@@ -9200,6 +9302,43 @@ private extension CreateEntryDraft {
             displayOrder: displayOrder
         )
     }
+
+    func duplicateSavePayload(id duplicateID: UUID) -> EntryDraftSavePayload {
+        EntryDraftSavePayload(
+            id: duplicateID,
+            title: duplicateTitle,
+            text: text,
+            richText: richText,
+            photos: photos,
+            characters: characters,
+            artStyle: artStyle,
+            location: location,
+            date: date,
+            datePrecision: datePrecision,
+            savesDraft: savesDraft,
+            isPrivate: isPrivate,
+            fontChoiceRawValue: fontChoiceRawValue ?? "sans",
+            textColorIndex: textColorIndex ?? 0,
+            textSize: textSize ?? 1,
+            paperStyleRawValue: paperStyleRawValue ?? "default",
+            paperColorIndex: paperColorIndex ?? 0,
+            isBold: isBold,
+            isItalic: isItalic,
+            isUnderlined: isUnderlined,
+            isStrikethrough: isStrikethrough,
+            isHighlighted: isHighlighted,
+            textAlignmentRawValue: textAlignmentRawValue
+        )
+    }
+
+    private var duplicateTitle: String {
+        let baseTitle = entryDisplayTitle(self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !baseTitle.isEmpty else {
+            return "Untitled Entry Copy"
+        }
+
+        return "\(baseTitle) Copy"
+    }
 }
 
 private enum EntriesCloudFetchCache {
@@ -9572,6 +9711,8 @@ struct EntriesView: View {
     @State private var temporaryOpenedSampleEntryID: UUID?
     @State private var entriesPendingDeletion: [EntryDisplayItem] = []
     @State private var entryDeleteErrorMessage: String?
+    @State private var entryDuplicateErrorMessage: String?
+    @State private var isDuplicatingSelectedEntries = false
     @State private var draggingEntryID: UUID?
     @State private var manualEntryOrderOverrides: [UUID: Int] = [:]
     @State private var manualEntryOrderSaveTask: Task<Void, Never>?
@@ -9658,6 +9799,13 @@ struct EntriesView: View {
                 deleteEntryAlertActions
             } message: {
                 Text(deleteEntryAlertMessage)
+            }
+            .alert("Could Not Duplicate", isPresented: isDuplicateEntryAlertPresented) {
+                Button("OK") {
+                    entryDuplicateErrorMessage = nil
+                }
+            } message: {
+                Text(entryDuplicateErrorMessage ?? "Could not duplicate one or more entries.")
             }
     }
 
@@ -10229,6 +10377,13 @@ struct EntriesView: View {
 
     private var selectedEntriesOverflowMenu: some View {
         Menu {
+            Button {
+                duplicateSelectedEntries()
+            } label: {
+                Label(duplicateSelectedEntriesMenuTitle, systemImage: "doc.on.doc")
+            }
+            .disabled(isDuplicatingSelectedEntries)
+
             Button(role: .destructive) {
                 requestDeleteSelectedEntries()
             } label: {
@@ -11289,6 +11444,87 @@ struct EntriesView: View {
         requestDeleteEntries(selectedEntryItems)
     }
 
+    private var duplicateSelectedEntriesMenuTitle: String {
+        selectedEntryIDs.count == 1 ? "Duplicate Entry" : "Duplicate \(selectedEntryIDs.count) Entries"
+    }
+
+    private func duplicateSelectedEntries() {
+        let itemsToDuplicate = selectedEntryItems
+        guard !itemsToDuplicate.isEmpty, !isDuplicatingSelectedEntries else {
+            return
+        }
+
+        isDuplicatingSelectedEntries = true
+        entryDuplicateErrorMessage = nil
+
+        Task {
+            var duplicatedEntries: [CreateEntryDraft] = []
+
+            for item in itemsToDuplicate {
+                do {
+                    let sourceEntry = fullLocalEntry(for: item)
+                    let duplicateID = UUID()
+                    let status = JournalEntryStatus(rawValue: item.status) ?? .draft
+                    let payload = sourceEntry.duplicateSavePayload(id: duplicateID)
+                    let result = try await EntrySaveService().saveEntryPreservingStatus(
+                        payload: payload,
+                        isSignedIn: authStore.userID != nil,
+                        status: status
+                    )
+
+                    if authStore.userID != nil, result.cloudEntry == nil {
+                        CreateEntryDraftStore.delete(id: result.localDraftID)
+                        throw JournalEntryRepositoryError.operationFailed
+                    }
+
+                    if let duplicate = CreateEntryDraftStore.load(id: result.localDraftID) {
+                        duplicatedEntries.append(duplicate)
+                    }
+
+                    if let cloudEntry = result.cloudEntry {
+                        cloudEntries.removeAll { $0.clientEntryID == cloudEntry.clientEntryID }
+                        cloudEntries.insert(cloudEntry, at: 0)
+                    }
+
+                    let duplicatedStoryboards = await duplicateStoryboardsForEntry(
+                        sourceClientEntryID: item.id,
+                        duplicateClientEntryID: result.localDraftID,
+                        isSignedIn: authStore.userID != nil
+                    )
+                    if !duplicatedStoryboards.isEmpty {
+                        completedStoryboards = duplicatedStoryboards + completedStoryboards
+                        storyboardCountsByClientEntryID[result.localDraftID] = duplicatedStoryboards.count
+                    } else if storyboardCount(for: item) > 0 {
+                        entryDuplicateErrorMessage = "Duplicated the entry, but could not duplicate one or more storyboards."
+                    }
+                } catch {
+                    entryDuplicateErrorMessage = "Could not duplicate one or more entries."
+                }
+            }
+
+            if !duplicatedEntries.isEmpty {
+                entries.append(contentsOf: duplicatedEntries)
+                isDraftSaved = true
+            }
+
+            if authStore.userID != nil {
+                EntriesCloudFetchCache.invalidate(for: authStore.userID)
+                EntriesSessionMemoryCache.invalidate(userID: authStore.userID)
+            }
+
+            selectedEntryIDs.subtract(itemsToDuplicate.map(\.id))
+            if selectedEntryIDs.isEmpty {
+                editMode = .inactive
+            }
+            isDuplicatingSelectedEntries = false
+            refreshEntries(forceCloudReload: authStore.userID != nil)
+        }
+    }
+
+    private func fullLocalEntry(for item: EntryDisplayItem) -> CreateEntryDraft {
+        CreateEntryDraftStore.load(id: item.id) ?? entryForDisplay(item)
+    }
+
     private func syncSelectedEntryJournalsToCloud(_ journalTitles: Set<String>) async {
         guard authStore.userID != nil else {
             return
@@ -11500,6 +11736,17 @@ struct EntriesView: View {
 
     private var deleteSelectedEntriesMenuTitle: String {
         selectedEntryIDs.count == 1 ? "Delete Entry" : "Delete \(selectedEntryIDs.count) Entries"
+    }
+
+    private var isDuplicateEntryAlertPresented: Binding<Bool> {
+        Binding(
+            get: { entryDuplicateErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    entryDuplicateErrorMessage = nil
+                }
+            }
+        )
     }
 
     private func requestDeleteEntry(_ entry: EntryDisplayItem) {
@@ -15318,6 +15565,15 @@ private struct PrototypeChapterDetailView: View {
 
     private var journalDetailSelectedEntriesOverflowMenu: some View {
         Menu {
+            Button {
+                journalDetailSelectionBarAction = .duplicateSelected
+            } label: {
+                Label(
+                    selectedEntryIDs.count == 1 ? "Duplicate Entry" : "Duplicate \(selectedEntryIDs.count) Entries",
+                    systemImage: "doc.on.doc"
+                )
+            }
+
             Button(role: .destructive) {
                 journalDetailSelectionBarAction = .deleteSelected
             } label: {
@@ -16583,6 +16839,7 @@ private struct JournalDetailScrollOffsetKey: PreferenceKey {
 
 private enum JournalDetailSelectionBarAction {
     case addToJournal
+    case duplicateSelected
     case deleteSelected
 }
 
@@ -16609,6 +16866,8 @@ private struct JournalDetailEntryBrowser: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var entriesPendingDeletion: [EntryDisplayItem] = []
+    @State private var duplicateErrorMessage: String?
+    @State private var isDuplicatingSelectedEntries = false
     @State private var isShowingAddSelectedEntriesToJournalSheet = false
     @State private var selectedEntriesJournalTitle: String?
     @State private var selectedEntriesJournalTitles: Set<String> = []
@@ -16721,6 +16980,8 @@ private struct JournalDetailEntryBrowser: View {
             switch action {
             case .addToJournal:
                 openAddSelectedEntriesToJournalPage()
+            case .duplicateSelected:
+                duplicateSelectedEntries()
             case .deleteSelected:
                 requestDeleteSelectedEntries()
             }
@@ -16761,6 +17022,13 @@ private struct JournalDetailEntryBrowser: View {
             }
         } message: {
             Text(deleteEntryAlertMessage)
+        }
+        .alert("Could Not Duplicate", isPresented: isDuplicateEntryAlertPresented) {
+            Button("OK") {
+                duplicateErrorMessage = nil
+            }
+        } message: {
+            Text(duplicateErrorMessage ?? "Could not duplicate one or more entries.")
         }
     }
 
@@ -17689,6 +17957,96 @@ private struct JournalDetailEntryBrowser: View {
         entriesPendingDeletion = selectedItems
     }
 
+    private func duplicateSelectedEntries() {
+        let itemsToDuplicate = selectedItems
+        guard !itemsToDuplicate.isEmpty, !isDuplicatingSelectedEntries else {
+            return
+        }
+
+        isDuplicatingSelectedEntries = true
+        duplicateErrorMessage = nil
+
+        Task {
+            var duplicatedItems: [EntryDisplayItem] = []
+            var duplicatedEntries: [CreateEntryDraft] = []
+
+            for item in itemsToDuplicate {
+                do {
+                    let sourceEntry = fullLocalEntry(for: item)
+                    let duplicateID = UUID()
+                    let status = JournalEntryStatus(rawValue: item.status) ?? .draft
+                    let result = try await EntrySaveService().saveEntryPreservingStatus(
+                        payload: sourceEntry.duplicateSavePayload(id: duplicateID),
+                        isSignedIn: authStore.userID != nil,
+                        status: status
+                    )
+
+                    if authStore.userID != nil, result.cloudEntry == nil {
+                        CreateEntryDraftStore.delete(id: result.localDraftID)
+                        throw JournalEntryRepositoryError.operationFailed
+                    }
+
+                    guard let duplicateEntry = CreateEntryDraftStore.load(id: result.localDraftID) else {
+                        throw JournalEntryRepositoryError.operationFailed
+                    }
+
+                    let prototypeEntry = duplicateEntry.prototypeEntry()
+                    StoryEntryStore.upsert(prototypeEntry, to: chapter.title)
+                    EntryJournalLinkStore.save(
+                        journalTitle: chapter.title,
+                        journalEntryID: prototypeEntry.id,
+                        for: duplicateEntry.id
+                    )
+
+                    let duplicateItem: EntryDisplayItem
+                    if let cloudEntry = result.cloudEntry {
+                        cloudEntries.removeAll { $0.clientEntryID == cloudEntry.clientEntryID }
+                        cloudEntries.insert(cloudEntry, at: 0)
+                        duplicateItem = .local(duplicateEntry, cloudEntry: cloudEntry)
+                    } else {
+                        duplicateItem = .local(duplicateEntry, cloudEntry: nil)
+                    }
+
+                    let duplicatedStoryboards = await duplicateStoryboardsForEntry(
+                        sourceClientEntryID: item.id,
+                        duplicateClientEntryID: result.localDraftID,
+                        isSignedIn: authStore.userID != nil
+                    )
+                    if !duplicatedStoryboards.isEmpty {
+                        completedStoryboards = duplicatedStoryboards + completedStoryboards
+                        storyboardCountsByClientEntryID[result.localDraftID] = duplicatedStoryboards.count
+                    } else if storyboardCount(for: item) > 0 {
+                        duplicateErrorMessage = "Duplicated the entry, but could not duplicate one or more storyboards."
+                    }
+
+                    duplicatedEntries.append(duplicateEntry)
+                    duplicatedItems.append(duplicateItem)
+                } catch {
+                    duplicateErrorMessage = "Could not duplicate one or more entries."
+                }
+            }
+
+            if !duplicatedEntries.isEmpty {
+                localEntries.append(contentsOf: duplicatedEntries)
+                let nextItems = duplicatedItems + visibleItems
+                publishVisibleItems(nextItems, notifiesParent: true)
+            }
+
+            if authStore.userID != nil {
+                EntriesCloudFetchCache.invalidate(for: authStore.userID)
+                EntriesSessionMemoryCache.invalidate(userID: authStore.userID)
+                await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
+            }
+
+            selectedEntryIDs.subtract(itemsToDuplicate.map(\.id))
+            if selectedEntryIDs.isEmpty {
+                editMode = .inactive
+            }
+            isDuplicatingSelectedEntries = false
+            refreshEntries()
+        }
+    }
+
     private func requestDeleteEntry(_ item: EntryDisplayItem) {
         entriesPendingDeletion = [item]
     }
@@ -17801,6 +18159,21 @@ private struct JournalDetailEntryBrowser: View {
         return titleSets.dropFirst().reduce(firstTitleSet) { sharedTitles, titles in
             sharedTitles.intersection(titles)
         }
+    }
+
+    private var isDuplicateEntryAlertPresented: Binding<Bool> {
+        Binding(
+            get: { duplicateErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    duplicateErrorMessage = nil
+                }
+            }
+        )
+    }
+
+    private func fullLocalEntry(for item: EntryDisplayItem) -> CreateEntryDraft {
+        CreateEntryDraftStore.load(id: item.id) ?? entryForDisplay(item)
     }
 
     @MainActor
