@@ -3082,11 +3082,11 @@ struct CreateEntryView: View {
             HStack(spacing: 5) {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color.storyInk.opacity(0.46))
+                    .foregroundStyle(Color.storyGray.opacity(0.46))
 
                 Text(selectedEntryJournalTitle ?? "Add To Journal")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.storyInk.opacity(0.48))
+                    .foregroundStyle(Color.storyGray.opacity(0.46))
                     .lineLimit(1)
                     .minimumScaleFactor(0.74)
             }
@@ -4556,6 +4556,26 @@ struct CreateEntryView: View {
         .accessibilityElement(children: .contain)
     }
 
+    private func shelfButtonCaption(title: String, summary: String?) -> some View {
+        VStack(spacing: 2) {
+            Text(title)
+                .font(.system(size: 10, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk.opacity(0.88))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: true)
+
+            if let summary {
+                Text(summary)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.58))
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
     private var referencePhotosShelfButton: some View {
         Button {
             openReferencesPanel(expandPhotos: true)
@@ -4563,20 +4583,12 @@ struct CreateEntryView: View {
             VStack(spacing: 5) {
                 referencePhotoShelfStack
 
-                Text("Reference")
-                    .font(.system(size: 10, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk.opacity(0.88))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-
-                if hasStoryboardPhotos {
-                    Text(referencePhotoShelfSummary)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.storyInk.opacity(0.58))
-                        .lineLimit(1)
-                }
+                shelfButtonCaption(
+                    title: "Reference",
+                    summary: hasStoryboardPhotos ? referencePhotoShelfSummary : nil
+                )
             }
-            .frame(width: 82, height: 106, alignment: .bottom)
+            .frame(width: 82, height: 114, alignment: .bottom)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -4704,21 +4716,12 @@ struct CreateEntryView: View {
             VStack(spacing: 5) {
                 characterShelfAvatars
 
-                Text(entryCharacters.count == 1 ? "Character" : "Characters")
-                    .font(.system(size: 10, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk.opacity(0.88))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-
-                if !entryCharacters.isEmpty {
-                    Text(characterShelfSummary)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.storyInk.opacity(0.58))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
+                shelfButtonCaption(
+                    title: entryCharacters.count == 1 ? "Character" : "Characters",
+                    summary: entryCharacters.isEmpty ? nil : characterShelfSummary
+                )
             }
-            .frame(width: 82, height: 103, alignment: .bottom)
+            .frame(width: 82, height: 111, alignment: .bottom)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -4735,6 +4738,7 @@ struct CreateEntryView: View {
                     iconWeight: .semibold,
                     shape: .circle
                 )
+                .background(Color.white, in: Circle())
                 .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
             } else {
                 ZStack {
