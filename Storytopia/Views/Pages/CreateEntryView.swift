@@ -4139,7 +4139,7 @@ struct CreateEntryView: View {
             return 22
         }
 
-        return 92
+        return 84
     }
 
     private var speechMicButton: some View {
@@ -4515,6 +4515,10 @@ struct CreateEntryView: View {
             referencePhotosShelfButton
 
             charactersShelfButton
+                .padding(.leading, -8)
+
+            journalsShelfButton
+                .padding(.leading, -12)
         }
         .frame(maxWidth: 420, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -4529,7 +4533,7 @@ struct CreateEntryView: View {
             VStack(spacing: 5) {
                 referencePhotoShelfStack
 
-                Text("Reference Photos")
+                Text("Reference")
                     .font(.system(size: 10, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk.opacity(0.88))
                     .lineLimit(1)
@@ -4542,7 +4546,7 @@ struct CreateEntryView: View {
                         .lineLimit(1)
                 }
             }
-            .frame(width: 98, height: 106, alignment: .bottom)
+            .frame(width: 82, height: 106, alignment: .bottom)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -4751,6 +4755,114 @@ struct CreateEntryView: View {
         }
 
         return "\(entryCharacters.count) added"
+    }
+
+    private var journalsShelfButton: some View {
+        Button {
+            openJournalsFromShelf()
+        } label: {
+            VStack(spacing: 5) {
+                journalShelfCovers
+
+                Text(selectedJournalShelfTitles.count == 1 ? "Journal" : "Journals")
+                    .font(.system(size: 10, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk.opacity(0.88))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+
+                if !selectedJournalShelfTitles.isEmpty {
+                    Text(journalShelfSummary)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            }
+            .frame(width: 82, height: 103, alignment: .bottom)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(selectedJournalShelfTitles.isEmpty ? "Add to journal" : "\(journalShelfSummary), change journals")
+    }
+
+    private var journalShelfCovers: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if selectedJournalShelfTitles.isEmpty {
+                journalShelfSymbol(systemName: "book.closed.fill")
+                .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
+            } else if selectedJournalShelfJournals.isEmpty {
+                journalShelfSymbol(systemName: "book.closed.fill")
+                .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
+            } else {
+                ZStack {
+                    ForEach(Array(selectedJournalShelfJournals.prefix(3).enumerated()), id: \.element.id) { index, journal in
+                        SelectedJournalCoverThumbnail(journal: journal)
+                            .scaleEffect(1.2)
+                            .offset(x: CGFloat(index) * 14 - CGFloat(min(selectedJournalShelfJournals.count, 3) - 1) * 7, y: CGFloat(index % 2) * -3)
+                            .zIndex(Double(index))
+                    }
+                }
+                .frame(width: 76, height: 60)
+
+                if selectedJournalShelfTitles.count > 1 {
+                    Text("\(selectedJournalShelfTitles.count)")
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 19, height: 19)
+                        .background(Color.storyPurple, in: Circle())
+                        .overlay(Circle().stroke(Color.white, lineWidth: 1.4))
+                        .offset(x: 0, y: -2)
+                } else {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+                        .background(Color.white, in: Circle())
+                        .offset(x: 0, y: -1)
+                }
+            }
+        }
+        .frame(width: 78, height: 65)
+    }
+
+    private func journalShelfSymbol(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 31, weight: .semibold))
+            .foregroundStyle(Color.storyPurple.opacity(0.88))
+            .frame(width: 60, height: 60)
+            .background(Color.white.opacity(0.54), in: Circle())
+    }
+
+    private var selectedJournalShelfTitles: [String] {
+        var titles = linkedJournalTitles.union(selectedCustomJournalTitles)
+
+        if let linkedJournalTitle {
+            titles.insert(linkedJournalTitle)
+        }
+        if let selectedCustomJournalTitle {
+            titles.insert(selectedCustomJournalTitle)
+        }
+        if let initialJournalTitle = presentation.initialJournalTitle {
+            titles.insert(initialJournalTitle)
+        }
+
+        return titles.sorted()
+    }
+
+    private var selectedJournalShelfJournals: [PrototypeChapter] {
+        let titles = Set(selectedJournalShelfTitles)
+        return DailyJournalData.allChapters().filter { titles.contains($0.title) }
+    }
+
+    private var journalShelfSummary: String {
+        guard let firstTitle = selectedJournalShelfTitles.first else {
+            return "Add"
+        }
+
+        if selectedJournalShelfTitles.count == 1 {
+            return firstTitle
+        }
+
+        return "\(selectedJournalShelfTitles.count) selected"
     }
 
     private var photosAndCharactersPanel: some View {
@@ -5028,6 +5140,15 @@ struct CreateEntryView: View {
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
         }
+    }
+
+    private func openJournalsFromShelf() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingCustomizeSheet = false
+            isShowingJournalPromptsSheet = false
+            isPhotosPanelVisible = false
+        }
+        openAddToJournalPage()
     }
 
     private func presentCameraFromReferencePhotosSheet() {
