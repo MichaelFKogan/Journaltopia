@@ -530,6 +530,87 @@ struct SupabaseEntryCharacterService {
         }
     }
 
+    func deleteCharacter(id: UUID) async throws {
+        do {
+            let rows: [EntryCharacterPhoto] = try await client
+                .from("entry_characters")
+                .select()
+                .eq("id", value: id)
+                .execute()
+                .value
+
+            for row in rows {
+                try await deleteCloudCharacter(row)
+            }
+        } catch let error as SupabaseEntryCharacterError {
+            throw error
+        } catch {
+            throw SupabaseEntryCharacterError.syncFailed
+        }
+    }
+
+    func updateCharacter(_ character: EntryCharacter) async throws {
+        do {
+            let rows: [EntryCharacterPhoto] = try await client
+                .from("entry_characters")
+                .select()
+                .eq("id", value: character.id)
+                .execute()
+                .value
+
+            guard let existing = rows.first else {
+                return
+            }
+
+            let upload = try makeUpload(
+                character: character,
+                userID: existing.userID,
+                clientEntryID: existing.clientEntryID,
+                sortOrder: existing.sortOrder
+            )
+
+            try await client.storage
+                .from(bucketName)
+                .upload(
+                    upload.storagePath,
+                    data: upload.data,
+                    options: FileOptions(
+                        cacheControl: "31536000",
+                        contentType: EntryCharacter.mimeType,
+                        upsert: true
+                    )
+                )
+
+            try await client
+                .from("entry_characters")
+                .upsert(
+                    EntryCharacterUpsert(
+                        id: character.id,
+                        userID: existing.userID,
+                        entryID: existing.entryID,
+                        clientEntryID: existing.clientEntryID,
+                        name: character.name,
+                        role: character.role,
+                        sourcePhotoID: character.sourcePhotoID,
+                        storagePath: upload.storagePath,
+                        mimeType: EntryCharacter.mimeType,
+                        byteSize: upload.data.count,
+                        width: upload.width,
+                        height: upload.height,
+                        sortOrder: existing.sortOrder
+                    ),
+                    onConflict: "id"
+                )
+                .execute()
+
+            SupabaseStorageImageCache.store(upload.data, bucketName: bucketName, storagePath: upload.storagePath)
+        } catch let error as SupabaseEntryCharacterError {
+            throw error
+        } catch {
+            throw SupabaseEntryCharacterError.syncFailed
+        }
+    }
+
     func existingCharacters(entryID: UUID) async throws -> [EntryCharacterPhoto] {
         try await client
             .from("entry_characters")
@@ -593,6 +674,8 @@ struct SupabaseEntryCharacterService {
             .delete()
             .eq("id", value: character.id)
             .execute()
+
+        SupabaseStorageImageCache.remove(bucketName: bucketName, storagePath: character.storagePath)
     }
 
     private func makeUpload(

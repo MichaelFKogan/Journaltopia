@@ -551,10 +551,16 @@ private struct EntryPreviewFormattingSummary {
     let textAlignmentRawValue: String
 }
 
+private enum CharacterEditorDestination {
+    case entry
+    case library
+}
+
 private struct CharacterEditorSession: Identifiable {
     let id = UUID()
     let character: EntryCharacter?
     var initialPhotoSource: CharacterInitialPhotoSource? = nil
+    var destination: CharacterEditorDestination = .entry
 }
 
 private enum CharacterInitialPhotoSource {
@@ -1758,6 +1764,7 @@ struct CreateEntryView: View {
     @State private var reusableCharacters: [EntryCharacter] = []
     @State private var isLoadingReusableCharacters = false
     @State private var reusableCharactersErrorMessage: String?
+    @State private var deletingReusableCharacterID: UUID?
     @State private var isPreviewingCompletedStoryboard = false
     @State private var selectedEntryStoryboardIndex: Int?
     @State private var completedEntryStoryboardDragOffset: CGSize = .zero
@@ -2106,6 +2113,19 @@ struct CreateEntryView: View {
     private var isCharacterEditorSheetPresented: Binding<Bool> {
         Binding(
             get: {
+                characterEditorSession != nil && !isShowingEntryCharactersSheet
+            },
+            set: { isPresented in
+                if !isPresented {
+                    characterEditorSession = nil
+                }
+            }
+        )
+    }
+
+    private var isNestedCharacterEditorSheetPresented: Binding<Bool> {
+        Binding(
+            get: {
                 characterEditorSession != nil
             },
             set: { isPresented in
@@ -2147,10 +2167,14 @@ struct CreateEntryView: View {
             }
             .sheet(isPresented: $isShowingReusableCharactersSheet) {
                 ReusableCharactersSheet(
-                    characters: availableReusableCharacters,
+                    characters: reusableCharacters,
+                    attachedCharacterNames: attachedReusableCharacterNames,
                     isLoading: isLoadingReusableCharacters,
                     errorMessage: reusableCharactersErrorMessage,
+                    deletingCharacterID: deletingReusableCharacterID,
                     onSelect: addReusableCharacter,
+                    onEdit: editReusableCharacter,
+                    onDelete: deleteReusableCharacter,
                     onRefresh: refreshReusableCharacters
                 )
                 .presentationDetents([.large])
@@ -2274,6 +2298,9 @@ struct CreateEntryView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.homePageBackground)
+            .sheet(isPresented: isNestedCharacterEditorSheetPresented) {
+                characterEditorSheetContent()
+            }
             .onAppear {
                 reusableCharacters = mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
                 refreshReusableCharacters()
@@ -2294,14 +2321,29 @@ struct CreateEntryView: View {
     }
 
     private func characterEditorSheet(for session: CharacterEditorSession) -> AnyView {
-        let deleteAction = characterDeleteAction(for: session.character)
+        let isLibraryEdit = session.destination == .library
+        let deleteAction: ((EntryCharacter) -> Void)?
+        if isLibraryEdit {
+            deleteAction = { character in
+                characterEditorSession = nil
+                deleteReusableCharacter(character)
+            }
+        } else {
+            deleteAction = characterDeleteAction(for: session.character)
+        }
+
         return AnyView(
             CharacterEditorSheet(
                 editingCharacter: session.character,
-                existingCharacters: entryCharacters,
+                existingCharacters: isLibraryEdit ? reusableCharacters : entryCharacters,
                 initialPhotoSource: session.initialPhotoSource,
+                deletesFromLibrary: isLibraryEdit,
                 onSave: { character in
-                    saveCharacter(character)
+                    if isLibraryEdit {
+                        saveLibraryCharacter(character)
+                    } else {
+                        saveCharacter(character)
+                    }
                 },
                 onDelete: deleteAction
             )
@@ -5201,10 +5243,7 @@ struct CreateEntryView: View {
     }
 
     private func presentCreateCharacterFromEntryCharactersSheet(source: CharacterInitialPhotoSource) {
-        isShowingEntryCharactersSheet = false
-        DispatchQueue.main.async {
-            characterEditorSession = CharacterEditorSession(character: nil, initialPhotoSource: source)
-        }
+        characterEditorSession = CharacterEditorSession(character: nil, initialPhotoSource: source)
     }
 
     private func openJournalPromptsSheet() {
@@ -7129,10 +7168,7 @@ struct CreateEntryView: View {
                     CharacterStripThumbnail(
                         character: character,
                         tapAction: {
-                            isShowingEntryCharactersSheet = false
-                            DispatchQueue.main.async {
-                                characterEditorSession = CharacterEditorSession(character: character)
-                            }
+                            characterEditorSession = CharacterEditorSession(character: character)
                         },
                         removeAction: {
                             deleteCharacter(character)
@@ -7213,7 +7249,7 @@ struct CreateEntryView: View {
                 .accessibilityLabel("Refresh My Characters")
             }
 
-            Text("Choose someone you've already created to attach them to this entry.")
+            Text("Tap Edit to update a saved character, tap + to add them to this entry, or delete them from My Characters.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.storyInk.opacity(0.62))
                 .fixedSize(horizontal: false, vertical: true)
@@ -7226,21 +7262,29 @@ struct CreateEntryView: View {
                 reusableCharacterStatusRow(systemName: "exclamationmark.triangle", text: reusableCharactersErrorMessage, showsProgress: false)
             }
 
-            if availableReusableCharacters.isEmpty && !isLoadingReusableCharacters {
+            if reusableCharacters.isEmpty && !isLoadingReusableCharacters {
                 reusableCharacterStatusRow(
                     systemName: "person.crop.circle.badge.questionmark",
-                    text: entryCharacters.isEmpty ? "No saved characters yet." : "No more saved characters to add.",
+                    text: "No saved characters yet.",
                     showsProgress: false
                 )
             } else {
                 VStack(spacing: 10) {
-                    ForEach(availableReusableCharacters) { character in
-                        Button {
-                            addReusableCharacter(character)
-                        } label: {
-                            reusableCharacterAttachRow(character)
-                        }
-                        .buttonStyle(.plain)
+                    ForEach(reusableCharacters) { character in
+                        ReusableCharacterLibraryRow(
+                            character: character,
+                            canAdd: canAddReusableCharacter(character),
+                            isDeleting: deletingReusableCharacterID == character.id,
+                            onAdd: {
+                                addReusableCharacter(character)
+                            },
+                            onEdit: {
+                                editReusableCharacter(character)
+                            },
+                            onDelete: {
+                                deleteReusableCharacter(character)
+                            }
+                        )
                     }
                 }
             }
@@ -7268,45 +7312,6 @@ struct CreateEntryView: View {
         .padding(.horizontal, 12)
         .frame(minHeight: 52)
         .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    private func reusableCharacterAttachRow(_ character: EntryCharacter) -> some View {
-        HStack(spacing: 12) {
-            Image(uiImage: character.image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 58, height: 58)
-                .clipShape(Circle())
-                .overlay(
-                    Circle()
-                        .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
-                )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(character.name)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.storyInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-
-                Text(character.role.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.storyInk.opacity(0.58))
-            }
-
-            Spacer(minLength: 0)
-
-            Image(systemName: "plus.circle.fill")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Color.storyPurple)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 76)
-        .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
-        )
     }
 
     private func entryInputActionCard(
@@ -7891,11 +7896,75 @@ struct CreateEntryView: View {
         characterEditorSession = nil
     }
 
-    private var availableReusableCharacters: [EntryCharacter] {
-        let attachedNames = Set(entryCharacters.map { EntryCharacterRules.normalizedName($0.name) })
-        return reusableCharacters.filter { character in
-            let normalizedName = EntryCharacterRules.normalizedName(character.name)
-            return !normalizedName.isEmpty && !attachedNames.contains(normalizedName)
+    private func saveLibraryCharacter(_ character: EntryCharacter) {
+        if let index = reusableCharacters.firstIndex(where: { $0.id == character.id }) {
+            reusableCharacters[index] = character
+        } else {
+            reusableCharacters.insert(character, at: 0)
+        }
+        reusableCharacters = mergedReusableCharacters(reusableCharacters)
+
+        if entryCharacters.contains(where: { $0.id == character.id }) {
+            entryCharacters = EntryCharacterRules.applyingSingleMainCharacter(character, to: entryCharacters)
+        }
+
+        CreateEntryDraftStore.updateCharacter(character, excludingDraftID: activeDraftID)
+        characterEditorSession = nil
+        reusableCharactersErrorMessage = nil
+
+        Task {
+            do {
+                try await SupabaseEntryCharacterService().updateCharacter(character)
+            } catch {
+                await MainActor.run {
+                    reusableCharactersErrorMessage = "Could not save changes to \(character.name) in the cloud."
+                }
+            }
+        }
+    }
+
+    private var attachedReusableCharacterNames: Set<String> {
+        Set(entryCharacters.map { EntryCharacterRules.normalizedName($0.name) })
+    }
+
+    private func canAddReusableCharacter(_ character: EntryCharacter) -> Bool {
+        let normalizedName = EntryCharacterRules.normalizedName(character.name)
+        return !normalizedName.isEmpty && !attachedReusableCharacterNames.contains(normalizedName)
+    }
+
+    private func editReusableCharacter(_ character: EntryCharacter) {
+        isShowingReusableCharactersSheet = false
+        characterEditorSession = CharacterEditorSession(character: character, destination: .library)
+    }
+
+    private func deleteReusableCharacter(_ character: EntryCharacter) {
+        deletingReusableCharacterID = character.id
+        reusableCharactersErrorMessage = nil
+
+        Task {
+            var cloudDeleteFailed = false
+            if authStore.userID != nil {
+                do {
+                    try await SupabaseEntryCharacterService().deleteCharacter(id: character.id)
+                } catch {
+                    cloudDeleteFailed = true
+                }
+            }
+
+            await MainActor.run {
+                deletingReusableCharacterID = nil
+
+                if cloudDeleteFailed {
+                    reusableCharactersErrorMessage = "Could not delete \(character.name) from the cloud."
+                    return
+                }
+
+                reusableCharacters.removeAll { $0.id == character.id }
+                if entryCharacters.contains(where: { $0.id == character.id }) {
+                    deleteCharacter(character)
+                }
+                CreateEntryDraftStore.removeCharacter(id: character.id, excludingDraftID: activeDraftID)
+            }
         }
     }
 
@@ -11204,11 +11273,127 @@ private struct EntryDetailsCharactersCard: View {
     }
 }
 
+private struct ReusableCharacterLibraryRow: View {
+    let character: EntryCharacter
+    let canAdd: Bool
+    let isDeleting: Bool
+    let onAdd: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    @State private var isConfirmingDelete = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onEdit) {
+                Image(uiImage: character.image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 58, height: 58)
+                    .clipShape(Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Edit \(character.name)")
+
+            VStack(alignment: .leading, spacing: 6) {
+                Button(action: onEdit) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(character.name)
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Color.storyInk)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+
+                        Text(character.role.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.storyInk.opacity(0.58))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit \(character.name)")
+
+                Button(action: onEdit) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "pencil")
+                        Text("Edit Character")
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit \(character.name)")
+            }
+
+            HStack(spacing: 10) {
+                if canAdd {
+                    Button(action: onAdd) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 32, weight: .semibold))
+                            .foregroundStyle(Color.storyPurple)
+                            .frame(width: 36, height: 36)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add \(character.name) to this entry")
+                } else {
+                    Text("Added")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.48))
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(height: 36)
+                }
+
+                if isDeleting {
+                    ProgressView()
+                        .tint(Color.storyPurple)
+                        .frame(width: 28, height: 28)
+                } else {
+                    Button {
+                        isConfirmingDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.red.opacity(0.82))
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Delete \(character.name)")
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 76)
+        .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
+        .opacity(isDeleting ? 0.64 : 1)
+        .disabled(isDeleting)
+        .alert("Delete Character?", isPresented: $isConfirmingDelete) {
+            Button("Delete", role: .destructive, action: onDelete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes \(character.name) from My Characters and deletes them from the cloud. This cannot be undone.")
+        }
+    }
+}
+
 private struct ReusableCharactersSheet: View {
     let characters: [EntryCharacter]
+    let attachedCharacterNames: Set<String>
     let isLoading: Bool
     let errorMessage: String?
+    let deletingCharacterID: UUID?
     let onSelect: (EntryCharacter) -> Void
+    let onEdit: (EntryCharacter) -> Void
+    let onDelete: (EntryCharacter) -> Void
     let onRefresh: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -11260,16 +11445,28 @@ private struct ReusableCharactersSheet: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.red.opacity(0.86))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 18)
                 }
 
+                Text("Tap Edit to update a saved character, tap + to add them to this entry, or delete them from My Characters.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.storyInk.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+
                 ForEach(characters) { character in
-                    Button {
-                        onSelect(character)
-                    } label: {
-                        reusableCharacterRow(character)
-                    }
-                    .buttonStyle(.plain)
+                    ReusableCharacterLibraryRow(
+                        character: character,
+                        canAdd: canAdd(character),
+                        isDeleting: deletingCharacterID == character.id,
+                        onAdd: {
+                            onSelect(character)
+                        },
+                        onEdit: {
+                            onEdit(character)
+                        },
+                        onDelete: {
+                            onDelete(character)
+                        }
+                    )
                 }
             }
             .padding(.horizontal, 18)
@@ -11310,7 +11507,7 @@ private struct ReusableCharactersSheet: View {
                     .foregroundStyle(Color.red.opacity(0.86))
                     .multilineTextAlignment(.center)
             } else {
-                Text("Characters you add to entries will appear here.")
+                Text("Characters you add to entries will appear here. You can edit or delete them anytime.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color.storyInk.opacity(0.62))
                     .multilineTextAlignment(.center)
@@ -11319,43 +11516,9 @@ private struct ReusableCharactersSheet: View {
         .padding(.horizontal, 30)
     }
 
-    private func reusableCharacterRow(_ character: EntryCharacter) -> some View {
-        HStack(spacing: 12) {
-            Image(uiImage: character.image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 58, height: 58)
-                .clipShape(Circle())
-                .overlay(
-                    Circle()
-                        .stroke(Color.storyPurple.opacity(0.2), lineWidth: 1)
-                )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(character.name)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.storyInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-
-                Text(character.role.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.storyInk.opacity(0.58))
-            }
-
-            Spacer(minLength: 0)
-
-            Image(systemName: "plus.circle.fill")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Color.storyPurple)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 76)
-        .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
-        )
+    private func canAdd(_ character: EntryCharacter) -> Bool {
+        let normalizedName = EntryCharacterRules.normalizedName(character.name)
+        return !normalizedName.isEmpty && !attachedCharacterNames.contains(normalizedName)
     }
 }
 
@@ -11369,6 +11532,7 @@ private struct CharacterEditorSheet: View {
     let editingCharacter: EntryCharacter?
     let existingCharacters: [EntryCharacter]
     let initialPhotoSource: CharacterInitialPhotoSource?
+    let deletesFromLibrary: Bool
     let onSave: (EntryCharacter) -> Void
     let onDelete: ((EntryCharacter) -> Void)?
 
@@ -11383,17 +11547,20 @@ private struct CharacterEditorSheet: View {
     @State private var role: CharacterRole
     @State private var validationMessage: String?
     @State private var didPresentInitialPhotoSource = false
+    @State private var isConfirmingDelete = false
 
     init(
         editingCharacter: EntryCharacter?,
         existingCharacters: [EntryCharacter],
         initialPhotoSource: CharacterInitialPhotoSource? = nil,
+        deletesFromLibrary: Bool = false,
         onSave: @escaping (EntryCharacter) -> Void,
         onDelete: ((EntryCharacter) -> Void)?
     ) {
         self.editingCharacter = editingCharacter
         self.existingCharacters = existingCharacters
         self.initialPhotoSource = initialPhotoSource
+        self.deletesFromLibrary = deletesFromLibrary
         self.onSave = onSave
         self.onDelete = onDelete
         _step = State(initialValue: editingCharacter == nil ? .choosePhoto : .details)
@@ -11404,6 +11571,7 @@ private struct CharacterEditorSheet: View {
         _croppedImage = State(initialValue: editingCharacter?.image)
         _name = State(initialValue: editingCharacter?.name ?? "")
         _role = State(initialValue: editingCharacter?.role ?? .supportingCharacter)
+        _isConfirmingDelete = State(initialValue: false)
     }
 
     var body: some View {
@@ -11432,15 +11600,32 @@ private struct CharacterEditorSheet: View {
                     .foregroundStyle(Color.storyPurple)
                 }
 
-                if let editingCharacter, let onDelete {
+                if editingCharacter != nil, onDelete != nil {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(role: .destructive) {
-                            onDelete(editingCharacter)
-                            dismiss()
+                            isConfirmingDelete = true
                         } label: {
                             Image(systemName: "trash")
                         }
                     }
+                }
+            }
+            .alert("Delete Character?", isPresented: $isConfirmingDelete) {
+                Button("Delete", role: .destructive) {
+                    guard let editingCharacter, let onDelete else {
+                        return
+                    }
+                    onDelete(editingCharacter)
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                if let editingCharacter, deletesFromLibrary {
+                    Text("This removes \(editingCharacter.name) from My Characters and deletes them from the cloud. This cannot be undone.")
+                } else if let editingCharacter {
+                    Text("This removes \(editingCharacter.name) from this entry.")
+                } else {
+                    Text("This permanently deletes this character.")
                 }
             }
             .onChange(of: selectedCharacterPhotoItem) { item in

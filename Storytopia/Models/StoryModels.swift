@@ -793,6 +793,67 @@ enum CreateEntryDraftStore {
         try? FileManager.default.removeItem(at: directory(for: id))
     }
 
+    static func removeCharacter(id characterID: UUID, excludingDraftID: UUID? = nil) {
+        for draft in loadAll() {
+            guard draft.id != excludingDraftID else {
+                continue
+            }
+
+            let updatedCharacters = draft.characters.filter { $0.id != characterID }
+            guard updatedCharacters.count != draft.characters.count else {
+                continue
+            }
+
+            replaceCharacters(in: draft, with: updatedCharacters)
+        }
+    }
+
+    static func updateCharacter(_ character: EntryCharacter, excludingDraftID: UUID? = nil) {
+        for draft in loadAll() {
+            guard draft.id != excludingDraftID else {
+                continue
+            }
+            guard let index = draft.characters.firstIndex(where: { $0.id == character.id }) else {
+                continue
+            }
+
+            var updatedCharacters = draft.characters
+            updatedCharacters[index] = character
+            replaceCharacters(in: draft, with: updatedCharacters)
+        }
+    }
+
+    private static func replaceCharacters(in draft: CreateEntryDraft, with characters: [EntryCharacter]) {
+        _ = save(
+            id: draft.id,
+            title: draft.title,
+            text: draft.text,
+            richText: draft.richText,
+            referencePhotos: draft.photos,
+            characters: characters,
+            artStyle: draft.artStyle,
+            location: draft.location,
+            date: draft.date,
+            datePrecision: draft.datePrecision,
+            savesDraft: draft.savesDraft,
+            isPrivate: draft.isPrivate,
+            status: JournalEntryStatus(rawValue: draft.status) ?? .draft,
+            fontChoiceRawValue: draft.fontChoiceRawValue,
+            textColorIndex: draft.textColorIndex,
+            textSize: draft.textSize,
+            paperStyleRawValue: draft.paperStyleRawValue,
+            paperColorIndex: draft.paperColorIndex,
+            isBold: draft.isBold,
+            isItalic: draft.isItalic,
+            isUnderlined: draft.isUnderlined,
+            isStrikethrough: draft.isStrikethrough,
+            isHighlighted: draft.isHighlighted,
+            textAlignmentRawValue: draft.textAlignmentRawValue,
+            thumbnail: draft.thumbnail,
+            createdAt: draft.createdAt
+        )
+    }
+
     static func saveThumbnail(_ thumbnail: UIImage, for id: UUID) {
         guard let thumbnailData = thumbnail.storytopiaPreparedJPEGData(compressionQuality: 0.86) else {
             return

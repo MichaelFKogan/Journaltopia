@@ -1080,10 +1080,10 @@ struct JournalView: View {
 
     private var deleteJournalAlertMessage: String {
         if let journal = journalsPendingDeletion.first, journalsPendingDeletion.count == 1 {
-            return "Are you sure you want to delete \"\(journal.title)\"? This journal and its entries can't be recovered."
+            return "Are you sure you want to delete \"\(journal.title)\"? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in Journal."
         }
 
-        return "Are you sure you want to delete these journals? These journals and their entries can't be recovered."
+        return "Are you sure you want to delete these journals? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in Journal."
     }
 
     private func requestDeleteJournals(_ journals: [PrototypeChapter]) {
@@ -4343,10 +4343,10 @@ struct ClassicJournalView: View {
 
     private var deleteJournalAlertMessage: String {
         if let journal = journalsPendingDeletion.first, journalsPendingDeletion.count == 1 {
-            return "Are you sure you want to delete \"\(journal.title)\"? This journal and its entries can't be recovered."
+            return "Are you sure you want to delete \"\(journal.title)\"? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in Journal."
         }
 
-        return "Are you sure you want to delete these journals? These journals and their entries can't be recovered."
+        return "Are you sure you want to delete these journals? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in Journal."
     }
 
     private func requestDeleteJournals(_ journals: [PrototypeChapter]) {
