@@ -9420,7 +9420,7 @@ struct AddEntryToJournalPage: View {
 
                         if journal.id != journals.last?.id {
                             Divider()
-                                .padding(.leading, 80)
+                                .padding(.leading, 90)
                         }
                     }
                 }
@@ -9508,7 +9508,7 @@ struct AddEntryToJournalPage: View {
                 .frame(width: 22, height: 22)
 
             AddEntryJournalNotebookCover(
-                color: Color.storyPurple.opacity(0.82),
+                journal: journal,
                 isSelected: isSelected
             )
             .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
@@ -9527,7 +9527,7 @@ struct AddEntryToJournalPage: View {
                 .lineLimit(1)
                 .multilineTextAlignment(.trailing)
         }
-        .frame(height: 50)
+        .frame(height: 58)
         .contentShape(Rectangle())
         .accessibilityLabel(journal.title)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -9579,43 +9579,94 @@ struct AddEntryToJournalPage: View {
 }
 
 private struct AddEntryJournalNotebookCover: View {
-    let color: Color
-    let isSelected: Bool
+    let journal: PrototypeChapter
+    var isSelected = false
+
+    private var storedCoverImage: UIImage? {
+        guard journal.remoteCover == nil else {
+            return nil
+        }
+
+        return CreateJournalCoverImageStore.image(for: journal)
+    }
+
+    private var remoteCoverURL: URL? {
+        journal.remoteCover?.thumbnailNSURL ?? journal.remoteCover?.imageNSURL
+    }
 
     var body: some View {
         ZStack {
-            UnevenRoundedRectangle(
-                topLeadingRadius: 3,
-                bottomLeadingRadius: 3,
-                bottomTrailingRadius: 5,
-                topTrailingRadius: 5,
-                style: .continuous
-            )
-            .fill(color)
+            notebookShape
+                .fill(journal.color)
 
-            Rectangle()
-                .fill(Color.white.opacity(0.22))
-                .frame(width: 3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 5)
+            coverContent
+                .frame(width: 36, height: 48)
+                .clipped()
 
-            if isSelected {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white)
+            HStack {
+                Rectangle()
+                    .fill(Color.black.opacity(0.22))
+                    .frame(width: 5)
+
+                Spacer()
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.20))
+                    .frame(width: 1.5)
+            }
+
+            HStack {
+                Rectangle()
+                    .fill(Color.white.opacity(0.34))
+                    .frame(width: 1)
+                    .padding(.leading, 3)
+
+                Spacer()
             }
         }
-        .frame(width: 26, height: 34)
+        .frame(width: 36, height: 48)
+        .clipShape(notebookShape)
         .overlay(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 3,
-                bottomLeadingRadius: 3,
-                bottomTrailingRadius: 5,
-                topTrailingRadius: 5,
-                style: .continuous
-            )
-            .stroke(isSelected ? Color.storyPurple : Color.storyInk.opacity(0.08), lineWidth: isSelected ? 1.4 : 0.6)
+            notebookShape
+                .stroke(
+                    isSelected ? Color.storyPurple : Color.black.opacity(0.16),
+                    lineWidth: isSelected ? 1.4 : 0.8
+                )
         )
+    }
+
+    private var notebookShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 3,
+            bottomLeadingRadius: 3,
+            bottomTrailingRadius: 5,
+            topTrailingRadius: 5,
+            style: .continuous
+        )
+    }
+
+    @ViewBuilder
+    private var coverContent: some View {
+        if let storedCoverImage {
+            Image(uiImage: storedCoverImage)
+                .resizable()
+                .scaledToFill()
+                .overlay(Color.black.opacity(0.12))
+        } else if let remoteCoverURL {
+            AsyncImage(url: remoteCoverURL) { phase in
+                if let image = phase.image {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .overlay(Color.black.opacity(0.12))
+                }
+            }
+        } else if let coverImageName = journal.coverImageName {
+            Image(coverImageName)
+                .resizable()
+                .scaledToFill()
+                .overlay(Color.black.opacity(0.12))
+        }
     }
 }
 
@@ -9788,11 +9839,11 @@ private struct AddToJournalSheet: View {
 
     private func existingJournalRow(_ journal: PrototypeChapter) -> some View {
         HStack(spacing: 12) {
-            AddToJournalCoverIcon(
-                symbol: journal.symbol,
-                color: journal.color,
+            AddEntryJournalNotebookCover(
+                journal: journal,
                 isSelected: selectedJournalTitle == journal.title
             )
+            .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(journal.title)
@@ -10069,7 +10120,7 @@ private struct SelectedJournalCoverThumbnail: View {
             return nil
         }
 
-        return CreateJournalCoverImageStore.image(for: journal.coverStorageKey)
+        return CreateJournalCoverImageStore.image(for: journal)
     }
 
     private var remoteCoverURL: URL? {
@@ -10141,6 +10192,10 @@ private struct SelectedJournalCoverThumbnail: View {
 
 private enum CreateJournalCoverImageStore {
     private static let folderName = "JournalCovers"
+
+    static func image(for journal: PrototypeChapter) -> UIImage? {
+        image(for: journal.coverStorageKey) ?? image(for: journal.title)
+    }
 
     static func image(for title: String) -> UIImage? {
         guard
