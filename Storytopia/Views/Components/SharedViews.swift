@@ -226,14 +226,14 @@ struct CreateNavItem: View {
             ZStack {
                 Circle()
                     .fill(selectedColor)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 46, height: 46)
 
                 Image(systemName: "plus")
-                    .font(.system(size: 25, weight: .regular))
+                    .font(.system(size: 28, weight: .regular))
                     .foregroundStyle(Color.white)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 44)
+            .frame(height: 48)
         }
         .frame(maxWidth: .infinity)
         .buttonStyle(.plain)

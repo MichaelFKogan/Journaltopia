@@ -2841,7 +2841,7 @@ struct CreateEntryView: View {
                 createToolbarItems(
                     title: editorToolbarTitle,
                     showsCloseButton: true,
-                    topDateText: editorToolbarDateText
+                    showsJournalDestinationButton: true
                 )
             }
         }
@@ -3005,7 +3005,7 @@ struct CreateEntryView: View {
         title: String,
         showsCloseButton: Bool,
         showsEntryDateButton: Bool = false,
-        topDateText: String? = nil
+        showsJournalDestinationButton: Bool = false
     ) -> some ToolbarContent {
         if showsCloseButton {
             ToolbarItem(placement: .topBarLeading) {
@@ -3033,7 +3033,9 @@ struct CreateEntryView: View {
         }
 
         ToolbarItem(placement: .principal) {
-            if showsEntryDateButton {
+            if showsJournalDestinationButton {
+                createToolbarJournalButton
+            } else if showsEntryDateButton {
                 Button {
                     openEntryDateSheet()
                 } label: {
@@ -3058,17 +3060,9 @@ struct CreateEntryView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Entry date, \(entryDateMetadataText)")
             } else {
-                if let topDateText {
-                    Text(topDateText)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Color.storyGray.opacity(0.58))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                } else {
-                    Text(title)
-                        .font(.system(size: 18, weight: .semibold, design: .serif))
-                        .foregroundColor(Color.storyGray.opacity(0.46))
-                }
+                Text(title)
+                    .font(.system(size: 18, weight: .semibold, design: .serif))
+                    .foregroundColor(Color.storyGray.opacity(0.46))
             }
         }
 
@@ -3078,6 +3072,29 @@ struct CreateEntryView: View {
             }
             .hideSharedBackgroundIfAvailable()
         }
+    }
+
+    private var createToolbarJournalButton: some View {
+        Button {
+            dismissKeyboard()
+            isShowingAddToJournalPage = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.46))
+
+                Text(selectedEntryJournalTitle ?? "Add To Journal")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.48))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.74)
+            }
+            .frame(maxWidth: 210)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(selectedEntryJournalTitle.map { "Journal, \($0)" } ?? "Add To Journal")
     }
 
     private var toolbarSaveActionButton: some View {
@@ -4191,8 +4208,24 @@ struct CreateEntryView: View {
             }
 
             floatingEditorMenu
+                .overlay(alignment: .bottom) {
+                    editorBottomDateLabel
+                        .offset(y: 15)
+                }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var editorBottomDateLabel: some View {
+        Text(editorToolbarDateText)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color.storyInk.opacity(0.48))
+            .lineLimit(1)
+            .minimumScaleFactor(0.78)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 16)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Entry date, \(editorToolbarDateText)")
     }
 
     @ViewBuilder
@@ -4516,9 +4549,6 @@ struct CreateEntryView: View {
 
             charactersShelfButton
                 .padding(.leading, -8)
-
-            journalsShelfButton
-                .padding(.leading, -12)
         }
         .frame(maxWidth: 420, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
