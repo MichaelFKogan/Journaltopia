@@ -458,6 +458,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
     let location: String
     let date: Date
     let datePrecision: EntryDatePrecision
+    let createdAt: Date
     let savesDraft: Bool
     let isPrivate: Bool
     let fontChoiceRawValue: String?
@@ -477,6 +478,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
         location: String,
         date: Date,
         datePrecision: EntryDatePrecision,
+        createdAt: Date,
         savesDraft: Bool,
         isPrivate: Bool,
         fontChoiceRawValue: String?,
@@ -503,6 +505,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
         self.location = location
         self.date = date
         self.datePrecision = datePrecision
+        self.createdAt = createdAt
         self.savesDraft = savesDraft
         self.isPrivate = isPrivate
         self.fontChoiceRawValue = fontChoiceRawValue
@@ -1684,7 +1687,7 @@ private struct DraftPageThumbnail: View {
 
 struct CreateEntryView: View {
     private static let defaultArtStyle = "Anime"
-    private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Cozy Storybook", "Pop Art", "Colored Journal"]
+    private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Pop Art"]
     let presentation: CreateEntryPresentation
 
     @Binding var entryText: String
@@ -2837,7 +2840,8 @@ struct CreateEntryView: View {
             if !isFullScreenEditorVisible {
                 createToolbarItems(
                     title: editorToolbarTitle,
-                    showsCloseButton: true
+                    showsCloseButton: true,
+                    topDateText: editorToolbarDateText
                 )
             }
         }
@@ -3000,7 +3004,8 @@ struct CreateEntryView: View {
     private func createToolbarItems(
         title: String,
         showsCloseButton: Bool,
-        showsEntryDateButton: Bool = false
+        showsEntryDateButton: Bool = false,
+        topDateText: String? = nil
     ) -> some ToolbarContent {
         if showsCloseButton {
             ToolbarItem(placement: .topBarLeading) {
@@ -3053,9 +3058,17 @@ struct CreateEntryView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Entry date, \(entryDateMetadataText)")
             } else {
-                Text(title)
-                    .font(.system(size: 18, weight: .semibold, design: .serif))
-                    .foregroundColor(Color.storyGray.opacity(0.46))
+                if let topDateText {
+                    Text(topDateText)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Color.storyGray.opacity(0.58))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                } else {
+                    Text(title)
+                        .font(.system(size: 18, weight: .semibold, design: .serif))
+                        .foregroundColor(Color.storyGray.opacity(0.46))
+                }
             }
         }
 
@@ -3749,7 +3762,7 @@ struct CreateEntryView: View {
         storyboardPhotos = photos.map(Optional.some)
             + Array(repeating: nil, count: max(0, 5 - photos.count))
         entryCharacters = EntryCharacterRules.orderedCharacters(draft.characters)
-        selectedArtStyle = draft.artStyle
+        selectedArtStyle = artStyles.contains(draft.artStyle) ? draft.artStyle : Self.defaultArtStyle
         storyLocation = draft.location
         storyDate = draft.date
         storyDatePrecision = draft.datePrecision
@@ -3787,6 +3800,7 @@ struct CreateEntryView: View {
             location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
             date: storyDate,
             datePrecision: storyDatePrecision,
+            createdAt: CreateEntryDraftStore.load(id: id)?.createdAt ?? loadedDraftSnapshot?.createdAt ?? Date(),
             savesDraft: savesDraft,
             isPrivate: isPrivateEntry,
             fontChoiceRawValue: selectedFontChoice.rawValue,
@@ -4125,7 +4139,7 @@ struct CreateEntryView: View {
             return 22
         }
 
-        return 92
+        return 84
     }
 
     private var speechMicButton: some View {
@@ -4435,6 +4449,14 @@ struct CreateEntryView: View {
         }
     }
 
+    private var editorToolbarDateText: String {
+        if let createdAt = loadedDraftSnapshot?.createdAt, activeDraftID != nil || presentation.isEditDraft || opensExistingEntryReadMode {
+            return createdAt.formatted(.dateTime.month(.wide).day().year())
+        }
+
+        return Date().formatted(.dateTime.month(.wide).day().year())
+    }
+
     private var floatingEditorMenu: some View {
         HStack(spacing: 8) {
             floatingMenuActionButton(
@@ -4493,6 +4515,10 @@ struct CreateEntryView: View {
             referencePhotosShelfButton
 
             charactersShelfButton
+                .padding(.leading, -8)
+
+            journalsShelfButton
+                .padding(.leading, -12)
         }
         .frame(maxWidth: 420, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -4507,7 +4533,7 @@ struct CreateEntryView: View {
             VStack(spacing: 5) {
                 referencePhotoShelfStack
 
-                Text("Reference Photos")
+                Text("Reference")
                     .font(.system(size: 10, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk.opacity(0.88))
                     .lineLimit(1)
@@ -4520,7 +4546,7 @@ struct CreateEntryView: View {
                         .lineLimit(1)
                 }
             }
-            .frame(width: 98, height: 106, alignment: .bottom)
+            .frame(width: 82, height: 106, alignment: .bottom)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -4729,6 +4755,114 @@ struct CreateEntryView: View {
         }
 
         return "\(entryCharacters.count) added"
+    }
+
+    private var journalsShelfButton: some View {
+        Button {
+            openJournalsFromShelf()
+        } label: {
+            VStack(spacing: 5) {
+                journalShelfCovers
+
+                Text(selectedJournalShelfTitles.count == 1 ? "Journal" : "Journals")
+                    .font(.system(size: 10, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk.opacity(0.88))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+
+                if !selectedJournalShelfTitles.isEmpty {
+                    Text(journalShelfSummary)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            }
+            .frame(width: 82, height: 103, alignment: .bottom)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(selectedJournalShelfTitles.isEmpty ? "Add to journal" : "\(journalShelfSummary), change journals")
+    }
+
+    private var journalShelfCovers: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if selectedJournalShelfTitles.isEmpty {
+                journalShelfSymbol(systemName: "book.closed.fill")
+                .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
+            } else if selectedJournalShelfJournals.isEmpty {
+                journalShelfSymbol(systemName: "book.closed.fill")
+                .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
+            } else {
+                ZStack {
+                    ForEach(Array(selectedJournalShelfJournals.prefix(3).enumerated()), id: \.element.id) { index, journal in
+                        SelectedJournalCoverThumbnail(journal: journal)
+                            .scaleEffect(1.2)
+                            .offset(x: CGFloat(index) * 14 - CGFloat(min(selectedJournalShelfJournals.count, 3) - 1) * 7, y: CGFloat(index % 2) * -3)
+                            .zIndex(Double(index))
+                    }
+                }
+                .frame(width: 76, height: 60)
+
+                if selectedJournalShelfTitles.count > 1 {
+                    Text("\(selectedJournalShelfTitles.count)")
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 19, height: 19)
+                        .background(Color.storyPurple, in: Circle())
+                        .overlay(Circle().stroke(Color.white, lineWidth: 1.4))
+                        .offset(x: 0, y: -2)
+                } else {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+                        .background(Color.white, in: Circle())
+                        .offset(x: 0, y: -1)
+                }
+            }
+        }
+        .frame(width: 78, height: 65)
+    }
+
+    private func journalShelfSymbol(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 31, weight: .semibold))
+            .foregroundStyle(Color.storyPurple.opacity(0.88))
+            .frame(width: 60, height: 60)
+            .background(Color.white.opacity(0.54), in: Circle())
+    }
+
+    private var selectedJournalShelfTitles: [String] {
+        var titles = linkedJournalTitles.union(selectedCustomJournalTitles)
+
+        if let linkedJournalTitle {
+            titles.insert(linkedJournalTitle)
+        }
+        if let selectedCustomJournalTitle {
+            titles.insert(selectedCustomJournalTitle)
+        }
+        if let initialJournalTitle = presentation.initialJournalTitle {
+            titles.insert(initialJournalTitle)
+        }
+
+        return titles.sorted()
+    }
+
+    private var selectedJournalShelfJournals: [PrototypeChapter] {
+        let titles = Set(selectedJournalShelfTitles)
+        return DailyJournalData.allChapters().filter { titles.contains($0.title) }
+    }
+
+    private var journalShelfSummary: String {
+        guard let firstTitle = selectedJournalShelfTitles.first else {
+            return "Add"
+        }
+
+        if selectedJournalShelfTitles.count == 1 {
+            return firstTitle
+        }
+
+        return "\(selectedJournalShelfTitles.count) selected"
     }
 
     private var photosAndCharactersPanel: some View {
@@ -5006,6 +5140,15 @@ struct CreateEntryView: View {
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
         }
+    }
+
+    private func openJournalsFromShelf() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingCustomizeSheet = false
+            isShowingJournalPromptsSheet = false
+            isPhotosPanelVisible = false
+        }
+        openAddToJournalPage()
     }
 
     private func presentCameraFromReferencePhotosSheet() {
@@ -12178,12 +12321,8 @@ func inlineArtStyleAssetName(for title: String) -> String {
         return "inline_art_style_pixel_art"
     case "Manga":
         return "inline_art_style_manga"
-    case "Cozy Storybook":
-        return "inline_art_style_cozy_storybook"
     case "Pop Art":
         return "inline_art_style_pop_art"
-    case "Colored Journal":
-        return "inline_art_style_colored_journal"
     default:
         return "inline_art_style_anime"
     }
@@ -12224,28 +12363,12 @@ switch title {
         The final result should look like pages from a published manga series, not a realistic black-and-white photograph.
         """
 
-    case "Cozy Storybook":
-        return """
-        Whimsical storybook illustration. Hand-painted watercolor and gouache textures, warm colors, soft edges, charming character designs, dreamy environments, and magical storybook atmosphere.
-        NOT photorealistic.
-        Characters should feel illustrated, charming, and slightly idealized rather than realistic.
-        The final result should look like artwork from a beautifully illustrated children's storybook.
-        """
-
     case "Pop Art":
         return """
         Bold pop art comic artwork inspired by classic comic books and gallery pop art. Thick black outlines, flat saturated colors, strong graphic shapes, Ben-Day dots, poster-like composition, and exaggerated visual impact.
         NOT photorealistic.
         Simplify forms into graphic comic-book shapes and bold color blocks.
         The final result should look like authentic pop art illustration, not a photo with color effects.
-        """
-
-    case "Colored Journal":
-        return """
-        Hand-drawn illustrated journal artwork. Loose sketch lines, colored pencil textures, marker rendering, handwritten sketchbook energy, personal diary charm, and expressive imperfect drawing.
-        NOT photorealistic.
-        Everything should feel hand-drawn by an artist in a personal journal. Visible sketch lines, artistic imperfections, and traditional drawing textures are encouraged.
-        The final result should look like illustrated journal pages, not realistic digital artwork.
         """
 
     default:
@@ -12267,12 +12390,8 @@ func artStyleAssetName(for title: String) -> String {
         return "art_style_pixel_art"
     case "Manga":
         return "art_style_manga"
-    case "Cozy Storybook":
-        return "art_style_cozy_storybook"
     case "Pop Art":
         return "art_style_pop_art"
-    case "Colored Journal":
-        return "art_style_colored_journal"
     default:
         return "art_style_anime"
     }

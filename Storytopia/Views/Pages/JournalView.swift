@@ -1460,7 +1460,8 @@ struct JournalView: View {
                 isStrikethrough: entry.isStrikethrough,
                 isHighlighted: entry.isHighlighted,
                 textAlignmentRawValue: entry.textAlignmentRawValue,
-                thumbnail: entry.thumbnail
+                thumbnail: entry.thumbnail,
+                createdAt: entry.createdAt
             )
         }
     }
@@ -1482,7 +1483,8 @@ struct JournalView: View {
             richText: entry.richText,
             time: entry.date.formatted(.dateTime.hour().minute()),
             location: entry.location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : entry.location,
-            imageNames: []
+            imageNames: [],
+            createdAt: entry.createdAt
         )
     }
 
@@ -2001,6 +2003,7 @@ private struct JournalDeleteButton: View {
     var visibleSize = JournalEditControlMetrics.visibleSize
     var showsBackground = true
     var backgroundColor = JournalEditControlMetrics.background
+    var backgroundShape = JournalDeleteButtonBackgroundShape.circle
     var visualAlignment: Alignment = .center
     let action: () -> Void
 
@@ -2021,7 +2024,16 @@ private struct JournalDeleteButton: View {
     private var deleteIcon: some View {
         if showsBackground {
             baseIcon
-                .background(backgroundColor, in: Circle())
+                .background {
+                    switch backgroundShape {
+                    case .circle:
+                        Circle()
+                            .fill(backgroundColor)
+                    case .roundedRectangle:
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(backgroundColor)
+                    }
+                }
                 .shadow(
                     color: JournalEditControlMetrics.shadowColor,
                     radius: JournalEditControlMetrics.shadowRadius,
@@ -2038,6 +2050,11 @@ private struct JournalDeleteButton: View {
             .foregroundStyle(Color.red)
             .frame(width: visibleSize, height: visibleSize)
     }
+}
+
+private enum JournalDeleteButtonBackgroundShape {
+    case circle
+    case roundedRectangle
 }
 
 private enum JournalEditControlMetrics {
@@ -9082,7 +9099,8 @@ private extension CreateEntryDraft {
             richText: richText,
             time: timeFormatter.string(from: displayDate),
             location: trimmedLocation.isEmpty ? nil : trimmedLocation,
-            imageNames: []
+            imageNames: [],
+            createdAt: createdAt
         )
     }
 
@@ -10868,7 +10886,8 @@ struct EntriesView: View {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entry.thumbnail
+            thumbnail: entry.thumbnail,
+            createdAt: entry.createdAt
         )
 
         guard persistedSampleID != nil else {
@@ -11615,7 +11634,8 @@ struct EntriesView: View {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entryThumbnail
+            thumbnail: entryThumbnail,
+            createdAt: entry.createdAt
         )
 
         if renamedID != nil {
@@ -12516,7 +12536,7 @@ struct EntriesView: View {
     }
 
     private func materializeCloudEntryIfNeeded(_ item: EntryDisplayItem) async -> UUID? {
-        if let localDraftID = item.localDraftID {
+        if item.cloudEntry == nil, let localDraftID = item.localDraftID {
             return localDraftID
         }
 
@@ -12573,7 +12593,8 @@ struct EntriesView: View {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entry.thumbnail
+            thumbnail: entry.thumbnail,
+            createdAt: entry.createdAt
         )
     }
 
@@ -13503,7 +13524,8 @@ private struct EntryGridPreviewCard: View {
                     JournalDeleteButton(
                         title: title,
                         visibleSize: 29,
-                        backgroundColor: Color.white,
+                        backgroundColor: Color.red.opacity(0.1),
+                        backgroundShape: .roundedRectangle,
                         visualAlignment: .topTrailing,
                         action: onDelete
                     )
@@ -13717,7 +13739,8 @@ private struct CompletedEntryGridCard: View {
                         JournalDeleteButton(
                             title: title,
                             visibleSize: 29,
-                            backgroundColor: Color.white,
+                            backgroundColor: Color.red.opacity(0.1),
+                            backgroundShape: .roundedRectangle,
                             visualAlignment: .topTrailing,
                             action: onDelete
                         )
@@ -16563,7 +16586,6 @@ private struct JournalDetailEntryBrowser: View {
 
         VStack(alignment: .leading, spacing: 14) {
             controlsRow
-            selectedEntriesToolbar
 
             if let errorMessage {
                 cloudErrorNotice(errorMessage)
@@ -16578,6 +16600,9 @@ private struct JournalDetailEntryBrowser: View {
             } else {
                 entryGrid(items)
             }
+        }
+        .overlay(alignment: .bottom) {
+            selectedEntriesToolbar
         }
         .onAppear(perform: refreshEntries)
         .onAppear(perform: notifyVisibleEntriesAvailability)
@@ -16649,27 +16674,30 @@ private struct JournalDetailEntryBrowser: View {
 
     private var controlsRow: some View {
         HStack(spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    if editMode == .active {
-                        editMode = .inactive
-                        selectedEntryIDs = []
-                    } else {
-                        editMode = .active
-                    }
-                }
-            } label: {
-                Text(editMode == .active ? "Done" : "Select")
-            }
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(Color.homeAccent)
-            .buttonStyle(.plain)
-            .accessibilityLabel(editMode == .active ? "Done selecting entries" : "Select entries")
-
             Spacer()
 
+            editSelectionButton
             layoutSwitcher
         }
+    }
+
+    private var editSelectionButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                if editMode == .active {
+                    editMode = .inactive
+                    selectedEntryIDs = []
+                } else {
+                    editMode = .active
+                }
+            }
+        } label: {
+            Text(editMode == .active ? "Done" : "Edit")
+        }
+        .font(.system(size: 14, weight: .bold))
+        .foregroundStyle(Color.homeAccent)
+        .buttonStyle(.plain)
+        .accessibilityLabel(editMode == .active ? "Done editing entries" : "Edit entries")
     }
 
     private var layoutSwitcher: some View {
@@ -16720,17 +16748,7 @@ private struct JournalDetailEntryBrowser: View {
 
                 Spacer()
 
-                Button(role: .destructive) {
-                    requestDeleteSelectedEntries()
-                } label: {
-                    Image(systemName: "trash.fill")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Color.red)
-                        .frame(width: 38, height: 38)
-                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete selected entries")
+                selectedEntriesOverflowMenu
 
                 Button {
                     openAddSelectedEntriesToJournalPage()
@@ -16752,7 +16770,34 @@ private struct JournalDetailEntryBrowser: View {
                     .stroke(Color.homeBorder, lineWidth: 1)
             )
             .shadow(color: Color.storyInk.opacity(0.08), radius: 10, y: 5)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, 82)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .zIndex(3)
         }
+    }
+
+    private var selectedEntriesOverflowMenu: some View {
+        Menu {
+            Button(role: .destructive) {
+                requestDeleteSelectedEntries()
+            } label: {
+                Label(deleteSelectedEntriesMenuTitle, systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(Color.storyInk.opacity(0.76))
+                .frame(width: 38, height: 38)
+                .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.homeBorder, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("More actions for selected entries")
     }
 
     private func entryGrid(_ items: [EntryDisplayItem]) -> some View {
@@ -16825,8 +16870,15 @@ private struct JournalDetailEntryBrowser: View {
                 category: nil,
                 isSelecting: editMode == .active,
                 isSelected: selectedEntryIDs.contains(item.id),
+                selectionBadgeStyle: .prominentGrid,
                 onOpen: {
                     handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
+                },
+                onDelete: {
+                    requestDeleteEntry(item)
+                },
+                onSelect: {
+                    toggleEntrySelection(item.id)
                 }
             )
             .modifier(JournalDetailEntryDragModifier(
@@ -16850,17 +16902,23 @@ private struct JournalDetailEntryBrowser: View {
                 sortOption: .manual,
                 pageLabel: pageLabel(for: index),
                 isEditing: false,
-                showsActions: false,
+                showsActions: editMode == .active,
                 title: entryDisplayTitle(displayEntry),
                 category: nil,
                 isOpening: false,
                 isSelecting: editMode == .active,
                 isSelected: selectedEntryIDs.contains(item.id),
+                selectionBadgeStyle: .prominentGrid,
                 onOpen: {
                     handleItemTap(item, displayEntry: displayEntry, fallbackIndex: index)
                 },
-                onDelete: {},
-                onRename: nil
+                onDelete: {
+                    requestDeleteEntry(item)
+                },
+                onRename: nil,
+                onSelect: {
+                    toggleEntrySelection(item.id)
+                }
             )
             .modifier(JournalDetailEntryDragModifier(
                 entryID: item.id,
@@ -17485,6 +17543,10 @@ private struct JournalDetailEntryBrowser: View {
         return "These entries are only in \(chapter.title). Removing them here will delete them permanently."
     }
 
+    private var deleteSelectedEntriesMenuTitle: String {
+        selectedEntryIDs.count == 1 ? "Delete Entry" : "Delete \(selectedEntryIDs.count) Entries"
+    }
+
     private func handleItemTap(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
         if editMode == .active {
             toggleEntrySelection(item.id)
@@ -17595,6 +17657,10 @@ private struct JournalDetailEntryBrowser: View {
 
     private func requestDeleteSelectedEntries() {
         entriesPendingDeletion = selectedItems
+    }
+
+    private func requestDeleteEntry(_ item: EntryDisplayItem) {
+        entriesPendingDeletion = [item]
     }
 
     private func deletePendingEntriesFromCurrentJournal(_ itemsToDelete: [EntryDisplayItem]) async {
@@ -17817,10 +17883,6 @@ private struct JournalDetailEntryBrowser: View {
             return displayEntry
         }
 
-        guard displayEntry.photos.isEmpty || displayEntry.characters.isEmpty else {
-            return displayEntry
-        }
-
         do {
             let fullCloudEntry = try await SupabaseEntryRepository().getEntry(id: cloudEntry.id)
             let cloudDraft = CreateEntryDraft.fromCloud(fullCloudEntry, thumbnail: displayEntry.thumbnail)
@@ -17861,7 +17923,8 @@ private struct JournalDetailEntryBrowser: View {
                 isStrikethrough: cloudDraft.isStrikethrough,
                 isHighlighted: cloudDraft.isHighlighted,
                 textAlignmentRawValue: cloudDraft.textAlignmentRawValue,
-                thumbnail: cloudDraft.thumbnail
+                thumbnail: cloudDraft.thumbnail,
+                createdAt: cloudDraft.createdAt
             )
 
             return CreateEntryDraftStore.load(id: cloudDraft.id) ?? cloudDraft
@@ -18458,6 +18521,11 @@ private struct PrototypeEntryDetailView: View {
 
     private var entryIntroduction: some View {
         VStack(alignment: .leading, spacing: 13) {
+            Text(entry.createdAt.formatted(.dateTime.month(.wide).day().year()))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.56))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             HStack(spacing: 10) {
                 VStack(spacing: 1) {
                     Text(entry.weekday)
@@ -20475,6 +20543,7 @@ struct PrototypeEntry: Identifiable {
     let time: String
     let location: String?
     let imageNames: [String]
+    let createdAt: Date
 
     init(
         id: UUID = UUID(),
@@ -20485,7 +20554,8 @@ struct PrototypeEntry: Identifiable {
         richText: NotebookRichTextDocument? = nil,
         time: String,
         location: String?,
-        imageNames: [String]
+        imageNames: [String],
+        createdAt: Date = Date()
     ) {
         self.id = id
         self.weekday = weekday
@@ -20496,6 +20566,7 @@ struct PrototypeEntry: Identifiable {
         self.time = time
         self.location = location
         self.imageNames = imageNames
+        self.createdAt = createdAt
     }
 
     func copy(imageNames: [String]) -> PrototypeEntry {
@@ -20508,7 +20579,8 @@ struct PrototypeEntry: Identifiable {
             richText: richText,
             time: time,
             location: location,
-            imageNames: imageNames
+            imageNames: imageNames,
+            createdAt: createdAt
         )
     }
 

@@ -1325,12 +1325,12 @@ struct StoryboardImageViewer: View {
 private struct StoryboardPrimarySelectionRow: View {
     let storyboards: [GeneratedStoryboard]
     let primaryStoryboardID: UUID?
-    let onSelectPrimary: (GeneratedStoryboard) -> Void
+    let onSelectStoryboard: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 7) {
-                Text("Current Storyboards")
+                Text("Current Storyboards for this Entry")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white)
 
@@ -1347,7 +1347,7 @@ private struct StoryboardPrimarySelectionRow: View {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
                         Button {
-                            onSelectPrimary(storyboard)
+                            onSelectStoryboard(index)
                         } label: {
                             StoryboardPrimarySelectionThumbnail(
                                 image: storyboard.image,
@@ -1355,7 +1355,7 @@ private struct StoryboardPrimarySelectionRow: View {
                             )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(storyboard.id == primaryStoryboardID ? "Primary storyboard" : "Set storyboard version \(index + 1) as primary")
+                        .accessibilityLabel(storyboard.id == primaryStoryboardID ? "Primary storyboard, go to storyboard \(index + 1)" : "Go to storyboard \(index + 1)")
                     }
                 }
                 .padding(.horizontal, 1)
@@ -1453,13 +1453,23 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         ])
 
         context.coordinator.stackView = stackView
+        populateStackView(stackView, in: scrollView, context: context)
+
+        DispatchQueue.main.async {
+            context.coordinator.scrollToInitialImage(in: scrollView)
+        }
+
+        return scrollView
+    }
+
+    private func populateStackView(_ stackView: UIStackView, in scrollView: UIScrollView, context: Context) {
         let topSpacer = UIView()
         topSpacer.backgroundColor = .black
         topSpacer.translatesAutoresizingMaskIntoConstraints = false
         topSpacer.heightAnchor.constraint(equalToConstant: topOverlayClearance).isActive = true
         stackView.addArrangedSubview(topSpacer)
 
-        if let storyboardPicker = makeStoryboardPicker(context: context) {
+        if let storyboardPicker = makeStoryboardPicker(in: scrollView, context: context) {
             stackView.addArrangedSubview(storyboardPicker)
         }
         context.coordinator.imageViews = images.enumerated().map { index, image in
@@ -1469,27 +1479,127 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
                 )
             }
 
-            let imageView = UIImageView(image: image)
-            imageView.contentMode = .scaleAspectFit
-            imageView.backgroundColor = .black
-            imageView.clipsToBounds = true
-            imageView.translatesAutoresizingMaskIntoConstraints = false
-            imageView.heightAnchor.constraint(
-                equalTo: imageView.widthAnchor,
-                multiplier: image.size.height / max(image.size.width, 1)
-            ).isActive = true
-            stackView.addArrangedSubview(imageView)
+            let imageContainer = makeStoryboardImageContainer(
+                image: image,
+                storyboard: storyboards.indices.contains(index) ? storyboards[index] : nil,
+                context: context
+            )
+            stackView.addArrangedSubview(imageContainer)
             if storyboards.indices.contains(index) {
                 stackView.addArrangedSubview(makeMetadataView(for: storyboards[index]))
             }
-            return imageView
+            return imageContainer
+        }
+        context.coordinator.renderedPrimaryStoryboardID = primaryStoryboardID
+    }
+
+    private func makeStoryboardImageContainer(
+        image: UIImage,
+        storyboard: GeneratedStoryboard?,
+        context: Context
+    ) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .black
+        container.clipsToBounds = false
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.heightAnchor.constraint(
+            equalTo: container.widthAnchor,
+            multiplier: image.size.height / max(image.size.width, 1)
+        ).isActive = true
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFit
+        imageView.backgroundColor = .black
+        imageView.clipsToBounds = true
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(imageView)
+
+        NSLayoutConstraint.activate([
+            imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            imageView.topAnchor.constraint(equalTo: container.topAnchor),
+            imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        guard
+            let storyboard,
+            onSelectPrimary != nil,
+            storyboards.count > 1
+        else {
+            return container
         }
 
-        DispatchQueue.main.async {
-            context.coordinator.scrollToInitialImage(in: scrollView)
+        if storyboard.id == primaryStoryboardID {
+            let border = UIView()
+            border.isUserInteractionEnabled = false
+            border.layer.borderColor = UIColor(Color.storyPurple).cgColor
+            border.layer.borderWidth = 3
+            border.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(border)
+
+            let badge = primaryBadge()
+            container.addSubview(badge)
+
+            NSLayoutConstraint.activate([
+                border.leadingAnchor.constraint(equalTo: imageView.leadingAnchor, constant: 6),
+                border.trailingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: -6),
+                border.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 6),
+                border.bottomAnchor.constraint(equalTo: imageView.bottomAnchor, constant: -6),
+                badge.leadingAnchor.constraint(equalTo: imageView.leadingAnchor, constant: 16),
+                badge.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 16)
+            ])
+        } else {
+            let button = setPrimaryButton()
+            button.addAction(UIAction { _ in
+                context.coordinator.selectPrimary(storyboard)
+            }, for: .touchUpInside)
+            container.addSubview(button)
+
+            NSLayoutConstraint.activate([
+                button.trailingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: -16),
+                button.bottomAnchor.constraint(equalTo: imageView.bottomAnchor, constant: -16)
+            ])
         }
 
-        return scrollView
+        return container
+    }
+
+    private func primaryBadge() -> UIView {
+        var configuration = UIButton.Configuration.filled()
+        configuration.image = UIImage(systemName: "star.fill")
+        configuration.imagePadding = 5
+        configuration.title = "Primary"
+        configuration.baseForegroundColor = .white
+        configuration.baseBackgroundColor = UIColor(Color.storyPurple)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 13)
+
+        let badge = UIButton(configuration: configuration)
+        badge.isUserInteractionEnabled = false
+        badge.titleLabel?.font = .systemFont(ofSize: 13, weight: .heavy)
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        return badge
+    }
+
+    private func setPrimaryButton() -> UIButton {
+        var configuration = UIButton.Configuration.filled()
+        configuration.image = UIImage(systemName: "star")
+        configuration.imagePadding = 6
+        configuration.title = "Set as Primary"
+        configuration.baseForegroundColor = .white
+        configuration.baseBackgroundColor = UIColor(Color.storyPurple).withAlphaComponent(0.92)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 15)
+
+        let button = UIButton(configuration: configuration)
+        button.titleLabel?.font = .systemFont(ofSize: 13, weight: .heavy)
+        button.layer.shadowColor = UIColor.black.cgColor
+        button.layer.shadowOpacity = 0.26
+        button.layer.shadowRadius = 10
+        button.layer.shadowOffset = CGSize(width: 0, height: 4)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.accessibilityLabel = "Set storyboard as primary"
+        return button
     }
 
     private func makeMetadataView(for storyboard: GeneratedStoryboard) -> UIView {
@@ -1535,7 +1645,7 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         return label
     }
 
-    private func makeStoryboardPicker(context: Context) -> UIView? {
+    private func makeStoryboardPicker(in scrollView: UIScrollView, context: Context) -> UIView? {
         guard let onSelectPrimary, storyboards.count > 1 else {
             return nil
         }
@@ -1543,7 +1653,9 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         let picker = StoryboardPrimarySelectionRow(
             storyboards: storyboards,
             primaryStoryboardID: primaryStoryboardID,
-            onSelectPrimary: onSelectPrimary
+            onSelectStoryboard: { index in
+                context.coordinator.scrollToStoryboard(at: index, in: scrollView, animated: true)
+            }
         )
         let hostingController = UIHostingController(rootView: picker)
         hostingController.view.backgroundColor = .clear
@@ -1564,11 +1676,25 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         context.coordinator.parent = self
-        if let onSelectPrimary {
+        if context.coordinator.renderedPrimaryStoryboardID != primaryStoryboardID,
+           let stackView = context.coordinator.stackView {
+            let preservedVisibleIndex = visibleIndex
+            for arrangedSubview in stackView.arrangedSubviews {
+                stackView.removeArrangedSubview(arrangedSubview)
+                arrangedSubview.removeFromSuperview()
+            }
+            context.coordinator.storyboardPickerHostingController = nil
+            populateStackView(stackView, in: scrollView, context: context)
+            scrollView.layoutIfNeeded()
+            stackView.layoutIfNeeded()
+            context.coordinator.scrollToStoryboard(at: preservedVisibleIndex, in: scrollView, animated: false)
+        } else if onSelectPrimary != nil {
             context.coordinator.storyboardPickerHostingController?.rootView = StoryboardPrimarySelectionRow(
                 storyboards: storyboards,
                 primaryStoryboardID: primaryStoryboardID,
-                onSelectPrimary: onSelectPrimary
+                onSelectStoryboard: { index in
+                    context.coordinator.scrollToStoryboard(at: index, in: scrollView, animated: true)
+                }
             )
         }
     }
@@ -1577,7 +1703,8 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         var parent: ZoomableVerticalStoryboardView
         weak var stackView: UIStackView?
         var storyboardPickerHostingController: UIHostingController<StoryboardPrimarySelectionRow>?
-        var imageViews: [UIImageView] = []
+        var imageViews: [UIView] = []
+        var renderedPrimaryStoryboardID: UUID?
         private var didScrollToInitialImage = false
 
         init(parent: ZoomableVerticalStoryboardView) {
@@ -1622,6 +1749,26 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
             scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: false)
             didScrollToInitialImage = true
             updateVisibleIndex(in: scrollView)
+        }
+
+        func scrollToStoryboard(at index: Int, in scrollView: UIScrollView, animated: Bool) {
+            guard imageViews.indices.contains(index) else {
+                return
+            }
+
+            let imageView = imageViews[index]
+            scrollView.layoutIfNeeded()
+            stackView?.layoutIfNeeded()
+            let targetY = max(
+                0,
+                imageView.frame.minY - parent.topOverlayClearance
+            )
+            scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: animated)
+            parent.visibleIndex = index
+        }
+
+        func selectPrimary(_ storyboard: GeneratedStoryboard) {
+            parent.onSelectPrimary?(storyboard)
         }
 
         private func updateVisibleIndex(in scrollView: UIScrollView) {
