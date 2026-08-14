@@ -3022,28 +3022,14 @@ private struct JournalCustomizationSheet: View {
 
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Color")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(Color.storyInk)
-
-                Spacer()
-
-                Button("Use Color") {
-                    selectedCoverImageName = nil
-                    selectedRemoteCover = nil
-                    selectedStoredCoverImage = nil
-                    selectedStoryboardCoverID = nil
-                    clearsStoredCover = true
-                }
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(Color.homeAccent)
-            }
+            Text("Color")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyInk)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5), spacing: 10) {
                 ForEach(JournalColorOption.all) { option in
                     Button {
-                        selectedColorHex = option.hex
+                        selectColor(option)
                     } label: {
                         Circle()
                             .fill(option.color)
@@ -3330,6 +3316,20 @@ private struct JournalCustomizationSheet: View {
         query
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+    }
+
+    private func selectColor(_ option: JournalColorOption) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            selectedColorHex = option.hex
+            selectedCoverImageName = nil
+            selectedRemoteCover = nil
+            selectedStoredCoverImage = nil
+            selectedStoryboardCoverID = nil
+            clearsStoredCover = true
+        }
     }
 
     private func selectStoryboardCoverImage(named imageName: String) {
@@ -14779,6 +14779,8 @@ private struct PrototypeChapterDetailView: View {
     @State private var isOpeningCompletedEntryFromEntries = false
     @State private var isOpeningExistingEntryFromJournal = false
     @State private var editMode: EditMode = .inactive
+    @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var journalDetailSelectionBarAction: JournalDetailSelectionBarAction?
     @State private var draggingEntryID: UUID?
     @State private var isShowingCoverCustomization = false
     @State private var pendingCoverSync: PendingJournalCoverSync?
@@ -15134,6 +15136,8 @@ private struct PrototypeChapterDetailView: View {
         .onChange(of: selectedSection) { newSection in
             if newSection != "Pages" {
                 editMode = .inactive
+                selectedEntryIDs = []
+                journalDetailSelectionBarAction = nil
                 draggingEntryID = nil
             }
             if newSection != "Media" {
@@ -15234,8 +15238,13 @@ private struct PrototypeChapterDetailView: View {
                 )
             }
         }
-        // Floating write button — must stay as an outer overlay so the
-        // full-bleed detail sheet cannot cover it.
+        // Selection bar and write button stay as outer overlays so the
+        // full-bleed detail sheet cannot cover them or drag them.
+        .overlay(alignment: .bottom) {
+            journalDetailSelectedEntriesToolbar
+                .animation(.easeInOut(duration: 0.18), value: selectedEntryIDs.isEmpty)
+                .animation(.easeInOut(duration: 0.18), value: editMode)
+        }
         .overlay(alignment: .bottomTrailing) {
             journalDetailFloatingWriteButton
                 .padding(.trailing, 20)
@@ -15265,6 +15274,71 @@ private struct PrototypeChapterDetailView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Write")
+    }
+
+    @ViewBuilder
+    private var journalDetailSelectedEntriesToolbar: some View {
+        if editMode == .active && !selectedEntryIDs.isEmpty {
+            HStack(spacing: 12) {
+                Text("\(selectedEntryIDs.count) selected")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Spacer()
+
+                journalDetailSelectedEntriesOverflowMenu
+
+                Button {
+                    journalDetailSelectionBarAction = .addToJournal
+                } label: {
+                    Label("Add to Journal", systemImage: "book.closed.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add selected entries to a journal")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 54)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.08), radius: 10, y: 5)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 72)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .zIndex(3)
+        }
+    }
+
+    private var journalDetailSelectedEntriesOverflowMenu: some View {
+        Menu {
+            Button(role: .destructive) {
+                journalDetailSelectionBarAction = .deleteSelected
+            } label: {
+                Label(
+                    selectedEntryIDs.count == 1 ? "Delete Entry" : "Delete \(selectedEntryIDs.count) Entries",
+                    systemImage: "trash"
+                )
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(Color.storyInk.opacity(0.76))
+                .frame(width: 38, height: 38)
+                .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.homeBorder, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("More actions for selected entries")
     }
 
     private func journalDetailLowerBannerBackground(proxy: GeometryProxy) -> some View {
@@ -15344,6 +15418,8 @@ private struct PrototypeChapterDetailView: View {
                     JournalDetailEntryBrowser(
                         chapter: chapter,
                         editMode: $editMode,
+                        selectedEntryIDs: $selectedEntryIDs,
+                        selectionBarAction: $journalDetailSelectionBarAction,
                         allowsCreation: true,
                         scrollViewportHeight: proxy.size.height,
                         onCreateEntry: {
@@ -16505,11 +16581,18 @@ private struct JournalDetailScrollOffsetKey: PreferenceKey {
     }
 }
 
+private enum JournalDetailSelectionBarAction {
+    case addToJournal
+    case deleteSelected
+}
+
 private struct JournalDetailEntryBrowser: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     let chapter: PrototypeChapter
     @Binding var editMode: EditMode
+    @Binding var selectedEntryIDs: Set<UUID>
+    @Binding var selectionBarAction: JournalDetailSelectionBarAction?
     let allowsCreation: Bool
     let scrollViewportHeight: CGFloat
     let onCreateEntry: () -> Void
@@ -16525,7 +16608,6 @@ private struct JournalDetailEntryBrowser: View {
     @State private var failedCloudStoryboardClientIDs: Set<UUID> = []
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var selectedEntryIDs: Set<UUID> = []
     @State private var entriesPendingDeletion: [EntryDisplayItem] = []
     @State private var isShowingAddSelectedEntriesToJournalSheet = false
     @State private var selectedEntriesJournalTitle: String?
@@ -16601,9 +16683,6 @@ private struct JournalDetailEntryBrowser: View {
                 entryGrid(items)
             }
         }
-        .overlay(alignment: .bottom) {
-            selectedEntriesToolbar
-        }
         .onAppear(perform: refreshEntries)
         .onAppear(perform: notifyVisibleEntriesAvailability)
         .onChange(of: authStore.userID) { _ in
@@ -16631,6 +16710,19 @@ private struct JournalDetailEntryBrowser: View {
         .onChange(of: editMode) { mode in
             if mode != .active {
                 selectedEntryIDs = []
+            }
+        }
+        .onChange(of: selectionBarAction) { action in
+            guard let action else {
+                return
+            }
+
+            selectionBarAction = nil
+            switch action {
+            case .addToJournal:
+                openAddSelectedEntriesToJournalPage()
+            case .deleteSelected:
+                requestDeleteSelectedEntries()
             }
         }
         .sheet(isPresented: $isShowingAddSelectedEntriesToJournalSheet) {
@@ -16674,6 +16766,10 @@ private struct JournalDetailEntryBrowser: View {
 
     private var controlsRow: some View {
         HStack(spacing: 10) {
+            if !visibleItems.isEmpty {
+                ReorderHintText()
+            }
+
             Spacer()
 
             editSelectionButton
@@ -16736,68 +16832,6 @@ private struct JournalDetailEntryBrowser: View {
         .buttonStyle(.plain)
         .accessibilityLabel(layout.accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    @ViewBuilder
-    private var selectedEntriesToolbar: some View {
-        if editMode == .active && !selectedEntryIDs.isEmpty {
-            HStack(spacing: 12) {
-                Text("\(selectedEntryIDs.count) selected")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Color.storyInk)
-
-                Spacer()
-
-                selectedEntriesOverflowMenu
-
-                Button {
-                    openAddSelectedEntriesToJournalPage()
-                } label: {
-                    Label("Add to Journal", systemImage: "book.closed.fill")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .frame(height: 38)
-                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 54)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder, lineWidth: 1)
-            )
-            .shadow(color: Color.storyInk.opacity(0.08), radius: 10, y: 5)
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .padding(.bottom, 82)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .zIndex(3)
-        }
-    }
-
-    private var selectedEntriesOverflowMenu: some View {
-        Menu {
-            Button(role: .destructive) {
-                requestDeleteSelectedEntries()
-            } label: {
-                Label(deleteSelectedEntriesMenuTitle, systemImage: "trash")
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 16, weight: .heavy))
-                .foregroundStyle(Color.storyInk.opacity(0.76))
-                .frame(width: 38, height: 38)
-                .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.homeBorder, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("More actions for selected entries")
     }
 
     private func entryGrid(_ items: [EntryDisplayItem]) -> some View {
@@ -17541,10 +17575,6 @@ private struct JournalDetailEntryBrowser: View {
         }
 
         return "These entries are only in \(chapter.title). Removing them here will delete them permanently."
-    }
-
-    private var deleteSelectedEntriesMenuTitle: String {
-        selectedEntryIDs.count == 1 ? "Delete Entry" : "Delete \(selectedEntryIDs.count) Entries"
     }
 
     private func handleItemTap(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {

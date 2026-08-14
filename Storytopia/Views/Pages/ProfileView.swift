@@ -1343,6 +1343,12 @@ private struct StoryboardPrimarySelectionRow: View {
                 Spacer(minLength: 0)
             }
 
+            Text("The Primary image is the one that will be shown in your journal for this entry. Tap Set as Primary on another storyboard to change which image appears there.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.68))
+                .lineSpacing(1)
+                .fixedSize(horizontal: false, vertical: true)
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
