@@ -1720,7 +1720,6 @@ struct CreateEntryView: View {
     @State private var storyboardGenerationPhase: StoryboardGenerationPhase = .ready
     @State private var generationErrorMessage: String?
     @State private var isFullScreenEditorVisible = false
-    @State private var isShowingArtStyleGrid = false
     @State private var isShowingJournalPromptsSheet = false
     @State private var isShowingCustomizeSheet = false
     @State private var activeCustomizeTab: CreateFormattingTab = .fontStyle
@@ -2066,14 +2065,6 @@ struct CreateEntryView: View {
 
     private var editorWithFormattingSheets: some View {
         editorWithPrimarySheets
-        .sheet(isPresented: $isShowingArtStyleGrid) {
-            ArtStyleGridSheet(
-                artStyles: artStyles,
-                selectedArtStyle: $selectedArtStyle
-            )
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
         .sheet(isPresented: $isShowingEntryDateSheet) {
             entryDateSheet
                 .presentationDetents([.height(520), .large])
@@ -5922,8 +5913,8 @@ struct CreateEntryView: View {
             }
 
             artStylePickerSection
-            journalDestinationCard
-            storyDetailsCard
+            // journalDestinationCard — Journal destination picker (kept for later reuse)
+            // storyDetailsCard — Date and location (kept for later reuse)
             imageGenerationQualityCard
             generationCreditsStatusCard
             // entryPrivacyCard — Save Entry / Private Entry toggles (kept for later reuse)
@@ -6643,23 +6634,19 @@ struct CreateEntryView: View {
                         .font(.system(size: 15, weight: .bold, design: .serif))
                         .foregroundStyle(Color.storyInk)
 
-                    Text(selectedImageGenerationQuality.subtitle)
+                    Text("Choose Standard or HD")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.homeMutedText)
                 }
 
                 Spacer()
-
-                generationCostChip(cost: selectedImageGenerationQuality.creditCost)
             }
 
-            Picker("Image Quality", selection: $selectedImageGenerationQualityRawValue) {
+            VStack(spacing: 8) {
                 ForEach(OpenAIImageGenerationQuality.allCases) { quality in
-                    Text(quality.title)
-                        .tag(quality.rawValue)
+                    imageQualityOptionButton(quality)
                 }
             }
-            .pickerStyle(.segmented)
         }
         .padding(12)
         .background(Color.white.opacity(0.74), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -6668,6 +6655,66 @@ struct CreateEntryView: View {
                 .stroke(Color.storyBorder.opacity(0.68), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 9, y: 3)
+    }
+
+    private func imageQualityOptionButton(_ quality: OpenAIImageGenerationQuality) -> some View {
+        let isSelected = selectedImageGenerationQuality == quality
+
+        return Button {
+            selectedImageGenerationQualityRawValue = quality.rawValue
+            dismissKeyboard()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: imageQualityOptionIcon(for: quality))
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(Color.storyPurple)
+                    .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(quality.title)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.storyInk)
+
+                    Text(quality.subtitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.74)
+                }
+
+                Spacer()
+
+                if isSelected {
+                    Text("Selected")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+                        .padding(.horizontal, 7)
+                        .frame(height: 22)
+                        .background(Color.storyPurple.opacity(0.1), in: Capsule())
+                }
+
+                generationCostChip(cost: quality.creditCost)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 58)
+            .background(Color.white.opacity(isSelected ? 0.96 : 0.58), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected ? Color.storyPurple.opacity(0.34) : Color.storyBorder.opacity(0.62), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(quality.title), \(quality.subtitle), \(formattedCreditCount(quality.creditCost))")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func imageQualityOptionIcon(for quality: OpenAIImageGenerationQuality) -> String {
+        switch quality {
+        case .standard:
+            return "photo"
+        case .highDefinition:
+            return "sparkles"
+        }
     }
 
     private var generationCreditsStatusCard: some View {
@@ -8583,18 +8630,6 @@ struct CreateEntryView: View {
                 Text("Choose Art Style")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.storyInk)
-
-                Spacer()
-
-                Button {
-                    dismissKeyboard()
-                    isShowingArtStyleGrid = true
-                } label: {
-                    Text("View all")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Color.storyPurple)
-                }
-                .buttonStyle(.plain)
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -10854,97 +10889,6 @@ private struct CreateColorSwatchRow: View {
                 }
             }
             .padding(.vertical, 2)
-        }
-    }
-}
-
-struct ArtStyleGridSheet: View {
-    let artStyles: [String]
-
-    @Binding var selectedArtStyle: String
-
-    @Environment(\.dismiss) private var dismiss
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center) {
-                Text("Choose art style")
-                    .font(.system(size: 22, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
-
-                Spacer()
-
-                Button {
-                    dismiss()
-                } label: {
-                    Text("Done")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Color.storyPurple)
-                        .frame(height: 38)
-                }
-            }
-
-            ScrollView(showsIndicators: false) {
-                LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(artStyles, id: \.self) { style in
-                        Button {
-                            selectedArtStyle = style
-                        } label: {
-                            ArtStyleGridOption(
-                                title: style,
-                                isSelected: selectedArtStyle == style
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.bottom, 18)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 22)
-        .background(Color.homePageBackground)
-    }
-}
-
-struct ArtStyleGridOption: View {
-    let title: String
-    let isSelected: Bool
-
-    var body: some View {
-        VStack(spacing: 7) {
-            GeometryReader { proxy in
-                ZStack(alignment: .topTrailing) {
-                    Image(artStyleAssetName(for: title))
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: proxy.size.width, height: proxy.size.width)
-                        .clipped()
-
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(isSelected ? Color.storyPurple : Color.storyBorder.opacity(0.5), lineWidth: isSelected ? 2.5 : 1)
-
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundStyle(.white, Color.storyPurple)
-                            .padding(7)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            }
-            .aspectRatio(1, contentMode: .fit)
-
-            Text(title)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(isSelected ? Color.storyPurple : Color.storyInk.opacity(0.84))
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
         }
     }
 }

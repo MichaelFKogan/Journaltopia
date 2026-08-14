@@ -5,11 +5,8 @@ struct SettingsView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
-    @State private var selectedArtStyle = "Anime"
     @State private var isSigningIn = false
     @State private var isSigningOut = false
-
-    private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Pop Art"]
 
     var body: some View {
         List {
@@ -31,9 +28,7 @@ struct SettingsView: View {
                     accessibilityLabel: "Open extra settings"
                 ) {
                     SettingsExtraView(
-                        selectedPage: $selectedPage,
-                        artStyles: artStyles,
-                        selectedArtStyle: $selectedArtStyle
+                        selectedPage: $selectedPage
                     )
                     .enableInteractivePopGesture()
                 }
@@ -206,8 +201,6 @@ private struct SettingsExtraView: View {
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
     @Binding var selectedPage: StoryPage
-    let artStyles: [String]
-    @Binding var selectedArtStyle: String
     @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @State private var isResettingGenerationCredits = false
 
@@ -326,19 +319,6 @@ private struct SettingsExtraView: View {
                 ) {
                     StockTextEditorTestView()
                         .enableInteractivePopGesture()
-                }
-
-                SettingsNavigationRow(
-                    systemName: "paintpalette",
-                    title: "Choose Art Style",
-                    subtitle: "Preview and pick a storyboard look",
-                    accessibilityLabel: "Open choose art style"
-                ) {
-                    ArtStyleGridSheet(
-                        artStyles: artStyles,
-                        selectedArtStyle: $selectedArtStyle
-                    )
-                    .enableInteractivePopGesture()
                 }
             }
         }
