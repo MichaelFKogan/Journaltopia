@@ -13683,6 +13683,7 @@ private struct EntryGridPreviewCard: View {
     @Binding var draggingEntryID: UUID?
     let onOpen: () -> Void
     let onDelete: () -> Void
+    var deleteActionTitle: String = "Delete"
     var onRename: (() -> Void)?
     var onSelect: (() -> Void)?
 
@@ -13704,6 +13705,7 @@ private struct EntryGridPreviewCard: View {
         draggingEntryID: Binding<UUID?> = .constant(nil),
         onOpen: @escaping () -> Void,
         onDelete: @escaping () -> Void,
+        deleteActionTitle: String = "Delete",
         onRename: (() -> Void)? = nil,
         onSelect: (() -> Void)? = nil
     ) {
@@ -13724,6 +13726,7 @@ private struct EntryGridPreviewCard: View {
         _draggingEntryID = draggingEntryID
         self.onOpen = onOpen
         self.onDelete = onDelete
+        self.deleteActionTitle = deleteActionTitle
         self.onRename = onRename
         self.onSelect = onSelect
     }
@@ -13819,7 +13822,7 @@ private struct EntryGridPreviewCard: View {
                 Button(role: .destructive) {
                     onDelete()
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    Label(deleteActionTitle, systemImage: "trash")
                 }
             }
         }
@@ -13876,6 +13879,7 @@ private struct CompletedEntryGridCard: View {
     @Binding var draggingEntryID: UUID?
     let onOpen: () -> Void
     let onDelete: (() -> Void)?
+    let deleteActionTitle: String
     let onRename: (() -> Void)?
     let onSelect: (() -> Void)?
     let accessibilityLabel: String
@@ -13898,6 +13902,7 @@ private struct CompletedEntryGridCard: View {
         draggingEntryID: Binding<UUID?> = .constant(nil),
         onOpen: @escaping () -> Void,
         onDelete: (() -> Void)? = nil,
+        deleteActionTitle: String = "Delete",
         onRename: (() -> Void)? = nil,
         onSelect: (() -> Void)? = nil
     ) {
@@ -13918,6 +13923,7 @@ private struct CompletedEntryGridCard: View {
         _draggingEntryID = draggingEntryID
         self.onOpen = onOpen
         self.onDelete = onDelete
+        self.deleteActionTitle = deleteActionTitle
         self.onRename = onRename
         self.onSelect = onSelect
         accessibilityLabel = "Completed \(title)"
@@ -14027,7 +14033,7 @@ private struct CompletedEntryGridCard: View {
                 Button(role: .destructive) {
                     onDelete()
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    Label(deleteActionTitle, systemImage: "trash")
                 }
             }
         }
@@ -16425,18 +16431,26 @@ private struct PrototypeChapterDetailView: View {
         return "Open \(pageLabel), storyboard \(index + 1) of \(mediaStoryboardItems.count)"
     }
 
+    /// The viewer scrolls every tile in the Media grid — the primary storyboard
+    /// for each entry — so entries with multiple storyboards contribute one image.
     private func mediaViewerStoryboards(for storyboard: GeneratedStoryboard) -> [GeneratedStoryboard] {
-        guard let clientEntryID = storyboard.clientEntryID else {
-            let stored = GeneratedStoryboardStore.load().first(where: { $0.id == storyboard.id })
-            return [stored ?? storyboard]
+        let gridStoryboards = mediaStoryboardItems.map(\.storyboard)
+        let viewerStoryboards = gridStoryboards.contains(where: { $0.id == storyboard.id })
+            ? gridStoryboards
+            : [storyboard]
+
+        // Grid tiles hold downsampled images; swap in the full-size ones for viewing.
+        let clientEntryIDs = Set(viewerStoryboards.compactMap(\.clientEntryID))
+        guard !clientEntryIDs.isEmpty else {
+            return viewerStoryboards
         }
 
-        let entryStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: [clientEntryID])
-        guard !entryStoryboards.isEmpty else {
-            return [storyboard]
-        }
+        let storedByID = Dictionary(
+            GeneratedStoryboardStore.load(clientEntryIDs: clientEntryIDs).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
-        return entryStoryboards
+        return viewerStoryboards.map { storedByID[$0.id] ?? $0 }
     }
 
     private func cardSizedMediaStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
@@ -17179,6 +17193,7 @@ private struct JournalDetailEntryBrowser: View {
                 onDelete: {
                     requestDeleteEntry(item)
                 },
+                deleteActionTitle: journalDetailDeleteActionTitle,
                 onSelect: {
                     toggleEntrySelection(item.id)
                 }
@@ -17204,7 +17219,9 @@ private struct JournalDetailEntryBrowser: View {
                 sortOption: .manual,
                 pageLabel: pageLabel(for: index),
                 isEditing: false,
-                showsActions: editMode == .active,
+                // Matches the Entries page: the long-press action is available without
+                // first entering selection mode.
+                showsActions: true,
                 title: entryDisplayTitle(displayEntry),
                 category: nil,
                 isOpening: false,
@@ -17217,6 +17234,7 @@ private struct JournalDetailEntryBrowser: View {
                 onDelete: {
                     requestDeleteEntry(item)
                 },
+                deleteActionTitle: journalDetailDeleteActionTitle,
                 onRename: nil,
                 onSelect: {
                     toggleEntrySelection(item.id)
@@ -17238,6 +17256,12 @@ private struct JournalDetailEntryBrowser: View {
                 )
             )
         }
+    }
+
+    /// On a journal page the destructive action is ambiguous — the confirmation alert is what
+    /// offers "Remove from this Journal" versus "Delete in All", so the row action stays neutral.
+    private var journalDetailDeleteActionTitle: String {
+        "Remove from Journal"
     }
 
     private var entryGridAvailableWidth: CGFloat {
@@ -17316,6 +17340,13 @@ private struct JournalDetailEntryBrowser: View {
                 }
                 .buttonStyle(.plain)
                 .frame(height: rowHeight)
+                .contextMenu {
+                    Button(role: .destructive) {
+                        requestDeleteEntry(item)
+                    } label: {
+                        Label(journalDetailDeleteActionTitle, systemImage: "trash")
+                    }
+                }
                 .modifier(JournalDetailEntryDragModifier(
                     entryID: item.id,
                     isEnabled: isEntryReorderingEnabled,

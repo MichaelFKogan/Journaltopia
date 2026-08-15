@@ -1801,6 +1801,9 @@ struct CreateEntryView: View {
     @State private var currentEntryStatus: JournalEntryStatus = .draft
     @State private var storyboardPendingDeletion: GeneratedStoryboard?
     @State private var isDeletingStoryboard = false
+    @State private var isConfirmingEntryDeletion = false
+    @State private var isDeletingEntry = false
+    @State private var entryDeletionErrorMessage: String?
     @State private var activeKeyboardFormattingMode: CreateKeyboardFormattingMode?
     @State private var lastKeyboardHeight: CGFloat = 300
     @State private var selectedKeyboardTextType: CreateKeyboardTextType = .body
@@ -2097,6 +2100,34 @@ struct CreateEntryView: View {
             }
         } message: { _ in
             Text(storyboardDeletionMessage)
+        }
+        .alert("Delete Entry?", isPresented: $isConfirmingEntryDeletion) {
+            Button("Cancel", role: .cancel) {
+                isConfirmingEntryDeletion = false
+            }
+
+            Button("Delete Entry", role: .destructive) {
+                deleteCurrentEntry()
+            }
+        } message: {
+            Text(entryDeletionMessage)
+        }
+        .alert(
+            "Could Not Delete Entry",
+            isPresented: Binding(
+                get: { entryDeletionErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        entryDeletionErrorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK") {
+                entryDeletionErrorMessage = nil
+            }
+        } message: {
+            Text(entryDeletionErrorMessage ?? "Could not delete this entry.")
         }
     }
 
@@ -5988,8 +6019,71 @@ struct CreateEntryView: View {
             generationCreditsStatusCard
             // entryPrivacyCard — Save Entry / Private Entry toggles (kept for later reuse)
             generateStoryboardButton
+
+            if canDeleteCurrentEntry {
+                deleteEntryCard
+            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// Deleting the whole entry only makes sense once it exists on disk, and sample studio
+    /// entries are removed through their own authoring service instead.
+    private var canDeleteCurrentEntry: Bool {
+        activeDraftID != nil && !authoringMode.isSampleStudio
+    }
+
+    private var deleteEntryCard: some View {
+        VStack(spacing: 0) {
+            Button(role: .destructive) {
+                dismissKeyboard()
+                isConfirmingEntryDeletion = true
+            } label: {
+                HStack(spacing: 7) {
+                    if isDeletingEntry {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Color.red)
+                    } else {
+                        Image(systemName: "trash")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+
+                    Text(isDeletingEntry ? "Deleting Entry" : "Delete Entry")
+                        .font(.system(size: 15, weight: .bold))
+                }
+                .foregroundStyle(Color.red)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isDeletingEntry || isBlockingSaveInProgress)
+            .opacity(isDeletingEntry || isBlockingSaveInProgress ? 0.55 : 1)
+            .accessibilityLabel("Delete this entry")
+        }
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.red.opacity(0.28), lineWidth: 1)
+        )
+        .padding(.top, 4)
+    }
+
+    private var entryDeletionMessage: String {
+        let title = storyTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = title.isEmpty ? "this entry" : "\"\(title)\""
+        let storyboardCount = currentEntryStoryboards.count
+
+        guard storyboardCount > 0 else {
+            return "Are you sure you want to delete \(subject)? This can't be undone."
+        }
+
+        let storyboardText = storyboardCount == 1
+            ? "its storyboard"
+            : "all \(storyboardCount) of its storyboards"
+
+        return "Deleting \(subject) also deletes \(storyboardText) and removes it from every journal. This can't be undone."
     }
 
     private var selectedEntryJournalTitle: String? {
@@ -7775,7 +7869,7 @@ struct CreateEntryView: View {
     }
 
     private var storyboardDeletionMessage: String {
-        let creditNote = "This can't be undone, and the generation credit isn't refunded."
+        let creditNote = "This can't be undone."
         let storyboardCount = deletableEntryStoryboards.count
 
         guard storyboardCount > 1 else {
@@ -7831,6 +7925,64 @@ struct CreateEntryView: View {
                     isDeletingStoryboard = false
                 }
             }
+        }
+    }
+
+    private func deleteCurrentEntry() {
+        guard let entryID = activeDraftID, !isDeletingEntry else {
+            return
+        }
+
+        isConfirmingEntryDeletion = false
+        isDeletingEntry = true
+        dismissKeyboard()
+        let isSignedIn = authStore.userID != nil
+
+        Task {
+            do {
+                // A nil cloudEntry still clears the cloud rows by client entry ID, so the editor
+                // does not need to carry a JournalEntry of its own.
+                try await EntrySaveService().deleteEntry(
+                    localDraftID: entryID,
+                    cloudEntry: nil,
+                    isSignedIn: isSignedIn
+                )
+
+                await MainActor.run {
+                    StoryEntryStore.delete(entryID: entryID)
+                    EntryJournalLinkStore.remove(for: entryID)
+                    generatedStoryboards.removeAll { $0.clientEntryID == entryID }
+                    if storyboardGenerationStatus?.entryID == entryID {
+                        storyboardGenerationStatus = nil
+                    }
+                    isDeletingEntry = false
+                    NotificationCenter.default.post(name: .storytopiaGeneratedStoryboardsChanged, object: nil)
+                    closeEditorAfterDeletion()
+                }
+            } catch {
+                await MainActor.run {
+                    isDeletingEntry = false
+                    entryDeletionErrorMessage = "Could not delete this entry. Check your connection and try again."
+                }
+            }
+        }
+    }
+
+    /// The editor is only torn down once the delete has actually landed, so a failure leaves the
+    /// entry on screen instead of dismissing into a view whose entry no longer exists.
+    private func closeEditorAfterDeletion() {
+        completedEntryOpenedStoryboardImage = nil
+        isOpeningCompletedEntryFromEntries = false
+        isPreviewingCompletedStoryboard = false
+        selectedEntryStoryboardIndex = nil
+        // clearEditor() also leaves the Entry Details page, so the push unwinds before the
+        // editor itself is dismissed.
+        clearEditor()
+        activeDraftID = nil
+        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+
+        withAnimation(.snappy(duration: 0.32)) {
+            dismissCreate()
         }
     }
 

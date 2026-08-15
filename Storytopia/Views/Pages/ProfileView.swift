@@ -60,7 +60,7 @@ struct ProfileView: View {
                         // entry's last storyboard. The result toast reports what actually
                         // happened.
                         message: { _ in
-                            "Only this storyboard is deleted. If it is the last one for its entry, that entry moves back to Drafts. This can't be undone, and the generation credit isn't refunded."
+                            "Only this storyboard is deleted. If it is the last one for its entry, that entry moves back to Drafts. This can't be undone."
                         },
                         perform: { storyboard in
                             deleteStoryboards([storyboard])
@@ -1401,8 +1401,8 @@ private struct PendingStoryboardDeletion: Identifiable {
     var confirmationMessage: String {
         let isSingleStoryboard = preview.storyboardCount == 1
         let creditNote = isSingleStoryboard
-            ? "This can't be undone, and the generation credit isn't refunded."
-            : "This can't be undone, and generation credits aren't refunded."
+            ? "This can't be undone."
+            : "This can't be undone."
 
         switch preview.entriesReturningToDrafts {
         case 0:
