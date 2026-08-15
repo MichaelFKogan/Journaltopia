@@ -2564,16 +2564,6 @@ struct CreateEntryView: View {
 
         let journalTitle = selectedEntryJournalTitle
 
-        let apiKey = OpenAITestConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !apiKey.isEmpty, apiKey != "PASTE_OPENAI_API_KEY_HERE" else {
-            generationErrorMessage = StoryboardGenerationError.missingAPIKey.localizedDescription
-            setStoryboardGenerationGlobalStatus(
-                kind: .failed,
-                message: generationErrorMessage ?? StoryboardGenerationError.missingAPIKey.localizedDescription
-            )
-            return
-        }
-
         guard let generationPayload = makeEntryDraftSavePayload(forceSave: true) else {
             generationErrorMessage = StoryboardGenerationError.invalidRequest.localizedDescription
             setStoryboardGenerationGlobalStatus(
@@ -2597,8 +2587,9 @@ struct CreateEntryView: View {
         let generationQuality = selectedImageGenerationQuality
         let creditCost = generationQuality.creditCost
         // Only a balance we have actually read can turn the generation away here. When it is
-        // unknown, the reservation below asks Supabase instead of guessing from a stale number.
-        if isShortOnGenerationCredits {
+        // unknown, the generate-storyboard function decides, since it owns the reservation. Sample
+        // Studio authoring spends no credits, so a low balance must not block sample content.
+        if isShortOnGenerationCredits, !authoringMode.isSampleStudio {
             generationErrorMessage = "You need \(formattedCreditCount(creditCost)) to generate this storyboard."
             setStoryboardGenerationGlobalStatus(
                 kind: .failed,
@@ -2619,16 +2610,9 @@ struct CreateEntryView: View {
         )
 
         Task {
-            // Credits are reserved before any image is requested. Charging afterwards meant a
-            // failed spend threw away an image OpenAI had already produced and billed for.
-            var reservedCredit = 0
-
+            // The generate-storyboard function reserves and refunds the credit as part of the same
+            // request that calls OpenAI, so this flow only reads the balance back afterwards.
             do {
-                if creditCost > 0 {
-                    try await generationCreditStore.spend(creditCost)
-                    reservedCredit = creditCost
-                }
-
                 let prepareResult: EntrySaveResult
                 if authoringMode.isSampleStudio {
                     prepareResult = try await SupabaseSampleStoryService().prepareSampleEntryForGeneration(
@@ -2676,8 +2660,9 @@ struct CreateEntryView: View {
                 }
 
                 print("[Storytopia] Calling OpenAI.")
-                let image = try await OpenAIImageGenerationService().generateStoryboard(
-                    apiKey: apiKey,
+                let generation = try await OpenAIImageGenerationService().generateStoryboard(
+                    clientEntryID: prepareResult.localDraftID,
+                    target: authoringMode.isSampleStudio ? .sampleStudio : .userEntry,
                     title: storyTitle,
                     text: entryText,
                     richText: currentEntryRichText(),
@@ -2687,10 +2672,6 @@ struct CreateEntryView: View {
                     characters: entryCharacters
                 )
                 print("[Storytopia] OpenAI response received.")
-
-                // The image exists, so the reservation is now earned and must not be refunded if a
-                // later save step fails — the storyboard is still persisted locally below.
-                reservedCredit = 0
 
                 await MainActor.run {
                     storyboardGenerationPhase = .savingResult
@@ -2702,14 +2683,21 @@ struct CreateEntryView: View {
                 }
 
                 print("[Storytopia] Saving generated storyboard.")
+                // The function already uploaded the image and inserted the primary row, so the local
+                // copy adopts that identity instead of creating a second storyboard.
                 let storyboard = try GeneratedStoryboardStore.persistedStoryboard(
-                    image: image,
+                    image: generation.image,
                     clientEntryID: prepareResult.localDraftID,
                     promptText: entryText,
-                    artStyle: selectedArtStyle,
-                    generationQuality: generationQuality,
-                    panelLayout: nil,
+                    artStyle: generation.artStyle,
+                    generationQuality: generation.quality,
+                    panelLayout: generation.panelLayout,
                     sourcePhotoCount: min(photoImages.count + entryCharacters.count, EntryCharacterRules.maxGenerationImageCount),
+                    createdAt: generation.createdAt,
+                    id: generation.storyboardID,
+                    storagePath: generation.storagePath,
+                    cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                    isPrimary: generation.isPrimary,
                     isSampleContent: authoringMode.isSampleStudio
                 )
                 print("[Storytopia] Storyboard saved.")
@@ -2717,67 +2705,13 @@ struct CreateEntryView: View {
                 var storyboardsAfterLocalSave = GeneratedStoryboardStore.merging(storyboard, into: GeneratedStoryboardStore.load())
                 GeneratedStoryboardStore.save(storyboardsAfterLocalSave)
 
-                let storyboardForCompletion: GeneratedStoryboard
+                // Nothing left to sync in either mode: the storyboard already exists in its bucket
+                // and its table, written by the function that generated it. Sample Studio only has
+                // to drop the cached pack so the studio reloads the new page.
                 if authoringMode.isSampleStudio {
-                    do {
-                        storyboardForCompletion = try await SupabaseSampleStoryService().persistSampleStoryboard(storyboard)
-                    } catch {
-                        print("[Storytopia] Sample storyboard cloud sync failed after local save: \(error.localizedDescription)")
-                        storyboardForCompletion = GeneratedStoryboard(
-                            id: storyboard.id,
-                            clientEntryID: storyboard.clientEntryID,
-                            image: storyboard.image,
-                            promptText: storyboard.promptText,
-                            artStyle: storyboard.artStyle,
-                            generationQuality: storyboard.generationQuality,
-                            panelLayout: storyboard.panelLayout,
-                            sourcePhotoCount: storyboard.sourcePhotoCount,
-                            createdAt: storyboard.createdAt,
-                            imageFileName: storyboard.imageFileName,
-                            storagePath: storyboard.storagePath,
-                            cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
-                            isPrimary: storyboard.isPrimary,
-                            isSampleContent: storyboard.isSampleContent
-                        )
-                    }
-                } else {
-                    do {
-                        let cloudStoryboard = try await SupabaseStoryboardService().persistPrimaryStoryboard(storyboard)
-                        storyboardForCompletion = GeneratedStoryboard(
-                            id: storyboard.id,
-                            clientEntryID: storyboard.clientEntryID,
-                            image: storyboard.image,
-                            promptText: storyboard.promptText,
-                            artStyle: storyboard.artStyle,
-                            generationQuality: storyboard.generationQuality,
-                            panelLayout: storyboard.panelLayout,
-                            sourcePhotoCount: storyboard.sourcePhotoCount,
-                            createdAt: storyboard.createdAt,
-                            imageFileName: storyboard.imageFileName,
-                            storagePath: cloudStoryboard.storagePath,
-                            cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
-                            isPrimary: true,
-                            isSampleContent: storyboard.isSampleContent
-                        )
-                    } catch {
-                        storyboardForCompletion = GeneratedStoryboard(
-                            id: storyboard.id,
-                            clientEntryID: storyboard.clientEntryID,
-                            image: storyboard.image,
-                            promptText: storyboard.promptText,
-                            artStyle: storyboard.artStyle,
-                            generationQuality: storyboard.generationQuality,
-                            panelLayout: storyboard.panelLayout,
-                            sourcePhotoCount: storyboard.sourcePhotoCount,
-                            createdAt: storyboard.createdAt,
-                            imageFileName: storyboard.imageFileName,
-                            storagePath: storyboard.storagePath,
-                            cloudSyncState: StoryboardCloudSyncState.failed.rawValue,
-                            isPrimary: storyboard.isPrimary,
-                            isSampleContent: storyboard.isSampleContent
-                        )
-                    }
+                    SupabaseSampleStoryService().invalidateSamplePackCache()
                 }
+                let storyboardForCompletion = storyboard
                 storyboardsAfterLocalSave = GeneratedStoryboardStore.merging(storyboardForCompletion, into: storyboardsAfterLocalSave)
                 GeneratedStoryboardStore.save(storyboardsAfterLocalSave)
 
@@ -2865,10 +2799,12 @@ struct CreateEntryView: View {
                     NotificationCenter.default.post(name: .storytopiaGeneratedStoryboardsChanged, object: nil)
                     print("[Storytopia] Storyboard completion refreshed on Create page.")
                 }
+
+                await refreshGenerationCreditBalance()
             } catch {
-                if reservedCredit > 0 {
-                    await generationCreditStore.refundQuietly(reservedCredit)
-                }
+                // Any charge and any refund happened inside the function, so the balance is read
+                // back rather than adjusted locally.
+                await refreshGenerationCreditBalance()
 
                 await MainActor.run {
                     generationErrorMessage = error.localizedDescription
@@ -2883,6 +2819,10 @@ struct CreateEntryView: View {
                 }
             }
         }
+    }
+
+    private func refreshGenerationCreditBalance() async {
+        await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
     }
 
     private func setStoryboardGenerationGlobalStatus(
