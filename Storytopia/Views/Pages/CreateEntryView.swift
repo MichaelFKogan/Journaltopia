@@ -2596,7 +2596,9 @@ struct CreateEntryView: View {
         let photoImages = photos.map(\.image)
         let generationQuality = selectedImageGenerationQuality
         let creditCost = generationQuality.creditCost
-        guard generationCreditStore.canSpend(creditCost) else {
+        // Only a balance we have actually read can turn the generation away here. When it is
+        // unknown, the reservation below asks Supabase instead of guessing from a stale number.
+        if isShortOnGenerationCredits {
             generationErrorMessage = "You need \(formattedCreditCount(creditCost)) to generate this storyboard."
             setStoryboardGenerationGlobalStatus(
                 kind: .failed,
@@ -2617,7 +2619,16 @@ struct CreateEntryView: View {
         )
 
         Task {
+            // Credits are reserved before any image is requested. Charging afterwards meant a
+            // failed spend threw away an image OpenAI had already produced and billed for.
+            var reservedCredit = 0
+
             do {
+                if creditCost > 0 {
+                    try await generationCreditStore.spend(creditCost)
+                    reservedCredit = creditCost
+                }
+
                 let prepareResult: EntrySaveResult
                 if authoringMode.isSampleStudio {
                     prepareResult = try await SupabaseSampleStoryService().prepareSampleEntryForGeneration(
@@ -2677,7 +2688,9 @@ struct CreateEntryView: View {
                 )
                 print("[Storytopia] OpenAI response received.")
 
-                try await generationCreditStore.spend(creditCost)
+                // The image exists, so the reservation is now earned and must not be refunded if a
+                // later save step fails — the storyboard is still persisted locally below.
+                reservedCredit = 0
 
                 await MainActor.run {
                     storyboardGenerationPhase = .savingResult
@@ -2853,6 +2866,10 @@ struct CreateEntryView: View {
                     print("[Storytopia] Storyboard completion refreshed on Create page.")
                 }
             } catch {
+                if reservedCredit > 0 {
+                    await generationCreditStore.refundQuietly(reservedCredit)
+                }
+
                 await MainActor.run {
                     generationErrorMessage = error.localizedDescription
                     storyboardGenerationPhase = .failed
@@ -2990,6 +3007,11 @@ struct CreateEntryView: View {
         .toolbarBackground(Color.homePageBackground, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .enableInteractivePopGesture()
+        .task {
+            // This screen quotes the balance and spends against it, so it reads its own copy
+            // instead of trusting whatever Home or Settings last cached.
+            await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+        }
     }
 
     private var fullScreenEditorContent: some View {
@@ -6143,10 +6165,17 @@ struct CreateEntryView: View {
         return storyboardGenerationPhase.buttonTitle
     }
 
+    /// A balance we have never read is unknown, not empty, so it does not block generation — only a
+    /// balance Supabase confirmed is too small does.
+    private var isShortOnGenerationCredits: Bool {
+        generationCreditStore.hasKnownBalance
+            && !generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost)
+    }
+
     private var isStoryboardGenerationButtonDisabled: Bool {
         isGeneratingStoryboard
             || storyboardGenerationPhase == .completed
-            || !generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost)
+            || isShortOnGenerationCredits
     }
 
     private var photosMenuBadgeCount: Int {
@@ -6898,7 +6927,7 @@ struct CreateEntryView: View {
 
                 Text(generationCreditsStatusText)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost) ? Color.homeMutedText : Color.red.opacity(0.82))
+                    .foregroundStyle(isShortOnGenerationCredits ? Color.red.opacity(0.82) : Color.homeMutedText)
                     .lineLimit(2)
                     .minimumScaleFactor(0.82)
             }
@@ -9197,7 +9226,7 @@ struct CreateEntryView: View {
 
             Text(generationButtonFootnote)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost) ? Color.storyInk.opacity(0.46) : Color.red.opacity(0.82))
+                .foregroundStyle(isShortOnGenerationCredits ? Color.red.opacity(0.82) : Color.storyInk.opacity(0.46))
 
             Button {
                 showStoryboardGenerationProgressPreview()
@@ -9213,7 +9242,7 @@ struct CreateEntryView: View {
     }
 
     private var generationButtonFootnote: String {
-        if !generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost) {
+        if isShortOnGenerationCredits {
             return "Add credits before generating another storyboard."
         }
 
