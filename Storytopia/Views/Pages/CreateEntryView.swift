@@ -1799,6 +1799,8 @@ struct CreateEntryView: View {
     @State private var cloudSaveState: EntryCloudSaveState = .idle
     @State private var cloudSaveDismissVersion = 0
     @State private var currentEntryStatus: JournalEntryStatus = .draft
+    @State private var storyboardPendingDeletion: GeneratedStoryboard?
+    @State private var isDeletingStoryboard = false
     @State private var activeKeyboardFormattingMode: CreateKeyboardFormattingMode?
     @State private var lastKeyboardHeight: CGFloat = 300
     @State private var selectedKeyboardTextType: CreateKeyboardTextType = .body
@@ -2064,9 +2066,37 @@ struct CreateEntryView: View {
                     initialIndex: min(selectedEntryStoryboardIndex ?? 0, storyboards.count - 1),
                     onSelectPrimary: { storyboard in
                         setPrimaryStoryboard(storyboard)
-                    }
+                    },
+                    deleteAction: StoryboardViewerDeleteAction(
+                        message: { _ in storyboardDeletionMessage },
+                        perform: { storyboard in
+                            deleteStoryboard(storyboard)
+                        }
+                    )
                 )
             }
+        }
+        .alert(
+            "Delete Storyboard?",
+            isPresented: Binding(
+                get: { storyboardPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        storyboardPendingDeletion = nil
+                    }
+                }
+            ),
+            presenting: storyboardPendingDeletion
+        ) { storyboard in
+            Button("Cancel", role: .cancel) {
+                storyboardPendingDeletion = nil
+            }
+
+            Button("Delete", role: .destructive) {
+                deleteStoryboard(storyboard)
+            }
+        } message: { _ in
+            Text(storyboardDeletionMessage)
         }
     }
 
@@ -7695,12 +7725,25 @@ struct CreateEntryView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(Array(displayStoryboards.enumerated()), id: \.element.id) { index, storyboard in
-                        currentStoryboardThumbnail(image: storyboard.image, isPrimary: storyboard.isPrimary)
-                            .onTapGesture {
-                                openStoryboardViewer(for: storyboard)
+                        let thumbnail = currentStoryboardThumbnail(
+                            image: storyboard.image,
+                            isPrimary: storyboard.isPrimary
+                        )
+                        .onTapGesture {
+                            openStoryboardViewer(for: storyboard)
+                        }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel(storyboard.isPrimary ? "Primary storyboard, open full screen" : "Open storyboard version \(index + 1) full screen")
+
+                        // Placeholder and sample storyboards have nothing to act on, and an
+                        // empty context menu would still open on long press.
+                        if storyboard.isDeletable, !storyboard.isPrimary {
+                            thumbnail.contextMenu {
+                                storyboardThumbnailMenu(for: storyboard)
                             }
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityLabel(storyboard.isPrimary ? "Primary storyboard, open full screen" : "Open storyboard version \(index + 1) full screen")
+                        } else {
+                            thumbnail
+                        }
                     }
                 }
                 .padding(.horizontal, 1)
@@ -7714,6 +7757,108 @@ struct CreateEntryView: View {
                 .stroke(Color.storyBorder.opacity(0.54), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
+    }
+
+    /// Deletion lives on the thumbnail's own trash badge, so the long-press menu is left with
+    /// the one action that has nowhere else to go.
+    @ViewBuilder
+    private func storyboardThumbnailMenu(for storyboard: GeneratedStoryboard) -> some View {
+        Button {
+            setPrimaryStoryboard(storyboard)
+        } label: {
+            Label("Set as Primary", systemImage: "star")
+        }
+    }
+
+    private var deletableEntryStoryboards: [GeneratedStoryboard] {
+        currentEntryStoryboards.filter(\.isDeletable)
+    }
+
+    private var storyboardDeletionMessage: String {
+        let creditNote = "This can't be undone, and the generation credit isn't refunded."
+        let storyboardCount = deletableEntryStoryboards.count
+
+        guard storyboardCount > 1 else {
+            return "This is the only storyboard for this entry. Deleting it moves the entry back to Drafts. \(creditNote)"
+        }
+
+        let keptCount = storyboardCount - 1
+        let keptText = keptCount == 1
+            ? "The other storyboard is kept"
+            : "The other \(keptCount) storyboards are kept"
+
+        return "Only this one is deleted. \(keptText) and the entry stays completed. \(creditNote)"
+    }
+
+    private func requestStoryboardDeletion(_ storyboard: GeneratedStoryboard) {
+        guard storyboard.isDeletable else {
+            return
+        }
+
+        storyboardPendingDeletion = storyboard
+    }
+
+    private func deleteStoryboard(_ storyboard: GeneratedStoryboard) {
+        guard storyboard.isDeletable, !isDeletingStoryboard else {
+            return
+        }
+
+        storyboardPendingDeletion = nil
+        isDeletingStoryboard = true
+        setCloudSaveState(.saving)
+        let isSignedIn = authStore.userID != nil
+
+        Task {
+            do {
+                let outcome = try await StoryboardDeletionService().delete(
+                    [storyboard],
+                    isSignedIn: isSignedIn
+                )
+                await MainActor.run {
+                    applyStoryboardDeletion(outcome)
+                    setCloudSaveState(.saved)
+                    isDeletingStoryboard = false
+                }
+            } catch let error as StoryboardDeletionError {
+                await MainActor.run {
+                    applyStoryboardDeletion(error.outcome)
+                    setCloudSaveState(.failed(error.localizedDescription))
+                    isDeletingStoryboard = false
+                }
+            } catch {
+                await MainActor.run {
+                    setCloudSaveState(.failed("Could not delete this storyboard. Check your connection and try again."))
+                    isDeletingStoryboard = false
+                }
+            }
+        }
+    }
+
+    private func applyStoryboardDeletion(_ outcome: StoryboardDeletionOutcome) {
+        guard let activeDraftID, !outcome.isEmpty else {
+            return
+        }
+
+        refreshCurrentEntryStoryboardsFromStore()
+
+        guard !outcome.entriesReturnedToDrafts.contains(activeDraftID) else {
+            currentEntryStatus = .draft
+            completedEntryOpenedStoryboardImage = nil
+            // Nothing left to show, so the viewer would otherwise sit on a blank screen.
+            isPreviewingCompletedStoryboard = false
+            selectedEntryStoryboardIndex = nil
+            return
+        }
+
+        let remainingStoryboards = generatedStoryboards.filter { $0.clientEntryID == activeDraftID }
+        guard !remainingStoryboards.isEmpty else {
+            isPreviewingCompletedStoryboard = false
+            selectedEntryStoryboardIndex = nil
+            return
+        }
+
+        completedEntryOpenedStoryboardImage = remainingStoryboards.first(where: \.isPrimary)?.image
+            ?? remainingStoryboards.max(by: { $0.createdAt < $1.createdAt })?.image
     }
 
     private func openStoryboardViewer(for storyboard: GeneratedStoryboard) {

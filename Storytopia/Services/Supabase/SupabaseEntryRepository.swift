@@ -148,6 +148,10 @@ private struct JournalEntryDisplayOrderUpdate: Encodable, Sendable {
     }
 }
 
+private struct JournalEntryStatusUpdate: Encodable, Sendable {
+    let status: String
+}
+
 private struct JournalEntryThumbnailUpdate: Encodable, Sendable {
     let thumbnailStoragePath: String
     let thumbnailUpdatedAt: Date
@@ -1286,6 +1290,21 @@ struct SupabaseEntryRepository {
                     .eq("user_id", value: userID)
                     .execute()
             }
+        } catch {
+            throw JournalEntryRepositoryError.operationFailed
+        }
+    }
+
+    func updateEntryStatus(clientEntryID: UUID, status: JournalEntryStatus) async throws {
+        let userID = try await authenticatedUserID()
+
+        do {
+            try await client
+                .from("entries")
+                .update(JournalEntryStatusUpdate(status: status.rawValue))
+                .eq("client_entry_id", value: clientEntryID)
+                .eq("user_id", value: userID)
+                .execute()
         } catch {
             throw JournalEntryRepositoryError.operationFailed
         }

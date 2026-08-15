@@ -172,6 +172,15 @@ struct GeneratedStoryboard: Identifiable {
         self.isSampleContent = isSampleContent
     }
 
+    /// Only storyboards that are actually stored somewhere can be deleted. Placeholder
+    /// storyboards built for display fall back to an in-memory image with no home on disk
+    /// or in the cloud, and sample content is not the user's to remove.
+    var isDeletable: Bool {
+        clientEntryID != nil
+            && !isSampleContent
+            && (imageFileName != nil || storagePath != nil)
+    }
+
     func withPrimaryStatus(_ isPrimary: Bool) -> GeneratedStoryboard {
         GeneratedStoryboard(
             id: id,
@@ -865,6 +874,30 @@ enum CreateEntryDraftStore {
         )
     }
 
+    /// Rewrites just the status field so a status change cannot disturb saved media,
+    /// rich text, or display order.
+    static func updateStatus(_ status: JournalEntryStatus, for id: UUID) {
+        let metadataURL = directory(for: id).appendingPathComponent(metadataFileName)
+        guard
+            let data = try? Data(contentsOf: metadataURL),
+            var metadata = try? JSONDecoder().decode(CreateEntryDraftMetadata.self, from: data)
+        else {
+            return
+        }
+
+        guard metadata.status != status.rawValue else {
+            return
+        }
+
+        metadata.status = status.rawValue
+
+        guard let metadataData = try? JSONEncoder().encode(metadata) else {
+            return
+        }
+
+        try? metadataData.write(to: metadataURL, options: [.atomic])
+    }
+
     static func saveOrder(_ orderedIDs: [UUID]) {
         for (displayOrder, id) in orderedIDs.enumerated() {
             let metadataURL = directory(for: id).appendingPathComponent(metadataFileName)
@@ -1315,6 +1348,50 @@ enum GeneratedStoryboardStore {
         }
     }
 
+    /// Removes storyboards from metadata and deletes their cached images in one step.
+    /// Metadata is rewritten directly rather than through `load()`/`save()` so storyboards
+    /// whose image file is missing are not silently dropped along the way.
+    /// Pass `postsChangeNotification: false` when the caller has follow-up writes to make —
+    /// an entry status change, say — so observers do not reload against half-applied state.
+    @discardableResult
+    static func remove(ids: Set<UUID>, postsChangeNotification: Bool = true) -> [GeneratedStoryboardSummary] {
+        guard !ids.isEmpty else {
+            return []
+        }
+
+        var removedMetadata: [GeneratedStoryboardMetadata] = []
+        mutateMetadata { metadata in
+            removedMetadata = metadata.filter { ids.contains($0.id) }
+            return metadata.filter { !ids.contains($0.id) }
+        }
+
+        guard !removedMetadata.isEmpty else {
+            return []
+        }
+
+        for item in removedMetadata {
+            let imageURL = imagesDirectory.appendingPathComponent(item.imageFileName)
+            try? FileManager.default.removeItem(at: imageURL)
+        }
+
+        if postsChangeNotification {
+            NotificationCenter.default.post(name: .storytopiaGeneratedStoryboardsChanged, object: nil)
+        }
+
+        return removedMetadata.map(GeneratedStoryboardSummary.init)
+    }
+
+    /// Lightweight metadata lookup for an entry's storyboards, oldest first. Avoids decoding
+    /// images when the caller only needs counts, ids, or the primary selection.
+    static func summaries(clientEntryID: UUID) -> [GeneratedStoryboardSummary] {
+        migrateLegacyStoryboardsIfNeeded()
+
+        return loadMetadata()
+            .filter { $0.clientEntryID == clientEntryID }
+            .map(GeneratedStoryboardSummary.init)
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
     static func persistedStoryboard(
         image: UIImage,
         clientEntryID: UUID,
@@ -1434,16 +1511,27 @@ enum GeneratedStoryboardStore {
     }
 
     @discardableResult
-    static func markPrimary(storyboardID: UUID, clientEntryID: UUID) -> [GeneratedStoryboard] {
-        let updatedStoryboards = load().map { storyboard in
-            guard storyboard.clientEntryID == clientEntryID else {
-                return storyboard
-            }
+    static func markPrimary(
+        storyboardID: UUID,
+        clientEntryID: UUID,
+        postsChangeNotifications: Bool = true
+    ) -> [GeneratedStoryboard] {
+        mutateMetadata { metadata in
+            metadata.map { item in
+                guard item.clientEntryID == clientEntryID else {
+                    return item
+                }
 
-            return storyboard.withPrimaryStatus(storyboard.id == storyboardID)
+                return item.withPrimaryStatus(item.id == storyboardID)
+            }
         }
 
-        save(updatedStoryboards)
+        let updatedStoryboards = load()
+        guard postsChangeNotifications else {
+            return updatedStoryboards
+        }
+
+        NotificationCenter.default.post(name: .storytopiaGeneratedStoryboardsChanged, object: nil)
         NotificationCenter.default.post(
             name: .storytopiaGeneratedStoryboardPrimaryChanged,
             object: nil,
@@ -1453,6 +1541,31 @@ enum GeneratedStoryboardStore {
             ]
         )
         return updatedStoryboards
+    }
+
+    private static func loadMetadata() -> [GeneratedStoryboardMetadata] {
+        guard
+            let metadataData = UserDefaults.standard.data(forKey: scopedMetadataKey),
+            let metadata = try? JSONDecoder().decode([GeneratedStoryboardMetadata].self, from: metadataData)
+        else {
+            return []
+        }
+
+        return metadata
+    }
+
+    /// Applies `transform` to the stored metadata without touching image files.
+    private static func mutateMetadata(
+        _ transform: ([GeneratedStoryboardMetadata]) -> [GeneratedStoryboardMetadata]
+    ) {
+        migrateLegacyStoryboardsIfNeeded()
+
+        let updatedMetadata = transform(loadMetadata())
+        guard let updatedData = try? JSONEncoder().encode(updatedMetadata) else {
+            return
+        }
+
+        UserDefaults.standard.set(updatedData, forKey: scopedMetadataKey)
     }
 
     private static var imagesDirectory: URL {
@@ -1549,6 +1662,61 @@ struct GeneratedStoryboardMetadata: Codable {
 
     var resolvedIsSampleContent: Bool {
         isSampleContent ?? storagePath?.hasPrefix(Self.sampleStoragePrefix) == true
+    }
+
+    func withPrimaryStatus(_ isPrimary: Bool) -> GeneratedStoryboardMetadata {
+        GeneratedStoryboardMetadata(
+            id: id,
+            clientEntryID: clientEntryID,
+            promptText: promptText,
+            artStyle: artStyle,
+            generationQuality: generationQuality,
+            panelLayout: panelLayout,
+            sourcePhotoCount: sourcePhotoCount,
+            createdAt: createdAt,
+            imageFileName: imageFileName,
+            storagePath: storagePath,
+            cloudSyncState: cloudSyncState,
+            isPrimary: isPrimary,
+            isSampleContent: isSampleContent
+        )
+    }
+}
+
+/// Image-free view of a stored storyboard, for counting and primary-selection decisions.
+struct GeneratedStoryboardSummary: Identifiable, Equatable {
+    let id: UUID
+    let clientEntryID: UUID?
+    let createdAt: Date
+    let isPrimary: Bool
+    let isSampleContent: Bool
+    let storagePath: String?
+
+    init(
+        id: UUID,
+        clientEntryID: UUID?,
+        createdAt: Date,
+        isPrimary: Bool,
+        isSampleContent: Bool,
+        storagePath: String?
+    ) {
+        self.id = id
+        self.clientEntryID = clientEntryID
+        self.createdAt = createdAt
+        self.isPrimary = isPrimary
+        self.isSampleContent = isSampleContent
+        self.storagePath = storagePath
+    }
+
+    init(_ metadata: GeneratedStoryboardMetadata) {
+        self.init(
+            id: metadata.id,
+            clientEntryID: metadata.clientEntryID,
+            createdAt: metadata.createdAt,
+            isPrimary: metadata.isPrimary ?? true,
+            isSampleContent: metadata.resolvedIsSampleContent,
+            storagePath: metadata.storagePath
+        )
     }
 }
 

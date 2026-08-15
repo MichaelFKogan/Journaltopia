@@ -380,13 +380,17 @@ struct SupabaseStoryboardService {
             throw SupabaseStoryboardError.syncFailed
         }
 
+        try await setPrimaryStoryboard(id: storyboard.id, clientEntryID: clientEntryID)
+    }
+
+    func setPrimaryStoryboard(id storyboardID: UUID, clientEntryID: UUID) async throws {
         let userID = try await authenticatedUserID()
 
         do {
             try await markPriorStoryboardsNonPrimary(
                 userID: userID,
                 clientEntryID: clientEntryID,
-                excluding: storyboard.id
+                excluding: storyboardID
             )
 
             try await client
@@ -394,7 +398,7 @@ struct SupabaseStoryboardService {
                 .update(EntryStoryboardPrimaryUpdate(isPrimary: true))
                 .eq("user_id", value: userID)
                 .eq("client_entry_id", value: clientEntryID)
-                .eq("id", value: storyboard.id)
+                .eq("id", value: storyboardID)
                 .execute()
             print("[Storytopia] Primary storyboard selection updated.")
         } catch let error as SupabaseStoryboardError {
@@ -403,6 +407,74 @@ struct SupabaseStoryboardService {
             print("[Storytopia] Primary storyboard update failed: \(error.localizedDescription)")
             throw SupabaseStoryboardError.syncFailed
         }
+    }
+
+    /// Deletes the given storyboards for one entry and returns the rows that survive.
+    /// The surviving rows are what the caller needs to decide whether the entry still has
+    /// artwork and whether a new primary has to be promoted.
+    func deleteStoryboards(ids: Set<UUID>, clientEntryID: UUID) async throws -> [EntryStoryboard] {
+        guard !ids.isEmpty else {
+            return try await storyboardRows(for: clientEntryID)
+        }
+
+        let userID = try await authenticatedUserID()
+
+        do {
+            let rows = try await storyboardRows(for: clientEntryID)
+            let doomedRows = rows.filter { ids.contains($0.id) }
+
+            guard !doomedRows.isEmpty else {
+                return rows
+            }
+
+            let storagePaths = doomedRows.map(\.storagePath)
+            do {
+                try await client.storage
+                    .from(bucketName)
+                    .remove(paths: storagePaths)
+            } catch let error as StorageError where error.statusCode == "404" {
+                // Missing objects are already gone; continue so the rows still get cleaned up.
+            }
+
+            for storagePath in storagePaths {
+                SupabaseStorageImageCache.remove(bucketName: bucketName, storagePath: storagePath)
+            }
+
+            let doomedIDs: [any PostgrestFilterValue] = doomedRows.map { $0.id as any PostgrestFilterValue }
+            try await client
+                .from("entry_storyboards")
+                .delete()
+                .eq("user_id", value: userID)
+                .eq("client_entry_id", value: clientEntryID)
+                .in("id", values: doomedIDs)
+                .execute()
+
+            print("[Storytopia] Storyboard delete succeeded for \(doomedRows.count) storyboard(s).")
+            return rows.filter { !ids.contains($0.id) }
+        } catch let error as SupabaseStoryboardError {
+            throw error
+        } catch {
+            print("[Storytopia] Storyboard delete failed: \(error.localizedDescription)")
+            throw SupabaseStoryboardError.syncFailed
+        }
+    }
+
+    /// Removes every storyboard belonging to an entry. Used when the entry itself is deleted.
+    func deleteStoryboards(clientEntryID: UUID) async throws {
+        let rows = try await storyboardRows(for: clientEntryID)
+        guard !rows.isEmpty else {
+            return
+        }
+
+        _ = try await deleteStoryboards(ids: Set(rows.map(\.id)), clientEntryID: clientEntryID)
+    }
+
+    func storyboardRows(for clientEntryID: UUID) async throws -> [EntryStoryboard] {
+        try await loadStoryboardRows(for: [clientEntryID])
+    }
+
+    func storyboardRows(for clientEntryIDs: Set<UUID>) async throws -> [EntryStoryboard] {
+        try await loadStoryboardRows(for: clientEntryIDs)
     }
 
     func loadStoryboards() async throws -> [EntryStoryboard] {
@@ -701,19 +773,22 @@ struct EntrySaveService {
     private let referencePhotoService: SupabaseReferencePhotoService
     private let characterService: SupabaseEntryCharacterService
     private let thumbnailService: SupabaseEntryThumbnailService
+    private let storyboardService: SupabaseStoryboardService
 
     init(
         repository: SupabaseEntryRepository = SupabaseEntryRepository(),
         journalRepository: SupabaseJournalRepository = SupabaseJournalRepository(),
         referencePhotoService: SupabaseReferencePhotoService = SupabaseReferencePhotoService(),
         characterService: SupabaseEntryCharacterService = SupabaseEntryCharacterService(),
-        thumbnailService: SupabaseEntryThumbnailService = SupabaseEntryThumbnailService()
+        thumbnailService: SupabaseEntryThumbnailService = SupabaseEntryThumbnailService(),
+        storyboardService: SupabaseStoryboardService = SupabaseStoryboardService()
     ) {
         self.repository = repository
         self.journalRepository = journalRepository
         self.referencePhotoService = referencePhotoService
         self.characterService = characterService
         self.thumbnailService = thumbnailService
+        self.storyboardService = storyboardService
     }
 
     func saveEntryPreservingStatus(
@@ -929,9 +1004,11 @@ struct EntrySaveService {
                 try await journalRepository.deleteJournalEntryMemberships(clientEntryID: localDraftID)
                 try await referencePhotoService.deleteReferencePhotos(clientEntryID: localDraftID)
                 try await characterService.deleteCharacters(clientEntryID: localDraftID)
+                try await storyboardService.deleteStoryboards(clientEntryID: localDraftID)
                 try await repository.deleteEntry(clientEntryID: localDraftID)
             }
 
+            removeLocalStoryboards(clientEntryID: localDraftID)
             CreateEntryDraftStore.delete(id: localDraftID)
             return
         }
@@ -943,9 +1020,20 @@ struct EntrySaveService {
         await thumbnailService.deleteThumbnail(storagePath: cloudEntry.thumbnailStoragePath)
         try await referencePhotoService.deleteReferencePhotos(clientEntryID: cloudEntry.clientEntryID)
         try await characterService.deleteCharacters(clientEntryID: cloudEntry.clientEntryID)
+        try await storyboardService.deleteStoryboards(clientEntryID: cloudEntry.clientEntryID)
         try await journalRepository.deleteJournalEntryMemberships(clientEntryID: cloudEntry.clientEntryID)
         try await repository.deleteEntry(clientEntryID: cloudEntry.clientEntryID)
+        removeLocalStoryboards(clientEntryID: cloudEntry.clientEntryID)
         CreateEntryDraftStore.delete(id: localDraftID)
+    }
+
+    private func removeLocalStoryboards(clientEntryID: UUID) {
+        let summaries = GeneratedStoryboardStore.summaries(clientEntryID: clientEntryID)
+        guard !summaries.isEmpty else {
+            return
+        }
+
+        GeneratedStoryboardStore.remove(ids: Set(summaries.map(\.id)))
     }
 
     func persistLocalDraft(_ payload: EntryDraftSavePayload, status: JournalEntryStatus = .draft) -> UUID? {

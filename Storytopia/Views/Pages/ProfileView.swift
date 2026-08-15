@@ -26,6 +26,11 @@ struct ProfileView: View {
     @State private var hasMoreProfileStoryboards = true
     @State private var nextProfileStoryboardOffset = 0
     @State private var profileStoryboardErrorMessage: String?
+    @State private var pendingStoryboardDeletion: PendingStoryboardDeletion?
+    @State private var isPreparingStoryboardDeletion = false
+    @State private var isDeletingStoryboards = false
+    @State private var storyboardDeletionMessage: String?
+    @State private var storyboardDeletionMessageVersion = 0
     private let profileStoryboardPageSize = 9
 
     private let storyboardColumns = [
@@ -49,10 +54,47 @@ struct ProfileView: View {
             if let selectedStoryboardIndex {
                 StoryboardImageViewer(
                     storyboards: generatedStoryboards,
-                    initialIndex: selectedStoryboardIndex
+                    initialIndex: selectedStoryboardIndex,
+                    deleteAction: StoryboardViewerDeleteAction(
+                        // The grid is paginated, so it cannot always tell whether this is the
+                        // entry's last storyboard. The result toast reports what actually
+                        // happened.
+                        message: { _ in
+                            "Only this storyboard is deleted. If it is the last one for its entry, that entry moves back to Drafts. This can't be undone, and the generation credit isn't refunded."
+                        },
+                        perform: { storyboard in
+                            deleteStoryboards([storyboard])
+                        }
+                    )
                 )
                 .presentationBackground(.clear)
             }
+        }
+        // An alert rather than a confirmationDialog: action sheets drop their cancel button
+        // when iOS presents them as a popover, and a destructive action always needs a
+        // visible way out.
+        .alert(
+            pendingStoryboardDeletion?.alertTitle ?? "Delete Storyboards?",
+            isPresented: Binding(
+                get: { pendingStoryboardDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingStoryboardDeletion = nil
+                    }
+                }
+            ),
+            presenting: pendingStoryboardDeletion
+        ) { pending in
+            Button("Cancel", role: .cancel) {
+                pendingStoryboardDeletion = nil
+            }
+
+            Button("Delete", role: .destructive) {
+                pendingStoryboardDeletion = nil
+                deleteStoryboards(pending.storyboards)
+            }
+        } message: { pending in
+            Text(pending.confirmationMessage)
         }
         .sheet(isPresented: $isShowingShareSheet) {
             ActivityView(activityItems: storyboardsToShare.map(\.image))
@@ -136,6 +178,23 @@ struct ProfileView: View {
             }
 
             VStack(spacing: 0) {
+                if let storyboardDeletionMessage {
+                    Text(storyboardDeletionMessage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.storyInk)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay {
+                            Capsule()
+                                .stroke(Color.homeBorder, lineWidth: 1)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 10)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
                 if isSelecting {
                     selectionActionBar
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -352,6 +411,23 @@ struct ProfileView: View {
             }
             .selectionActionStyle()
             .disabled(selectedStoryboardIDs.isEmpty)
+
+            Button {
+                requestStoryboardDeletion(selectedStoryboards)
+            } label: {
+                if isPreparingStoryboardDeletion || isDeletingStoryboards {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+            .selectionActionStyle(color: .red)
+            .disabled(
+                selectedDeletableStoryboards.isEmpty
+                    || isPreparingStoryboardDeletion
+                    || isDeletingStoryboards
+            )
         }
         .font(.system(size: 13, weight: .semibold))
         .padding(.horizontal, 16)
@@ -361,6 +437,136 @@ struct ProfileView: View {
             Rectangle()
                 .fill(Color.homeBorder)
                 .frame(height: 1)
+        }
+    }
+
+    private var selectedDeletableStoryboards: [GeneratedStoryboard] {
+        selectedStoryboards.filter(\.isDeletable)
+    }
+
+    /// The grid mixes storyboards from many entries, so the exact number of entries losing
+    /// their last storyboard is resolved before the user is asked to confirm.
+    private func requestStoryboardDeletion(_ storyboards: [GeneratedStoryboard]) {
+        let deletableStoryboards = storyboards.filter(\.isDeletable)
+        guard !deletableStoryboards.isEmpty, !isPreparingStoryboardDeletion, !isDeletingStoryboards else {
+            return
+        }
+
+        isPreparingStoryboardDeletion = true
+        let isSignedIn = authStore.userID != nil
+
+        Task {
+            let preview = await StoryboardDeletionService().preview(
+                deletableStoryboards,
+                isSignedIn: isSignedIn
+            )
+
+            await MainActor.run {
+                isPreparingStoryboardDeletion = false
+                guard !preview.isEmpty else {
+                    return
+                }
+
+                pendingStoryboardDeletion = PendingStoryboardDeletion(
+                    storyboards: deletableStoryboards,
+                    preview: preview
+                )
+            }
+        }
+    }
+
+    private func deleteStoryboards(_ storyboards: [GeneratedStoryboard]) {
+        guard !storyboards.isEmpty, !isDeletingStoryboards else {
+            return
+        }
+
+        pendingStoryboardDeletion = nil
+        isDeletingStoryboards = true
+        let isSignedIn = authStore.userID != nil
+
+        Task {
+            do {
+                let outcome = try await StoryboardDeletionService().delete(
+                    storyboards,
+                    isSignedIn: isSignedIn
+                )
+                await MainActor.run {
+                    applyStoryboardDeletion(outcome)
+                    showStoryboardDeletionMessage(successMessage(for: outcome))
+                    isDeletingStoryboards = false
+                }
+            } catch let error as StoryboardDeletionError {
+                await MainActor.run {
+                    applyStoryboardDeletion(error.outcome)
+                    showStoryboardDeletionMessage(error.localizedDescription)
+                    isDeletingStoryboards = false
+                }
+            } catch {
+                await MainActor.run {
+                    showStoryboardDeletionMessage("Could not delete. Check your connection and try again.")
+                    isDeletingStoryboards = false
+                }
+            }
+        }
+    }
+
+    private func applyStoryboardDeletion(_ outcome: StoryboardDeletionOutcome) {
+        guard !outcome.isEmpty else {
+            return
+        }
+
+        withAnimation(.snappy(duration: 0.24)) {
+            generatedStoryboards.removeAll { outcome.deletedStoryboardIDs.contains($0.id) }
+            selectedStoryboardIDs.subtract(outcome.deletedStoryboardIDs)
+        }
+
+        nextProfileStoryboardOffset = max(nextProfileStoryboardOffset - outcome.deletedStoryboardIDs.count, 0)
+
+        // Keep the open viewer pointed at a real storyboard, or close it once none are left.
+        if let openIndex = selectedStoryboardIndex, !generatedStoryboards.indices.contains(openIndex) {
+            selectedStoryboardIndex = generatedStoryboards.isEmpty
+                ? nil
+                : generatedStoryboards.count - 1
+        }
+
+        if selectedStoryboardIDs.isEmpty {
+            endSelection()
+        }
+    }
+
+    private func successMessage(for outcome: StoryboardDeletionOutcome) -> String {
+        let storyboardCount = outcome.deletedStoryboardIDs.count
+        let storyboardText = storyboardCount == 1 ? "Storyboard deleted" : "\(storyboardCount) storyboards deleted"
+
+        switch outcome.entriesReturnedToDrafts.count {
+        case 0:
+            return "\(storyboardText)."
+        case 1:
+            return "\(storyboardText). 1 entry moved back to Drafts."
+        case let entryCount:
+            return "\(storyboardText). \(entryCount) entries moved back to Drafts."
+        }
+    }
+
+    private func showStoryboardDeletionMessage(_ message: String) {
+        storyboardDeletionMessageVersion += 1
+        let version = storyboardDeletionMessageVersion
+
+        withAnimation(.snappy(duration: 0.22)) {
+            storyboardDeletionMessage = message
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 3_200_000_000)
+            await MainActor.run {
+                guard version == storyboardDeletionMessageVersion else {
+                    return
+                }
+
+                withAnimation(.snappy(duration: 0.22)) {
+                    storyboardDeletionMessage = nil
+                }
+            }
         }
     }
 
@@ -1183,6 +1389,38 @@ private struct ActivityView: UIViewControllerRepresentable {
     }
 }
 
+private struct PendingStoryboardDeletion: Identifiable {
+    let id = UUID()
+    let storyboards: [GeneratedStoryboard]
+    let preview: StoryboardDeletionPreview
+
+    var alertTitle: String {
+        preview.storyboardCount == 1 ? "Delete Storyboard?" : "Delete \(preview.storyboardCount) Storyboards?"
+    }
+
+    var confirmationMessage: String {
+        let isSingleStoryboard = preview.storyboardCount == 1
+        let creditNote = isSingleStoryboard
+            ? "This can't be undone, and the generation credit isn't refunded."
+            : "This can't be undone, and generation credits aren't refunded."
+
+        switch preview.entriesReturningToDrafts {
+        case 0:
+            let keptText = isSingleStoryboard
+                ? "Only this one is deleted. Its entry keeps its other storyboards and stays completed."
+                : "Every affected entry keeps at least one other storyboard and stays completed."
+            return "\(keptText) \(creditNote)"
+        case 1:
+            let entryText = isSingleStoryboard
+                ? "This is the last storyboard for its entry, so that entry moves back to Drafts."
+                : "1 entry loses its last storyboard and moves back to Drafts."
+            return "\(entryText) \(creditNote)"
+        case let entryCount:
+            return "\(entryCount) entries lose their last storyboard and move back to Drafts. \(creditNote)"
+        }
+    }
+}
+
 private extension View {
     func selectionActionStyle(color: Color = .storyInk) -> some View {
         self
@@ -1197,23 +1435,43 @@ private extension View {
     }
 }
 
+/// Deletion behavior for the full-screen viewer. The host supplies the confirmation copy,
+/// because only it knows whether this is the entry's last storyboard, while the viewer keeps
+/// the confirmation on screen so deleting never kicks the reader out of the sheet.
+struct StoryboardViewerDeleteAction {
+    let message: (GeneratedStoryboard) -> String
+    let perform: (GeneratedStoryboard) -> Void
+
+    init(
+        message: @escaping (GeneratedStoryboard) -> String,
+        perform: @escaping (GeneratedStoryboard) -> Void
+    ) {
+        self.message = message
+        self.perform = perform
+    }
+}
+
 struct StoryboardImageViewer: View {
     let storyboards: [GeneratedStoryboard]
     let initialIndex: Int
     let onSelectPrimary: ((GeneratedStoryboard) -> Void)?
+    let deleteAction: StoryboardViewerDeleteAction?
 
     @Environment(\.dismiss) private var dismiss
     @State private var visibleIndex: Int
     @State private var primaryStoryboardID: UUID?
+    @State private var storyboardPendingDeletion: GeneratedStoryboard?
 
     init(
         storyboards: [GeneratedStoryboard],
         initialIndex: Int,
-        onSelectPrimary: ((GeneratedStoryboard) -> Void)? = nil
+        onSelectPrimary: ((GeneratedStoryboard) -> Void)? = nil,
+        deleteAction: StoryboardViewerDeleteAction? = nil
     ) {
         self.storyboards = storyboards
         self.initialIndex = initialIndex
         self.onSelectPrimary = onSelectPrimary
+        self.deleteAction = deleteAction
         _visibleIndex = State(initialValue: initialIndex)
         _primaryStoryboardID = State(initialValue: storyboards.first(where: \.isPrimary)?.id)
     }
@@ -1229,7 +1487,8 @@ struct StoryboardImageViewer: View {
                 initialIndex: initialIndex,
                 visibleIndex: $visibleIndex,
                 primaryStoryboardID: primaryStoryboardID,
-                onSelectPrimary: primarySelectionHandler
+                onSelectPrimary: primarySelectionHandler,
+                onDeleteStoryboard: storyboardDeletionHandler
             )
             .background(Color.black)
 
@@ -1260,6 +1519,29 @@ struct StoryboardImageViewer: View {
         }
         .preferredColorScheme(.dark)
         .statusBarHidden()
+        .alert(
+            "Delete Storyboard?",
+            isPresented: Binding(
+                get: { storyboardPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        storyboardPendingDeletion = nil
+                    }
+                }
+            ),
+            presenting: storyboardPendingDeletion
+        ) { storyboard in
+            Button("Cancel", role: .cancel) {
+                storyboardPendingDeletion = nil
+            }
+
+            Button("Delete", role: .destructive) {
+                storyboardPendingDeletion = nil
+                deleteAction?.perform(storyboard)
+            }
+        } message: { storyboard in
+            Text(deleteAction?.message(storyboard) ?? "")
+        }
     }
 
     private var shouldShowPrimaryPicker: Bool {
@@ -1276,12 +1558,23 @@ struct StoryboardImageViewer: View {
             onSelectPrimary?(storyboard)
         }
     }
+
+    private var storyboardDeletionHandler: ((GeneratedStoryboard) -> Void)? {
+        guard deleteAction != nil else {
+            return nil
+        }
+
+        return { storyboard in
+            storyboardPendingDeletion = storyboard
+        }
+    }
 }
 
 private struct StoryboardPrimarySelectionRow: View {
     let storyboards: [GeneratedStoryboard]
     let primaryStoryboardID: UUID?
     let onSelectStoryboard: (Int) -> Void
+    let onDeleteStoryboard: ((GeneratedStoryboard) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1328,6 +1621,7 @@ private struct StoryboardPrimarySelectionRow: View {
         .padding(.top, 14)
         .padding(.bottom, 18)
     }
+
 }
 
 private struct StoryboardPrimarySelectionThumbnail: View {
@@ -1380,6 +1674,7 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
     @Binding var visibleIndex: Int
     let primaryStoryboardID: UUID?
     let onSelectPrimary: ((GeneratedStoryboard) -> Void)?
+    let onDeleteStoryboard: ((GeneratedStoryboard) -> Void)?
     private let topOverlayClearance: CGFloat = 64
 
     func makeCoordinator() -> Coordinator {
@@ -1454,6 +1749,7 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
             return imageContainer
         }
         context.coordinator.renderedPrimaryStoryboardID = primaryStoryboardID
+        context.coordinator.renderedStoryboardIDs = storyboards.map(\.id)
     }
 
     private func makeStoryboardImageContainer(
@@ -1483,6 +1779,21 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
             imageView.topAnchor.constraint(equalTo: container.topAnchor),
             imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
+
+        // Anchored to the artwork's top-right corner, opposite the Primary badge, so it is
+        // unmistakably the control for this one image.
+        if let storyboard, storyboard.isDeletable, onDeleteStoryboard != nil {
+            let deleteButton = deleteStoryboardButton()
+            deleteButton.addAction(UIAction { _ in
+                context.coordinator.requestDelete(storyboard)
+            }, for: .touchUpInside)
+            container.addSubview(deleteButton)
+
+            NSLayoutConstraint.activate([
+                deleteButton.trailingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: -16),
+                deleteButton.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 16)
+            ])
+        }
 
         guard
             let storyboard,
@@ -1538,6 +1849,23 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         }
 
         return container
+    }
+
+    private func deleteStoryboardButton() -> UIButton {
+        var configuration = UIButton.Configuration.filled()
+        configuration.image = UIImage(
+            systemName: "trash",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .bold)
+        )
+        configuration.baseForegroundColor = UIColor(Color.storyboardDeleteTint)
+        configuration.baseBackgroundColor = UIColor.black.withAlphaComponent(0.62)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 11, bottom: 11, trailing: 11)
+
+        let button = UIButton(configuration: configuration)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.accessibilityLabel = "Delete this storyboard"
+        return button
     }
 
     private func primaryBadge() -> UIView {
@@ -1631,7 +1959,8 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
             primaryStoryboardID: primaryStoryboardID,
             onSelectStoryboard: { index in
                 context.coordinator.scrollToStoryboard(at: index, in: scrollView, animated: true)
-            }
+            },
+            onDeleteStoryboard: onDeleteStoryboard
         )
         let hostingController = UIHostingController(rootView: picker)
         hostingController.view.backgroundColor = .clear
@@ -1652,9 +1981,12 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         context.coordinator.parent = self
-        if context.coordinator.renderedPrimaryStoryboardID != primaryStoryboardID,
-           let stackView = context.coordinator.stackView {
-            let preservedVisibleIndex = visibleIndex
+        let needsRebuild = context.coordinator.renderedPrimaryStoryboardID != primaryStoryboardID
+            || context.coordinator.renderedStoryboardIDs != storyboards.map(\.id)
+
+        if needsRebuild, let stackView = context.coordinator.stackView {
+            // Clamp, because a deleted storyboard can leave the preserved index past the end.
+            let preservedVisibleIndex = min(visibleIndex, max(storyboards.count - 1, 0))
             for arrangedSubview in stackView.arrangedSubviews {
                 stackView.removeArrangedSubview(arrangedSubview)
                 arrangedSubview.removeFromSuperview()
@@ -1670,7 +2002,8 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
                 primaryStoryboardID: primaryStoryboardID,
                 onSelectStoryboard: { index in
                     context.coordinator.scrollToStoryboard(at: index, in: scrollView, animated: true)
-                }
+                },
+                onDeleteStoryboard: onDeleteStoryboard
             )
         }
     }
@@ -1681,6 +2014,7 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         var storyboardPickerHostingController: UIHostingController<StoryboardPrimarySelectionRow>?
         var imageViews: [UIView] = []
         var renderedPrimaryStoryboardID: UUID?
+        var renderedStoryboardIDs: [UUID] = []
         private var didScrollToInitialImage = false
 
         init(parent: ZoomableVerticalStoryboardView) {
@@ -1745,6 +2079,10 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
 
         func selectPrimary(_ storyboard: GeneratedStoryboard) {
             parent.onSelectPrimary?(storyboard)
+        }
+
+        func requestDelete(_ storyboard: GeneratedStoryboard) {
+            parent.onDeleteStoryboard?(storyboard)
         }
 
         private func updateVisibleIndex(in scrollView: UIScrollView) {

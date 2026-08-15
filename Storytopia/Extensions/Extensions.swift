@@ -174,6 +174,8 @@ extension Color {
     static let homeMutedText = Color(red: 0.43, green: 0.44, blue: 0.54)
     static let homeBorder = Color(red: 0.86, green: 0.87, blue: 0.91)
     static let homeAccent = Color(uiColor: .systemIndigo)
+    /// Destructive tint that stays legible on the dark storyboard viewer chrome.
+    static let storyboardDeleteTint = Color(red: 1.0, green: 0.53, blue: 0.51)
 
     init?(hex: String) {
         var cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
