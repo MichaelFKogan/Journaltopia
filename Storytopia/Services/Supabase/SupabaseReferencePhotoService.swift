@@ -349,6 +349,7 @@ struct EntryCharacterPhoto: Identifiable, Codable, Equatable, Sendable {
     let width: Int
     let height: Int
     let sortOrder: Int
+    let librarySortOrder: Int?
     let createdAt: Date
     let updatedAt: Date
 
@@ -366,8 +367,17 @@ struct EntryCharacterPhoto: Identifiable, Codable, Equatable, Sendable {
         case width
         case height
         case sortOrder = "sort_order"
+        case librarySortOrder = "library_sort_order"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+}
+
+private struct EntryCharacterLibraryOrderUpdate: Encodable, Sendable {
+    let librarySortOrder: Int
+
+    enum CodingKeys: String, CodingKey {
+        case librarySortOrder = "library_sort_order"
     }
 }
 
@@ -385,6 +395,7 @@ private struct EntryCharacterUpsert: Encodable, Sendable {
     let width: Int
     let height: Int
     let sortOrder: Int
+    let librarySortOrder: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -400,6 +411,7 @@ private struct EntryCharacterUpsert: Encodable, Sendable {
         case width
         case height
         case sortOrder = "sort_order"
+        case librarySortOrder = "library_sort_order"
     }
 }
 
@@ -434,6 +446,10 @@ struct SupabaseEntryCharacterService {
             let existingCharacters = try await existingCharacters(entryID: entry.id)
             let localCharacterIDs = Set(orderedCharacters.map(\.id))
             let charactersToDelete = existingCharacters.filter { !localCharacterIDs.contains($0.id) }
+            let storedLibrarySortOrders = Dictionary(
+                existingCharacters.map { ($0.id, $0.librarySortOrder) },
+                uniquingKeysWith: { first, _ in first }
+            )
 
             for character in charactersToDelete {
                 try await deleteCloudCharacter(character)
@@ -475,7 +491,8 @@ struct SupabaseEntryCharacterService {
                             byteSize: upload.data.count,
                             width: upload.width,
                             height: upload.height,
-                            sortOrder: index
+                            sortOrder: index,
+                            librarySortOrder: character.librarySortOrder ?? storedLibrarySortOrders[character.id].flatMap { $0 }
                         ),
                         onConflict: "id"
                     )
@@ -507,11 +524,28 @@ struct SupabaseEntryCharacterService {
                 .from("entry_characters")
                 .select()
                 .eq("user_id", value: userID)
+                .order("library_sort_order", ascending: true, nullsFirst: true)
                 .order("updated_at", ascending: false)
                 .execute()
                 .value
 
             return try await loadCharacters(from: rows)
+        } catch {
+            throw SupabaseEntryCharacterError.syncFailed
+        }
+    }
+
+    /// Persists the My Characters ordering, where each character's position in `characters`
+    /// becomes its `library_sort_order`.
+    func updateLibraryOrder(_ characters: [EntryCharacter]) async throws {
+        do {
+            for (index, character) in characters.enumerated() {
+                try await client
+                    .from("entry_characters")
+                    .update(EntryCharacterLibraryOrderUpdate(librarySortOrder: index))
+                    .eq("id", value: character.id)
+                    .execute()
+            }
         } catch {
             throw SupabaseEntryCharacterError.syncFailed
         }
@@ -597,7 +631,8 @@ struct SupabaseEntryCharacterService {
                         byteSize: upload.data.count,
                         width: upload.width,
                         height: upload.height,
-                        sortOrder: existing.sortOrder
+                        sortOrder: existing.sortOrder,
+                        librarySortOrder: character.librarySortOrder ?? existing.librarySortOrder
                     ),
                     onConflict: "id"
                 )
@@ -652,7 +687,8 @@ struct SupabaseEntryCharacterService {
                     sourcePhotoID: row.sourcePhotoID,
                     image: image,
                     createdAt: row.createdAt,
-                    updatedAt: row.updatedAt
+                    updatedAt: row.updatedAt,
+                    librarySortOrder: row.librarySortOrder
                 )
             )
         }

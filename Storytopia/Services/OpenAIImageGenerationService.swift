@@ -407,11 +407,12 @@ struct OpenAIImageGenerationService {
         characters: [EntryCharacter],
         originalImages: [UIImage]
     ) -> [StoryboardReferenceImage] {
-        let characterReferences = EntryCharacterRules.orderedCharacters(characters).map { character in
+        let characterReferences = EntryCharacterRules.orderedCharacters(characters).enumerated().map { index, character in
             StoryboardReferenceImage(
                 image: character.image,
                 promptLabel: "\(character.role.title): \(character.name)",
-                fileName: "\(character.role.rawValue)-\(sanitizedFileComponent(character.name)).jpg",
+                // Characters may share a name, so the index keeps upload file names distinct.
+                fileName: "\(character.role.rawValue)-\(sanitizedFileComponent(character.name))-\(index + 1).jpg",
                 characterName: character.name,
                 role: character.role
             )

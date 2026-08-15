@@ -1765,6 +1765,8 @@ struct CreateEntryView: View {
     @State private var isLoadingReusableCharacters = false
     @State private var reusableCharactersErrorMessage: String?
     @State private var deletingReusableCharacterID: UUID?
+    @State private var reusableCharacterOrigins: [UUID: UUID] = [:]
+    @State private var draggingReusableCharacterID: UUID?
     @State private var isPreviewingCompletedStoryboard = false
     @State private var selectedEntryStoryboardIndex: Int?
     @State private var completedEntryStoryboardDragOffset: CGSize = .zero
@@ -2228,15 +2230,18 @@ struct CreateEntryView: View {
             }
             .sheet(isPresented: $isShowingReusableCharactersSheet) {
                 ReusableCharactersSheet(
-                    characters: reusableCharacters,
-                    attachedCharacterNames: attachedReusableCharacterNames,
+                    characters: $reusableCharacters,
+                    draggingCharacterID: $draggingReusableCharacterID,
+                    attachedCharacterIDs: attachedReusableCharacterIDs,
                     isLoading: isLoadingReusableCharacters,
                     errorMessage: reusableCharactersErrorMessage,
                     deletingCharacterID: deletingReusableCharacterID,
                     onSelect: addReusableCharacter,
                     onEdit: editReusableCharacter,
                     onDelete: deleteReusableCharacter,
-                    onRefresh: refreshReusableCharacters
+                    onRefresh: refreshReusableCharacters,
+                    onReorder: persistReusableCharacterOrder,
+                    dragProvider: beginReusableCharacterDrag
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
@@ -2396,7 +2401,6 @@ struct CreateEntryView: View {
         return AnyView(
             CharacterEditorSheet(
                 editingCharacter: session.character,
-                existingCharacters: isLibraryEdit ? reusableCharacters : entryCharacters,
                 initialPhotoSource: session.initialPhotoSource,
                 deletesFromLibrary: isLibraryEdit,
                 onSave: { character in
@@ -7373,7 +7377,7 @@ struct CreateEntryView: View {
                 .accessibilityLabel("Refresh My Characters")
             }
 
-            Text("Tap Edit to update a saved character, tap + to add them to this entry, or delete them from My Characters.")
+            Text("Drag the handle to reorder. Tap Edit to update a saved character, tap + to add them to this entry, or delete them from My Characters.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.storyInk.opacity(0.62))
                 .fixedSize(horizontal: false, vertical: true)
@@ -7399,6 +7403,7 @@ struct CreateEntryView: View {
                             character: character,
                             canAdd: canAddReusableCharacter(character),
                             isDeleting: deletingReusableCharacterID == character.id,
+                            isDragging: draggingReusableCharacterID == character.id,
                             onAdd: {
                                 addReusableCharacter(character)
                             },
@@ -7407,9 +7412,24 @@ struct CreateEntryView: View {
                             },
                             onDelete: {
                                 deleteReusableCharacter(character)
+                            },
+                            dragProvider: {
+                                beginReusableCharacterDrag(character)
                             }
                         )
+                        .onDrop(
+                            of: [.text],
+                            delegate: ReusableCharacterDropDelegate(
+                                character: character,
+                                characters: $reusableCharacters,
+                                draggingCharacterID: $draggingReusableCharacterID,
+                                onReorder: persistReusableCharacterOrder
+                            )
+                        )
                     }
+                }
+                .onDrop(of: [.text], isTargeted: nil) { _ in
+                    finishReusableCharacterDragInGap()
                 }
             }
         }
@@ -8227,13 +8247,20 @@ struct CreateEntryView: View {
         }
     }
 
-    private var attachedReusableCharacterNames: Set<String> {
-        Set(entryCharacters.map { EntryCharacterRules.normalizedName($0.name) })
+    private var attachedReusableCharacterIDs: Set<UUID> {
+        // A library character counts as attached when the entry holds it directly or holds a copy made from it.
+        var attachedIDs = Set(entryCharacters.map(\.id))
+        for character in entryCharacters {
+            if let originID = reusableCharacterOrigins[character.id] {
+                attachedIDs.insert(originID)
+            }
+        }
+
+        return attachedIDs
     }
 
     private func canAddReusableCharacter(_ character: EntryCharacter) -> Bool {
-        let normalizedName = EntryCharacterRules.normalizedName(character.name)
-        return !normalizedName.isEmpty && !attachedReusableCharacterNames.contains(normalizedName)
+        !attachedReusableCharacterIDs.contains(character.id)
     }
 
     private func editReusableCharacter(_ character: EntryCharacter) {
@@ -8316,8 +8343,68 @@ struct CreateEntryView: View {
             createdAt: now,
             updatedAt: now
         )
+        reusableCharacterOrigins[reusableCharacter.id] = character.id
         saveCharacter(reusableCharacter)
         isShowingReusableCharactersSheet = false
+    }
+
+    private func beginReusableCharacterDrag(_ character: EntryCharacter) -> NSItemProvider {
+        draggingReusableCharacterID = character.id
+        return NSItemProvider(object: character.id.uuidString as NSString)
+    }
+
+    /// Catches drops that land between rows so the list still commits the order it is showing.
+    private func finishReusableCharacterDragInGap() -> Bool {
+        guard draggingReusableCharacterID != nil else {
+            return false
+        }
+
+        draggingReusableCharacterID = nil
+        persistReusableCharacterOrder()
+        return true
+    }
+
+    /// Stamps the current list positions onto the characters and saves them locally and in the cloud.
+    private func persistReusableCharacterOrder() {
+        let orderedCharacters = reusableCharacters.enumerated().map { index, character -> EntryCharacter in
+            var updated = character
+            updated.librarySortOrder = index
+            return updated
+        }
+
+        reusableCharacters = orderedCharacters
+        reusableCharactersErrorMessage = nil
+
+        let librarySortOrders = Dictionary(
+            orderedCharacters.enumerated().map { ($1.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        entryCharacters = entryCharacters.map { character in
+            guard let librarySortOrder = librarySortOrders[character.id] else {
+                return character
+            }
+
+            var updated = character
+            updated.librarySortOrder = librarySortOrder
+            return updated
+        }
+
+        CreateEntryDraftStore.updateLibraryOrder(librarySortOrders)
+
+        guard authStore.userID != nil else {
+            return
+        }
+
+        Task {
+            do {
+                try await SupabaseEntryCharacterService().updateLibraryOrder(orderedCharacters)
+            } catch {
+                await MainActor.run {
+                    reusableCharactersErrorMessage = "Could not save the new character order to the cloud."
+                }
+            }
+        }
     }
 
     private func localReusableCharacters() -> [EntryCharacter] {
@@ -8325,25 +8412,36 @@ struct CreateEntryView: View {
     }
 
     private func mergedReusableCharacters(_ characterGroups: [EntryCharacter]...) -> [EntryCharacter] {
-        var seenNames: Set<String> = []
+        // Merge by identity, not by name, so several characters can share a name.
+        var seenIDs: Set<UUID> = []
         var mergedCharacters: [EntryCharacter] = []
 
         for character in characterGroups.flatMap({ $0 }) {
-            let normalizedName = EntryCharacterRules.normalizedName(character.name)
-            guard !normalizedName.isEmpty, !seenNames.contains(normalizedName) else {
+            guard !character.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !seenIDs.contains(character.id) else {
                 continue
             }
 
-            seenNames.insert(normalizedName)
+            seenIDs.insert(character.id)
             mergedCharacters.append(character)
         }
 
-        return mergedCharacters.sorted {
-            if $0.updatedAt != $1.updatedAt {
-                return $0.updatedAt > $1.updatedAt
-            }
+        // Manually ordered characters hold their place; never-dragged ones stay newest-first above them.
+        return mergedCharacters.sorted { lhs, rhs in
+            switch (lhs.librarySortOrder, rhs.librarySortOrder) {
+            case let (lhsOrder?, rhsOrder?) where lhsOrder != rhsOrder:
+                return lhsOrder < rhsOrder
+            case (.none, .some):
+                return true
+            case (.some, .none):
+                return false
+            default:
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
 
-            return $0.createdAt > $1.createdAt
+                return lhs.createdAt > rhs.createdAt
+            }
         }
     }
 
@@ -11581,14 +11679,18 @@ private struct ReusableCharacterLibraryRow: View {
     let character: EntryCharacter
     let canAdd: Bool
     let isDeleting: Bool
+    let isDragging: Bool
     let onAdd: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    let dragProvider: () -> NSItemProvider
 
     @State private var isConfirmingDelete = false
 
     var body: some View {
         HStack(spacing: 12) {
+            dragHandle
+
             Button(action: onEdit) {
                 Image(uiImage: character.image)
                     .resizable()
@@ -11676,9 +11778,9 @@ private struct ReusableCharacterLibraryRow: View {
         .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+                .stroke(isDragging ? Color.storyPurple.opacity(0.5) : Color.storyBorder.opacity(0.58), lineWidth: isDragging ? 1.5 : 1)
         )
-        .opacity(isDeleting ? 0.64 : 1)
+        .opacity(isDeleting ? 0.64 : (isDragging ? 0.5 : 1))
         .disabled(isDeleting)
         .alert("Delete Character?", isPresented: $isConfirmingDelete) {
             Button("Delete", role: .destructive, action: onDelete)
@@ -11687,11 +11789,62 @@ private struct ReusableCharacterLibraryRow: View {
             Text("This removes \(character.name) from My Characters and deletes them from the cloud. This cannot be undone.")
         }
     }
+
+    private var dragHandle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Color.storyInk.opacity(0.34))
+            .frame(width: 22, height: 44)
+            .contentShape(Rectangle())
+            .onDrag(dragProvider)
+            .accessibilityLabel("Reorder \(character.name)")
+            .accessibilityHint("Drag to change the order of your characters.")
+    }
+}
+
+/// Reorders the My Characters list as a dragged row passes over its neighbours.
+private struct ReusableCharacterDropDelegate: DropDelegate {
+    let character: EntryCharacter
+    @Binding var characters: [EntryCharacter]
+    @Binding var draggingCharacterID: UUID?
+    let onReorder: () -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggingCharacterID,
+              draggingCharacterID != character.id,
+              let fromIndex = characters.firstIndex(where: { $0.id == draggingCharacterID }),
+              let toIndex = characters.firstIndex(where: { $0.id == character.id })
+        else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            characters.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+            )
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard draggingCharacterID != nil else {
+            return false
+        }
+
+        draggingCharacterID = nil
+        onReorder()
+        return true
+    }
 }
 
 private struct ReusableCharactersSheet: View {
-    let characters: [EntryCharacter]
-    let attachedCharacterNames: Set<String>
+    @Binding var characters: [EntryCharacter]
+    @Binding var draggingCharacterID: UUID?
+    let attachedCharacterIDs: Set<UUID>
     let isLoading: Bool
     let errorMessage: String?
     let deletingCharacterID: UUID?
@@ -11699,6 +11852,8 @@ private struct ReusableCharactersSheet: View {
     let onEdit: (EntryCharacter) -> Void
     let onDelete: (EntryCharacter) -> Void
     let onRefresh: () -> Void
+    let onReorder: () -> Void
+    let dragProvider: (EntryCharacter) -> NSItemProvider
 
     @Environment(\.dismiss) private var dismiss
 
@@ -11751,7 +11906,7 @@ private struct ReusableCharactersSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Text("Tap Edit to update a saved character, tap + to add them to this entry, or delete them from My Characters.")
+                Text("Drag the handle to reorder. Tap Edit to update a saved character, tap + to add them to this entry, or delete them from My Characters.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color.storyInk.opacity(0.62))
                     .fixedSize(horizontal: false, vertical: true)
@@ -11761,6 +11916,7 @@ private struct ReusableCharactersSheet: View {
                         character: character,
                         canAdd: canAdd(character),
                         isDeleting: deletingCharacterID == character.id,
+                        isDragging: draggingCharacterID == character.id,
                         onAdd: {
                             onSelect(character)
                         },
@@ -11769,13 +11925,34 @@ private struct ReusableCharactersSheet: View {
                         },
                         onDelete: {
                             onDelete(character)
+                        },
+                        dragProvider: {
+                            dragProvider(character)
                         }
+                    )
+                    .onDrop(
+                        of: [.text],
+                        delegate: ReusableCharacterDropDelegate(
+                            character: character,
+                            characters: $characters,
+                            draggingCharacterID: $draggingCharacterID,
+                            onReorder: onReorder
+                        )
                     )
                 }
             }
             .padding(.horizontal, 18)
             .padding(.top, 18)
             .padding(.bottom, 24)
+            .onDrop(of: [.text], isTargeted: nil) { _ in
+                guard draggingCharacterID != nil else {
+                    return false
+                }
+
+                draggingCharacterID = nil
+                onReorder()
+                return true
+            }
         }
     }
 
@@ -11821,8 +11998,7 @@ private struct ReusableCharactersSheet: View {
     }
 
     private func canAdd(_ character: EntryCharacter) -> Bool {
-        let normalizedName = EntryCharacterRules.normalizedName(character.name)
-        return !normalizedName.isEmpty && !attachedCharacterNames.contains(normalizedName)
+        !attachedCharacterIDs.contains(character.id)
     }
 }
 
@@ -11834,7 +12010,6 @@ private struct CharacterEditorSheet: View {
     }
 
     let editingCharacter: EntryCharacter?
-    let existingCharacters: [EntryCharacter]
     let initialPhotoSource: CharacterInitialPhotoSource?
     let deletesFromLibrary: Bool
     let onSave: (EntryCharacter) -> Void
@@ -11855,14 +12030,12 @@ private struct CharacterEditorSheet: View {
 
     init(
         editingCharacter: EntryCharacter?,
-        existingCharacters: [EntryCharacter],
         initialPhotoSource: CharacterInitialPhotoSource? = nil,
         deletesFromLibrary: Bool = false,
         onSave: @escaping (EntryCharacter) -> Void,
         onDelete: ((EntryCharacter) -> Void)?
     ) {
         self.editingCharacter = editingCharacter
-        self.existingCharacters = existingCharacters
         self.initialPhotoSource = initialPhotoSource
         self.deletesFromLibrary = deletesFromLibrary
         self.onSave = onSave
@@ -12180,11 +12353,6 @@ private struct CharacterEditorSheet: View {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             validationMessage = "Name is required."
-            return
-        }
-
-        guard !EntryCharacterRules.hasDuplicateName(trimmedName, in: existingCharacters, excluding: editingCharacter?.id) else {
-            validationMessage = "Character names must be unique."
             return
         }
 

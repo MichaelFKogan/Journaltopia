@@ -316,6 +316,9 @@ struct EntryCharacter: Identifiable {
     var image: UIImage
     var createdAt: Date
     var updatedAt: Date
+    /// Manual position in the My Characters library. `nil` means the character has never been
+    /// dragged into place and still sorts by how recently it was updated.
+    var librarySortOrder: Int?
 
     init(
         id: UUID = UUID(),
@@ -324,7 +327,8 @@ struct EntryCharacter: Identifiable {
         sourcePhotoID: UUID? = nil,
         image: UIImage,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        librarySortOrder: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -333,26 +337,12 @@ struct EntryCharacter: Identifiable {
         self.image = image
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.librarySortOrder = librarySortOrder
     }
 }
 
 enum EntryCharacterRules {
     static let maxGenerationImageCount = 5
-
-    static func normalizedName(_ name: String) -> String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    static func hasDuplicateName(_ name: String, in characters: [EntryCharacter], excluding excludedID: UUID? = nil) -> Bool {
-        let normalized = normalizedName(name)
-        guard !normalized.isEmpty else {
-            return false
-        }
-
-        return characters.contains {
-            $0.id != excludedID && normalizedName($0.name) == normalized
-        }
-    }
 
     static func applyingSingleMainCharacter(_ character: EntryCharacter, to characters: [EntryCharacter]) -> [EntryCharacter] {
         var updatedCharacters = characters.map { existing -> EntryCharacter in
@@ -742,7 +732,8 @@ enum CreateEntryDraftStore {
                         fileName: fileName,
                         mimeType: EntryCharacter.mimeType,
                         createdAt: character.createdAt,
-                        updatedAt: character.updatedAt
+                        updatedAt: character.updatedAt,
+                        librarySortOrder: character.librarySortOrder
                     )
                 )
             }
@@ -828,6 +819,35 @@ enum CreateEntryDraftStore {
 
             var updatedCharacters = draft.characters
             updatedCharacters[index] = character
+            replaceCharacters(in: draft, with: updatedCharacters)
+        }
+    }
+
+    /// Writes new My Characters positions into every draft that holds one of the reordered
+    /// characters, saving each draft at most once.
+    static func updateLibraryOrder(_ librarySortOrders: [UUID: Int]) {
+        guard !librarySortOrders.isEmpty else {
+            return
+        }
+
+        for draft in loadAll() {
+            var didChange = false
+            let updatedCharacters = draft.characters.map { character -> EntryCharacter in
+                guard let librarySortOrder = librarySortOrders[character.id],
+                      character.librarySortOrder != librarySortOrder else {
+                    return character
+                }
+
+                var updated = character
+                updated.librarySortOrder = librarySortOrder
+                didChange = true
+                return updated
+            }
+
+            guard didChange else {
+                continue
+            }
+
             replaceCharacters(in: draft, with: updatedCharacters)
         }
     }
@@ -965,7 +985,8 @@ enum CreateEntryDraftStore {
                     sourcePhotoID: item.sourcePhotoID,
                     image: image,
                     createdAt: item.createdAt,
-                    updatedAt: item.updatedAt
+                    updatedAt: item.updatedAt,
+                    librarySortOrder: item.librarySortOrder
                 )
             }
         } else {
@@ -1213,6 +1234,7 @@ private struct CreateEntryDraftCharacterMetadata: Codable {
     var mimeType: String
     var createdAt: Date
     var updatedAt: Date
+    var librarySortOrder: Int?
 }
 
 enum GeneratedStoryboardStore {
