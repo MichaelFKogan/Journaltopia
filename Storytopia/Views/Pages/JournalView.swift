@@ -9742,9 +9742,9 @@ struct EntriesView: View {
     @State private var completedStoryboardLoadTask: Task<Void, Never>?
     @State private var sampleContentLoadTask: Task<Void, Never>?
     @State private var cloudThumbnailIDsBeingLoaded: Set<UUID> = []
+    @State private var selectedEntryTabRawValue = EntriesTab.all.rawValue
     private let cloudEntriesPageSize = 30
     @AppStorage("StorytopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
-    @AppStorage("StorytopiaSelectedEntriesTab") private var selectedEntryTabRawValue = EntriesTab.all.rawValue
     @AppStorage("StorytopiaSelectedEntrySort") private var selectedEntrySortRawValue = EntrySortOption.cloudCreated.rawValue
     @AppStorage("StorytopiaEntriesSampleBannerDismissed") private var isSampleBannerDismissed = false
     @AppStorage("StorytopiaEntriesSamplesCompleted") private var hasCompletedEntriesSamples = false
@@ -9841,6 +9841,9 @@ struct EntriesView: View {
                 handleSampleAuthorModeChange()
             }
             .onChange(of: selectedEntryTabRawValue) { _ in
+                guard selectedPage == .entries else {
+                    return
+                }
                 refreshEntries()
             }
             .onChange(of: selectedEntrySortRawValue) { _ in
@@ -10051,6 +10054,7 @@ struct EntriesView: View {
             dismissAnyKeyboard()
             openingEntryPreview = nil
             isFinishingEntryOpening = false
+            selectedEntryTab = .all
         }
 
         if newPage == .entries {
