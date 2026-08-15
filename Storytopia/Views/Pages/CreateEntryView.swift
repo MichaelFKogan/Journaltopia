@@ -7647,12 +7647,9 @@ struct CreateEntryView: View {
             )
         }
 
+        // Creation order only — marking a storyboard primary must not move it.
         return storyboards.sorted { left, right in
-            if left.isPrimary != right.isPrimary {
-                return left.isPrimary
-            }
-
-            return left.createdAt > right.createdAt
+            left.createdAt < right.createdAt
         }
     }
 
@@ -7682,7 +7679,7 @@ struct CreateEntryView: View {
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 7) {
-                Text("Current Storyboards")
+                Text("Current Storyboards for this Entry")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.storyInk)
 
@@ -7700,10 +7697,10 @@ struct CreateEntryView: View {
                     ForEach(Array(displayStoryboards.enumerated()), id: \.element.id) { index, storyboard in
                         currentStoryboardThumbnail(image: storyboard.image, isPrimary: storyboard.isPrimary)
                             .onTapGesture {
-                                setPrimaryStoryboard(storyboard)
+                                openStoryboardViewer(for: storyboard)
                             }
                             .accessibilityAddTraits(.isButton)
-                            .accessibilityLabel(storyboard.isPrimary ? "Primary storyboard" : "Set storyboard version \(index + 1) as primary")
+                            .accessibilityLabel(storyboard.isPrimary ? "Primary storyboard, open full screen" : "Open storyboard version \(index + 1) full screen")
                     }
                 }
                 .padding(.horizontal, 1)
@@ -7717,6 +7714,16 @@ struct CreateEntryView: View {
                 .stroke(Color.storyBorder.opacity(0.54), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.04), radius: 8, y: 3)
+    }
+
+    private func openStoryboardViewer(for storyboard: GeneratedStoryboard) {
+        let storyboards = currentEntryStoryboards
+        guard !storyboards.isEmpty else {
+            return
+        }
+
+        selectedEntryStoryboardIndex = storyboards.firstIndex(where: { $0.id == storyboard.id }) ?? 0
+        isPreviewingCompletedStoryboard = true
     }
 
     private func setPrimaryStoryboard(_ storyboard: GeneratedStoryboard) {

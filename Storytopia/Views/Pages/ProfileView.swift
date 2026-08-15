@@ -1340,8 +1340,9 @@ private struct StoryboardPrimarySelectionThumbnail: View {
 
         Image(uiImage: image)
             .resizable()
-            .scaledToFit()
+            .scaledToFill()
             .frame(width: min(max(thumbnailHeight * aspectRatio, 100), 214), height: thumbnailHeight)
+            .clipped()
             .background(Color.storyInk.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay(
@@ -1495,18 +1496,31 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
             let border = UIView()
             border.isUserInteractionEnabled = false
             border.layer.borderColor = UIColor(Color.storyPurple).cgColor
-            border.layer.borderWidth = 3
+            border.layer.borderWidth = 4
             border.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(border)
 
             let badge = primaryBadge()
             container.addSubview(badge)
 
+            // Track the aspect-fit rect of the image rather than the image view's
+            // frame, so the border hugs the artwork instead of any letterboxing.
+            let fillsWidth = border.widthAnchor.constraint(equalTo: imageView.widthAnchor)
+            fillsWidth.priority = .defaultHigh
+            let fillsHeight = border.heightAnchor.constraint(equalTo: imageView.heightAnchor)
+            fillsHeight.priority = .defaultHigh
+
             NSLayoutConstraint.activate([
-                border.leadingAnchor.constraint(equalTo: imageView.leadingAnchor, constant: 6),
-                border.trailingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: -6),
-                border.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 6),
-                border.bottomAnchor.constraint(equalTo: imageView.bottomAnchor, constant: -6),
+                border.centerXAnchor.constraint(equalTo: imageView.centerXAnchor),
+                border.centerYAnchor.constraint(equalTo: imageView.centerYAnchor),
+                border.heightAnchor.constraint(
+                    equalTo: border.widthAnchor,
+                    multiplier: image.size.height / max(image.size.width, 1)
+                ),
+                border.widthAnchor.constraint(lessThanOrEqualTo: imageView.widthAnchor),
+                border.heightAnchor.constraint(lessThanOrEqualTo: imageView.heightAnchor),
+                fillsWidth,
+                fillsHeight,
                 badge.leadingAnchor.constraint(equalTo: imageView.leadingAnchor, constant: 16),
                 badge.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 16)
             ])
