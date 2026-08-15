@@ -1016,6 +1016,15 @@ final class LinedTextView: UITextView {
         let insertion = dictationInsertion(live, afterLocation: location)
 
         isApplyingDictation = true
+
+        // Assigning `attributedText`/`selectedRange` bypasses UIKit's text input machinery,
+        // so the keyboard keeps serving a stale document context and stops auto-shifting
+        // after a typed "." or Return for the rest of the dictation session. Bracketing the
+        // mutation with input-delegate callbacks makes it re-read the document.
+        let keyboardInputDelegate = inputDelegate
+        keyboardInputDelegate?.selectionWillChange(self)
+        keyboardInputDelegate?.textWillChange(self)
+
         let mutableText = NSMutableAttributedString(attributedString: attributedText ?? NSAttributedString(string: plain))
         let attributedInsertion = NSAttributedString(
             string: insertion,
@@ -1029,6 +1038,10 @@ final class LinedTextView: UITextView {
         dictationLiveRange = NSRange(location: location, length: insertedLength)
         selectedRange = NSRange(location: location + insertedLength, length: 0)
         typingAttributes = currentTypingAttributes()
+
+        keyboardInputDelegate?.textDidChange(self)
+        keyboardInputDelegate?.selectionDidChange(self)
+
         notifyTextDidChange()
         refreshLayoutAfterContentChange()
         scrollCaretIntoEnclosingScrollViewIfNeeded()
@@ -1057,22 +1070,63 @@ final class LinedTextView: UITextView {
         }
 
         guard location > 0, let plain = text, !plain.isEmpty else {
-            return live
+            return live.capitalizingFirstDictationLetter
         }
 
         let nsPlain = plain as NSString
         guard location <= nsPlain.length else {
-            return live
+            return live.capitalizingFirstDictationLetter
         }
+
+        let body = dictationStartsSentence(in: nsPlain, before: location)
+            ? live.capitalizingFirstDictationLetter
+            : live
 
         let previous = nsPlain.character(at: location - 1)
         if let scalar = UnicodeScalar(Int(previous)),
            CharacterSet.whitespacesAndNewlines.contains(scalar)
             || live.startsWithAttachedDictationPunctuation {
-            return live
+            return body
         }
 
-        return " " + live
+        return " " + body
+    }
+
+    /// Speech results are formatted in isolation, so the recognizer never sees a "." the
+    /// user typed on the keyboard or a Return they pressed mid-session — it keeps
+    /// transcribing as if the sentence continued. Ask the document instead.
+    private func dictationStartsSentence(in plain: NSString, before location: Int) -> Bool {
+        var index = location - 1
+
+        while index >= 0 {
+            guard let scalar = UnicodeScalar(plain.character(at: index)) else {
+                return false
+            }
+
+            if CharacterSet.newlines.contains(scalar) {
+                return true
+            }
+
+            if CharacterSet.whitespaces.contains(scalar) {
+                index -= 1
+                continue
+            }
+
+            let character = Character(scalar)
+            if character == "." || character == "!" || character == "?" {
+                return true
+            }
+
+            // Skip closing punctuation so `He said "stop."` still ends a sentence.
+            if ["\"", "'", "\u{201D}", "\u{2019}", ")", "]", "}"].contains(character) {
+                index -= 1
+                continue
+            }
+
+            return false
+        }
+
+        return true
     }
 
     private static func sanitizedDictationTranscript(_ transcript: String) -> String {
@@ -2205,6 +2259,14 @@ private extension String {
 
     var strippingLeadingDictationWhitespace: String {
         String(drop(while: { $0.isWhitespace || $0.isNewline }))
+    }
+
+    var capitalizingFirstDictationLetter: String {
+        guard let first, first.isLowercase else {
+            return self
+        }
+
+        return first.uppercased() + dropFirst()
     }
 }
 
