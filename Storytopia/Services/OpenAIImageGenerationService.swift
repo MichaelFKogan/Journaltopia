@@ -1,11 +1,58 @@
 import Foundation
+import Supabase
 import UIKit
 
+/// Which server-side generation path a request belongs to. Real user entries and Sample Studio
+/// entries live in different tables and buckets, so they have separate Edge Functions.
+enum StoryboardGenerationTarget {
+    case userEntry
+    case sampleStudio
+
+    var functionName: String {
+        switch self {
+        case .userEntry:
+            return "generate-storyboard"
+        case .sampleStudio:
+            return "generate-sample-storyboard"
+        }
+    }
+
+    var storyboardBucketName: String {
+        switch self {
+        case .userEntry:
+            return "generated-storyboards"
+        case .sampleStudio:
+            return "sample-story-assets"
+        }
+    }
+}
+
+/// The storyboard the Edge Function generated, stored, and recorded. Callers adopt this row instead
+/// of uploading and inserting their own copy of the same image.
+struct StoryboardGenerationResult {
+    let storyboardID: UUID
+    let clientEntryID: UUID
+    let storagePath: String
+    let artStyle: String
+    let quality: OpenAIImageGenerationQuality
+    let panelLayout: String?
+    let isPrimary: Bool
+    let createdAt: Date
+    let image: UIImage
+}
+
+/// Image generation runs in the `generate-storyboard` Edge Function so the OpenAI key stays on the
+/// server. This type still builds the prompt and picks the reference images; it hands both to the
+/// function, which reserves the credit, calls OpenAI, and stores the result.
 struct OpenAIImageGenerationService {
-    private let editsEndpoint = URL(string: "https://api.openai.com/v1/images/edits")!
-    private let generationsEndpoint = URL(string: "https://api.openai.com/v1/images/generations")!
+    private let referenceBucketName = "storytopia-media"
     private let requestTimeout: TimeInterval = 600
     private let maxInputImageCount = EntryCharacterRules.maxGenerationImageCount
+    private let client: SupabaseClient
+
+    init(client: SupabaseClient = SupabaseService.shared) {
+        self.client = client
+    }
 
     private struct StoryboardReferenceImage {
         let image: UIImage
@@ -15,8 +62,36 @@ struct OpenAIImageGenerationService {
         let role: CharacterRole?
     }
 
+    /// The two functions name the entry differently because they address different tables. Optional
+    /// properties are omitted when nil, so each request carries only the id its function expects.
+    private struct GenerateStoryboardRequest: Encodable {
+        let clientEntryID: UUID?
+        let sampleEntryID: UUID?
+        let prompt: String
+        let artStyle: String
+        let quality: String
+        let referenceImagePaths: [String]
+    }
+
+    private struct GenerateStoryboardResponse: Decodable {
+        let storyboardID: UUID
+        let clientEntryID: UUID?
+        let sampleEntryID: UUID?
+        let storagePath: String
+        let artStyle: String?
+        let quality: String?
+        let panelLayout: String?
+        let isPrimary: Bool
+        let createdAt: String?
+    }
+
+    private struct GenerateStoryboardErrorResponse: Decodable {
+        let error: String
+    }
+
     func generateStoryboard(
-        apiKey: String,
+        clientEntryID: UUID,
+        target: StoryboardGenerationTarget = .userEntry,
         title: String,
         text: String,
         richText: NotebookRichTextDocument?,
@@ -24,11 +99,7 @@ struct OpenAIImageGenerationService {
         quality: OpenAIImageGenerationQuality,
         images: [UIImage],
         characters: [EntryCharacter] = []
-    ) async throws -> UIImage {
-        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw StoryboardGenerationError.missingAPIKey
-        }
-
+    ) async throws -> StoryboardGenerationResult {
         let references = orderedGenerationReferences(characters: characters, originalImages: images)
         let prompt = makePrompt(
             title: title,
@@ -40,83 +111,173 @@ struct OpenAIImageGenerationService {
             omittedCharacterCount: max(0, characters.count - references.filter { $0.characterName != nil }.count),
             omittedOriginalPhotoCount: max(0, images.count - references.filter { $0.characterName == nil }.count)
         )
-        let data = try await references.isEmpty
-            ? generateStoryboardWithoutReferences(apiKey: apiKey, prompt: prompt, quality: quality)
-            : generateStoryboardWithReferences(apiKey: apiKey, prompt: prompt, quality: quality, references: references)
 
-        guard
-            let imageData = Data(base64Encoded: data),
-            let image = UIImage(data: imageData)
-        else {
-            throw StoryboardGenerationError.noGeneratedImage
+        let session = try await authenticatedSession()
+
+        // Reference images travel by storage path instead of inside the request body, so the
+        // function never has to accept multi-megabyte base64 payloads.
+        let referenceImagePaths = try await uploadReferenceImages(
+            references,
+            userID: session.user.id,
+            clientEntryID: clientEntryID
+        )
+
+        do {
+            let response = try await invokeGenerationFunction(
+                GenerateStoryboardRequest(
+                    clientEntryID: target == .userEntry ? clientEntryID : nil,
+                    sampleEntryID: target == .sampleStudio ? clientEntryID : nil,
+                    prompt: prompt,
+                    artStyle: artStyle,
+                    quality: quality.rawValue,
+                    referenceImagePaths: referenceImagePaths
+                ),
+                functionName: target.functionName,
+                accessToken: session.accessToken
+            )
+
+            let image = try await downloadStoryboard(
+                storagePath: response.storagePath,
+                bucketName: target.storyboardBucketName
+            )
+            await removeReferenceImages(referenceImagePaths)
+
+            return StoryboardGenerationResult(
+                storyboardID: response.storyboardID,
+                clientEntryID: response.clientEntryID ?? response.sampleEntryID ?? clientEntryID,
+                storagePath: response.storagePath,
+                artStyle: response.artStyle ?? artStyle,
+                quality: response.quality.flatMap(OpenAIImageGenerationQuality.init(rawValue:)) ?? quality,
+                panelLayout: response.panelLayout,
+                isPrimary: response.isPrimary,
+                createdAt: Self.timestamp(from: response.createdAt),
+                image: image
+            )
+        } catch {
+            await removeReferenceImages(referenceImagePaths)
+            throw error
         }
-
-        return image
     }
 
-    private func generateStoryboardWithReferences(
-        apiKey: String,
-        prompt: String,
-        quality: OpenAIImageGenerationQuality,
-        references: [StoryboardReferenceImage]
-    ) async throws -> String {
-        var request = URLRequest(url: editsEndpoint)
-        let boundary = "Boundary-\(UUID().uuidString)"
-        request.httpMethod = "POST"
-        request.timeoutInterval = requestTimeout
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+    /// Postgres timestamps carry microsecond precision, which the fractional-seconds parser does not
+    /// always accept. The stored row is the record of when this ran, so a parse miss falls back to
+    /// now rather than failing a generation that already succeeded.
+    private static func timestamp(from value: String?) -> Date {
+        guard let value else {
+            return Date()
+        }
 
-        var body = Data()
-        body.appendMultipartField(name: "model", value: OpenAITestConfig.imageModel, boundary: boundary)
-        body.appendMultipartField(name: "prompt", value: prompt, boundary: boundary)
-        body.appendMultipartField(name: "size", value: "1024x1536", boundary: boundary)
-        body.appendMultipartField(name: "quality", value: quality.rawValue, boundary: boundary)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
 
-        for (index, reference) in references.prefix(maxInputImageCount).enumerated() {
-            guard let imageData = reference.image.storytopiaPreparedJPEGData(maxDimension: 1536, compressionQuality: 0.76) else {
-                throw StoryboardGenerationError.invalidRequest
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value) ?? Date()
+    }
+
+    private func authenticatedSession() async throws -> Session {
+        do {
+            return try await client.auth.session
+        } catch {
+            throw StoryboardGenerationError.openAIMessage("Sign in before generating a storyboard.")
+        }
+    }
+
+    private func uploadReferenceImages(
+        _ references: [StoryboardReferenceImage],
+        userID: UUID,
+        clientEntryID: UUID
+    ) async throws -> [String] {
+        guard !references.isEmpty else {
+            return []
+        }
+
+        // One folder per request keeps concurrent or retried generations from overwriting each
+        // other's inputs, and makes the cleanup below a single prefix to remove.
+        let requestID = UUID().uuidString.lowercased()
+        var uploadedPaths: [String] = []
+
+        do {
+            for (index, reference) in references.prefix(maxInputImageCount).enumerated() {
+                guard let imageData = reference.image.storytopiaPreparedJPEGData(maxDimension: 1536, compressionQuality: 0.76) else {
+                    throw StoryboardGenerationError.invalidRequest
+                }
+
+                let storagePath = [
+                    userID.uuidString.lowercased(),
+                    "entries",
+                    clientEntryID.uuidString.lowercased(),
+                    "generation-inputs",
+                    requestID,
+                    "\(index + 1)-\(reference.fileName)"
+                ].joined(separator: "/")
+
+                try await client.storage
+                    .from(referenceBucketName)
+                    .upload(
+                        storagePath,
+                        data: imageData,
+                        options: FileOptions(
+                            cacheControl: "3600",
+                            contentType: CreateEntryReferencePhoto.mimeType,
+                            upsert: true
+                        )
+                    )
+
+                uploadedPaths.append(storagePath)
             }
 
-            body.appendMultipartFile(
-                name: "image[]",
-                fileName: "\(index + 1)-\(reference.fileName)",
-                mimeType: "image/jpeg",
-                data: imageData,
-                boundary: boundary
-            )
+            return uploadedPaths
+        } catch {
+            await removeReferenceImages(uploadedPaths)
+
+            if let generationError = error as? StoryboardGenerationError {
+                throw generationError
+            }
+
+            print("[Storytopia] Reference image upload failed: \(error.localizedDescription)")
+            throw StoryboardGenerationError.openAIMessage("The reference photos could not be prepared for generation.")
+        }
+    }
+
+    /// Generation inputs are a staging copy of images the entry already owns, so they are removed
+    /// once the function has read them. A failure here only leaves stray files behind.
+    private func removeReferenceImages(_ storagePaths: [String]) async {
+        guard !storagePaths.isEmpty else {
+            return
         }
 
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-        request.httpBody = body
-
-        return try await performImageRequest(request)
+        do {
+            _ = try await client.storage
+                .from(referenceBucketName)
+                .remove(paths: storagePaths)
+        } catch {
+            print("[Storytopia] Generation reference cleanup skipped: \(error.localizedDescription)")
+        }
     }
 
-    private func generateStoryboardWithoutReferences(
-        apiKey: String,
-        prompt: String,
-        quality: OpenAIImageGenerationQuality
-    ) async throws -> String {
-        var request = URLRequest(url: generationsEndpoint)
+    private func invokeGenerationFunction(
+        _ payload: GenerateStoryboardRequest,
+        functionName: String,
+        accessToken: String
+    ) async throws -> GenerateStoryboardResponse {
+        let projectURL = try StorytopiaSupabaseConfig.projectURL
+        let anonKey = try StorytopiaSupabaseConfig.anonKey
+        let functionURL = projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent(functionName)
+
+        var request = URLRequest(url: functionURL)
         request.httpMethod = "POST"
         request.timeoutInterval = requestTimeout
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try JSONEncoder().encode(payload)
 
-        let payload: [String: String] = [
-            "model": OpenAITestConfig.imageModel,
-            "prompt": prompt,
-            "size": "1024x1536",
-            "quality": quality.rawValue
-        ]
-
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-
-        return try await performImageRequest(request)
-    }
-
-    private func performImageRequest(_ request: URLRequest) async throws -> String {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = requestTimeout
         configuration.timeoutIntervalForResource = requestTimeout
@@ -128,19 +289,38 @@ struct OpenAIImageGenerationService {
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
-            if let errorResponse = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data) {
-                throw StoryboardGenerationError.openAIMessage(errorResponse.error.message)
+            if let errorResponse = try? JSONDecoder().decode(GenerateStoryboardErrorResponse.self, from: data) {
+                throw StoryboardGenerationError.openAIMessage(errorResponse.error)
             }
 
-            throw StoryboardGenerationError.openAIMessage("OpenAI returned status \(httpResponse.statusCode).")
+            throw StoryboardGenerationError.openAIMessage("Storyboard generation returned status \(httpResponse.statusCode).")
         }
 
-        let decoded = try JSONDecoder().decode(OpenAIImageResponse.self, from: data)
-        guard let base64Image = decoded.data.first?.b64JSON else {
-            throw StoryboardGenerationError.noGeneratedImage
+        do {
+            return try JSONDecoder().decode(GenerateStoryboardResponse.self, from: data)
+        } catch {
+            throw StoryboardGenerationError.invalidResponse
         }
+    }
 
-        return base64Image
+    private func downloadStoryboard(storagePath: String, bucketName: String) async throws -> UIImage {
+        do {
+            let data = try await client.storage
+                .from(bucketName)
+                .download(path: storagePath)
+            SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: storagePath)
+
+            guard let image = UIImage(data: data) else {
+                throw StoryboardGenerationError.noGeneratedImage
+            }
+
+            return image
+        } catch let error as StoryboardGenerationError {
+            throw error
+        } catch {
+            print("[Storytopia] Generated storyboard download failed: \(error.localizedDescription)")
+            throw StoryboardGenerationError.openAIMessage("The generated storyboard could not be downloaded.")
+        }
     }
 
     private func makePrompt(
@@ -520,24 +700,4 @@ func storyboardPanelCount(for imageCount: Int) -> Int {
     default:
         return 6
     }
-}
-
-struct OpenAIImageResponse: Decodable {
-    struct ImageData: Decodable {
-        let b64JSON: String?
-
-        private enum CodingKeys: String, CodingKey {
-            case b64JSON = "b64_json"
-        }
-    }
-
-    let data: [ImageData]
-}
-
-struct OpenAIErrorResponse: Decodable {
-    struct APIError: Decodable {
-        let message: String
-    }
-
-    let error: APIError
 }

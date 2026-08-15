@@ -374,23 +374,6 @@ enum EntryCharacterRules {
     }
 }
 
-enum OpenAITestConfig {
-    // Prototype-only client key. Move image generation server-side before shipping.
-    static var apiKey: String {
-        guard
-            let value = Bundle.main.object(forInfoDictionaryKey: "OPENAI_API_KEY") as? String,
-            !value.isEmpty,
-            !value.hasPrefix("$(")
-        else {
-            return ""
-        }
-
-        return value
-    }
-
-    static let imageModel = "gpt-image-2"
-}
-
 enum OpenAIImageGenerationQuality: String, CaseIterable, Codable, Identifiable, Sendable {
     case standard = "low"
     case highDefinition = "medium"
@@ -1743,7 +1726,6 @@ struct GeneratedStoryboardSummary: Identifiable, Equatable {
 }
 
 enum StoryboardGenerationError: LocalizedError {
-    case missingAPIKey
     case invalidRequest
     case invalidResponse
     case noGeneratedImage
@@ -1751,8 +1733,6 @@ enum StoryboardGenerationError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingAPIKey:
-            return "Add an OpenAI API key before generating a storyboard."
         case .invalidRequest:
             return "The storyboard request could not be prepared."
         case .invalidResponse:
