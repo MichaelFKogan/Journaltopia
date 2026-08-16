@@ -155,6 +155,10 @@ struct ProfileView: View {
                             .font(.system(size: 24, weight: .bold, design: .serif))
                             .foregroundStyle(Color.storyInk)
                     }
+
+                    ToolbarItem(placement: .topBarTrailing) {
+                        settingsButton
+                    }
                 }
         }
     }
@@ -206,10 +210,31 @@ struct ProfileView: View {
     }
 
     private var header: some View {
-        Text("Profile")
-            .font(.system(size: 24, weight: .bold, design: .serif))
-            .foregroundStyle(Color.storyInk)
-            .padding(.top, 2)
+        HStack(alignment: .center) {
+            Text("Profile")
+                .font(.system(size: 24, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            Spacer(minLength: 0)
+
+            settingsButton
+        }
+        .padding(.top, 2)
+    }
+
+    private var settingsButton: some View {
+        NavigationLink {
+            SettingsView(selectedPage: $selectedPage)
+                .enableInteractivePopGesture()
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.65))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open settings")
     }
 
     private var profileSummary: some View {
