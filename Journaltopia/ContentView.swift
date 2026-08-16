@@ -15,6 +15,7 @@ struct ContentView: View {
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
     @EnvironmentObject private var signInGate: SignInGate
+    @EnvironmentObject private var entitlementGate: EntitlementGate
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedPage: StoryPage = .home
@@ -102,6 +103,19 @@ struct ContentView: View {
         .sheet(item: signInGateRequest) { request in
             SignInGateSheet(request: request)
         }
+        // The Journaltopia+ counterpart, mounted the same way. Two separate sheets rather than one
+        // combined gate because the questions are genuinely different — "is anyone signed in" and
+        // "does this account have a plan" — and an action can fail the second having passed the first.
+        .sheet(item: entitlementGateRequest) { request in
+            EntitlementGateSheet(request: request)
+        }
+        // The gate reads the server's entitlement, never StoreKit's. Threaded in here so the gate
+        // itself holds no dependency on the store and can be tested with a plain state value.
+        .onChange(of: subscriptionStore.state) { state in
+            entitlementGate.update(state: state)
+            // A retry held back waiting for the server runs the moment the server agrees.
+            entitlementGate.resumeIfEntitlementArrived()
+        }
         .task {
             // The credit balance is account state that lives on an object rather than on disk, so
             // the sign-out purge has to be handed it before it can clear it.
@@ -116,6 +130,7 @@ struct ContentView: View {
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
             await subscriptionStore.refresh(isSignedIn: authStore.userID != nil)
+            entitlementGate.update(state: subscriptionStore.state)
             reloadScopedLocalState()
 
             // Launch is the first of the two moments a generation can be picked back up. Anything
@@ -185,6 +200,17 @@ struct ContentView: View {
         JournaltopiaContentMode(
             status: authStore.status,
             isSampleAuthorModeEnabled: isSampleAuthorModeEnabled
+        )
+    }
+
+    private var entitlementGateRequest: Binding<EntitlementGateRequest?> {
+        Binding(
+            get: { entitlementGate.pendingRequest },
+            set: { request in
+                if request == nil {
+                    entitlementGate.dismiss()
+                }
+            }
         )
     }
 

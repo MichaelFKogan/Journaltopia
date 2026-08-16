@@ -33,6 +33,9 @@ final class SubscriptionStore: ObservableObject {
     /// The server's answer about this account. See ``JournaltopiaPlusState``.
     @Published private(set) var state: JournaltopiaPlusState = .unresolved
     @Published private(set) var product: Product?
+    /// Consumable credit packs, loaded for display only. See ``creditPackPurchasing`` — there is no
+    /// verified server path to redeem one yet, so nothing here can be bought.
+    @Published private(set) var creditPackProducts: [Product] = []
     @Published private(set) var purchasePhase: PurchasePhase = .idle
     @Published private(set) var isReconciling = false
     @Published var errorMessage: String?
@@ -200,27 +203,49 @@ final class SubscriptionStore: ObservableObject {
     /// follows is what actually re-establishes entitlement, and it is the same code path launch uses.
     /// Restoring twice is therefore as safe as launching twice — the credit grant behind it is
     /// idempotent per subscription period, so nothing is granted a second time.
+    /// Reports which of the three things actually happened, rather than a bare `Bool`. "Nothing to
+    /// restore" and "the restore failed" are different messages to show, and collapsing them into
+    /// one produces the generic apology this flow is most often criticised for.
     @discardableResult
-    func restorePurchases(isSignedIn: Bool) async -> Bool {
+    func restorePurchases(isSignedIn: Bool) async -> SubscriptionRestoreOutcome {
         errorMessage = nil
 
         guard isSignedIn else {
             errorMessage = AppleSubscriptionSyncError.notAuthenticated.localizedDescription
-            return false
+            return .notSignedIn
         }
 
+        var syncFailure: Error?
         do {
             try await AppStore.sync()
         } catch {
-            // A cancelled authentication prompt lands here too, which is not worth an error banner.
+            // Keep it: a genuine failure and a cancelled authentication prompt both land here, and
+            // only the outcome below can tell them apart — if entitlement turns up anyway, the
+            // failure did not matter.
             print("[Journaltopia] AppStore.sync() did not complete: \(error)")
+            syncFailure = error
         }
 
         await reconcileCurrentEntitlements()
         await refreshServerEntitlement()
         await creditStore?.refresh(isSignedIn: true)
 
-        return state.isSubscribed
+        if state.isSubscribed {
+            return .restored
+        }
+
+        // A sync error that left no entitlement behind is worth reporting as a failure; the more
+        // specific message from the server sync, if there is one, beats anything invented here.
+        if let syncFailure {
+            return .failed(errorMessage ?? (syncFailure as? LocalizedError)?.errorDescription
+                ?? "Journaltopia could not reach the App Store. Please try again.")
+        }
+
+        if let errorMessage {
+            return .failed(errorMessage)
+        }
+
+        return .nothingToRestore
     }
 
     // MARK: - Reconciliation
@@ -245,6 +270,21 @@ final class SubscriptionStore: ObservableObject {
 
             _ = await syncAndFinish(transaction, jws: entitlement.jwsRepresentation)
         }
+    }
+
+    /// Marks the local entitlement as no longer trustworthy.
+    ///
+    /// Called when the server refuses a generation with `subscription_required` while this client
+    /// still believes it is subscribed — a subscription that lapsed mid-session, or a device that
+    /// has not reconciled. Dropping to `.notSubscribed` rather than `.unresolved` on purpose: the
+    /// server has given a definite answer, and `.unresolved` would read as "still waiting" and let
+    /// the gate wave the next attempt through.
+    func markEntitlementStale() {
+        guard state.isSubscribed else {
+            return
+        }
+
+        state = .notSubscribed
     }
 
     /// Reads the server's answer, which is the only one that governs generation.
@@ -358,13 +398,21 @@ final class SubscriptionStore: ObservableObject {
     }
 
     private func loadProduct() async {
-        guard product == nil else {
+        guard product == nil || creditPackProducts.isEmpty else {
             return
         }
 
         do {
-            let products = try await Product.products(for: JournaltopiaProducts.subscriptionIdentifiers)
+            let products = try await Product.products(
+                for: JournaltopiaProducts.subscriptionIdentifiers + JournaltopiaProducts.creditPackIdentifiers
+            )
             product = products.first { $0.id == JournaltopiaProducts.journaltopiaPlusMonthly }
+
+            // Ordered by the pack list rather than by whatever StoreKit returns, so the screen does
+            // not reshuffle between launches.
+            creditPackProducts = JournaltopiaProducts.creditPackIdentifiers.compactMap { identifier in
+                products.first { $0.id == identifier }
+            }
         } catch {
             print("[Journaltopia] Journaltopia+ product load failed: \(error.localizedDescription)")
         }

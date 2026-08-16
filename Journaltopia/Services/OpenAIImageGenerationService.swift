@@ -105,6 +105,10 @@ struct OpenAIImageGenerationService {
 
     private struct GenerateStoryboardErrorResponse: Decodable {
         let error: String
+        /// Present only for refusals the app routes on. See `STORYBOARD_REFUSAL_*` in the Edge
+        /// Function's shared module — the two sides agree on these strings deliberately, so the
+        /// user-facing wording stays free to change.
+        let code: String?
     }
 
     /// - Parameter generationRequestID: the identity of this logical generation, minted once when
@@ -326,10 +330,27 @@ struct OpenAIImageGenerationService {
 
         guard (200..<300).contains(httpResponse.statusCode) else {
             if let errorResponse = try? JSONDecoder().decode(GenerateStoryboardErrorResponse.self, from: data) {
-                throw StoryboardGenerationError.openAIMessage(errorResponse.error)
+                // Typed on the way in, so the Create screen routes on a case rather than on prose.
+                // The status code is checked alongside the body code: either alone identifies these
+                // two refusals, and requiring both would make a future transport change silent.
+                switch (errorResponse.code, httpResponse.statusCode) {
+                case ("subscription_required", _), (_, 403):
+                    throw StoryboardGenerationError.subscriptionRequired(errorResponse.error)
+                case ("insufficient_generation_credits", _), (_, 402):
+                    throw StoryboardGenerationError.insufficientCredits(errorResponse.error)
+                default:
+                    throw StoryboardGenerationError.openAIMessage(errorResponse.error)
+                }
             }
 
-            throw StoryboardGenerationError.openAIMessage("Storyboard generation returned status \(httpResponse.statusCode).")
+            switch httpResponse.statusCode {
+            case 403:
+                throw StoryboardGenerationError.subscriptionRequired("Storyboard generation requires Journaltopia+.")
+            case 402:
+                throw StoryboardGenerationError.insufficientCredits("You do not have enough credits to generate this storyboard.")
+            default:
+                throw StoryboardGenerationError.openAIMessage("Storyboard generation returned status \(httpResponse.statusCode).")
+            }
         }
 
         do {

@@ -4,7 +4,51 @@
 
   ],
   "products" : [
-
+    {
+      "displayPrice" : "2.99",
+      "familyShareable" : false,
+      "internalID" : "6740000010",
+      "localizations" : [
+        {
+          "description" : "10 extra AI credits for Journaltopia+ members.",
+          "displayName" : "10 Credits",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.journaltopia.credits.10",
+      "referenceName" : "10 AI Credits",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "5.99",
+      "familyShareable" : false,
+      "internalID" : "6740000011",
+      "localizations" : [
+        {
+          "description" : "25 extra AI credits for Journaltopia+ members.",
+          "displayName" : "25 Credits",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.journaltopia.credits.25",
+      "referenceName" : "25 AI Credits",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "11.99",
+      "familyShareable" : false,
+      "internalID" : "6740000012",
+      "localizations" : [
+        {
+          "description" : "60 extra AI credits for Journaltopia+ members.",
+          "displayName" : "60 Credits",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.journaltopia.credits.60",
+      "referenceName" : "60 AI Credits",
+      "type" : "Consumable"
+    }
   ],
   "settings" : {
     "_applicationInternalID" : "6740000000",

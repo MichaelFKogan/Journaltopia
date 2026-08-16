@@ -1918,6 +1918,14 @@ enum StoryboardGenerationError: LocalizedError {
     case invalidResponse
     case noGeneratedImage
     case openAIMessage(String)
+    /// The server refused because this account has no active Journaltopia+ subscription.
+    ///
+    /// Carried as its own case rather than as a message, because the app has to *route* on it — to
+    /// the paywall — and routing on the text of a sentence written for a human is how that breaks
+    /// the first time the copy is reworded.
+    case subscriptionRequired(String)
+    /// The server refused because the balance would not cover the generation.
+    case insufficientCredits(String)
 
     var errorDescription: String? {
         switch self {
@@ -1929,6 +1937,39 @@ enum StoryboardGenerationError: LocalizedError {
             return "OpenAI did not return a storyboard image."
         case .openAIMessage(let message):
             return message
+        case .subscriptionRequired(let message):
+            return message
+        case .insufficientCredits(let message):
+            return message
         }
+    }
+}
+
+/// How the Create screen should answer a refused generation.
+///
+/// Reads the typed error rather than its text. `.other` covers everything that genuinely is a
+/// failure and belongs in the red banner.
+enum StoryboardGenerationRefusal: Equatable {
+    case subscriptionRequired
+    case insufficientCredits
+    case other
+
+    init(error: Error) {
+        switch error {
+        case StoryboardGenerationError.subscriptionRequired:
+            self = .subscriptionRequired
+        case StoryboardGenerationError.insufficientCredits:
+            self = .insufficientCredits
+        default:
+            self = .other
+        }
+    }
+}
+
+extension OpenAIImageGenerationQuality {
+    /// Which gate wording this quality should use. HD is called out by name because "costs 2
+    /// credits" is the specific thing the user needs to know when they are one credit short.
+    var entitlementAction: JournaltopiaPlusRequiredAction {
+        self == .highDefinition ? .generateHDStoryboard : .generateStoryboard
     }
 }

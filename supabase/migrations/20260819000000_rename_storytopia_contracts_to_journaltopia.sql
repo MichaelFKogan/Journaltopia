@@ -14,8 +14,17 @@ update storage.objects
 set bucket_id = 'journaltopia-media'
 where bucket_id = 'storytopia-media';
 
-delete from storage.buckets
-where id = 'storytopia-media';
+-- Newer Supabase builds refuse direct DELETE on storage.buckets and raise insufficient_privilege,
+-- which aborted this migration before anything below it could run. The bucket is empty by this point
+-- — its objects moved in the statement above — so failing to remove the husk is cosmetic, while
+-- failing the migration is not. Removed where permitted, tolerated where not.
+do $$
+begin
+    delete from storage.buckets where id = 'storytopia-media';
+exception
+    when insufficient_privilege then
+        raise notice 'storytopia-media bucket left in place: direct deletion is not permitted. It is empty and unreferenced.';
+end $$;
 
 drop policy if exists "Users can read their own storytopia media" on storage.objects;
 drop policy if exists "Users can insert their own storytopia media" on storage.objects;
@@ -196,8 +205,19 @@ $$;
 
 revoke all on function public.has_active_journaltopia_plus(uuid) from public, anon, authenticated;
 
+-- The reservation is re-created here only because dropping has_active_storytopia_plus below would
+-- otherwise leave it calling a function that no longer exists — Postgres does not re-check function
+-- bodies when a dependency is dropped, so the failure would appear at generation time rather than at
+-- migration time.
+--
+-- It is re-created at its *eight* argument signature. 20260818090000 added generation_request_id and
+-- deliberately dropped the seven-argument form: a reservation without an idempotency key is one a
+-- retried request pays for twice. Re-introducing that form here would have restored the double-charge
+-- and, because a newly created function is executable by PUBLIC, would have handed it to anon as
+-- well. The body below is 20260818090000's, with the renamed entitlement predicate.
 create or replace function public.reserve_storyboard_generation(
     storyboard_id uuid,
+    generation_request_id uuid,
     client_entry_id uuid,
     storage_path text,
     art_style text,
@@ -219,8 +239,24 @@ begin
         raise exception 'not_authenticated';
     end if;
 
+    if generation_request_id is null then
+        raise exception 'missing_generation_request_id';
+    end if;
+
     if credit_cost is null or credit_cost <= 0 then
         raise exception 'invalid_credit_cost';
+    end if;
+
+    -- The retry fast path, answered before entitlement and before credits: a request already paid
+    -- for is not a new request, and a subscription that lapsed in between must not turn an existing
+    -- reservation into an error.
+    select * into reserved
+    from public.entry_storyboards
+    where entry_storyboards.user_id = caller
+      and entry_storyboards.generation_request_id = reserve_storyboard_generation.generation_request_id;
+
+    if found then
+        return reserved;
     end if;
 
     if not exists (
@@ -236,48 +272,79 @@ begin
         raise exception 'subscription_required';
     end if;
 
-    remaining_balance := public.spend_generation_credit(reserve_storyboard_generation.credit_cost);
+    -- Two deliveries that both miss the lookup above: the loser's unique violation rolls back its
+    -- spend with it, and it returns the winner's row.
+    begin
+        remaining_balance := public.spend_generation_credit(reserve_storyboard_generation.credit_cost);
 
-    insert into public.entry_storyboards (
-        id,
-        user_id,
-        client_entry_id,
-        storage_path,
-        art_style,
-        generation_quality,
-        panel_layout,
-        prompt,
-        is_primary,
-        generation_status,
-        reserved_credits
-    )
-    values (
-        reserve_storyboard_generation.storyboard_id,
-        caller,
-        reserve_storyboard_generation.client_entry_id,
-        reserve_storyboard_generation.storage_path,
-        reserve_storyboard_generation.art_style,
-        reserve_storyboard_generation.generation_quality,
-        null,
-        reserve_storyboard_generation.prompt,
-        false,
-        'pending',
-        reserve_storyboard_generation.credit_cost
-    )
-    returning * into reserved;
+        insert into public.entry_storyboards (
+            id,
+            user_id,
+            client_entry_id,
+            generation_request_id,
+            storage_path,
+            art_style,
+            generation_quality,
+            panel_layout,
+            prompt,
+            is_primary,
+            generation_status,
+            reserved_credits
+        )
+        values (
+            reserve_storyboard_generation.storyboard_id,
+            caller,
+            reserve_storyboard_generation.client_entry_id,
+            reserve_storyboard_generation.generation_request_id,
+            reserve_storyboard_generation.storage_path,
+            reserve_storyboard_generation.art_style,
+            reserve_storyboard_generation.generation_quality,
+            null,
+            reserve_storyboard_generation.prompt,
+            false,
+            'pending',
+            reserve_storyboard_generation.credit_cost
+        )
+        returning * into reserved;
 
-    insert into public.credit_ledger (user_id, delta, reason, source_id, balance_after)
-    values (
-        caller,
-        -reserve_storyboard_generation.credit_cost,
-        'storyboard_reservation',
-        reserve_storyboard_generation.storyboard_id::text,
-        remaining_balance
-    );
+        insert into public.credit_ledger (user_id, delta, reason, source_id, balance_after)
+        values (
+            caller,
+            -reserve_storyboard_generation.credit_cost,
+            'storyboard_reservation',
+            reserve_storyboard_generation.storyboard_id::text,
+            remaining_balance
+        );
+    exception
+        when unique_violation then
+            select * into reserved
+            from public.entry_storyboards
+            where entry_storyboards.user_id = caller
+              and entry_storyboards.generation_request_id
+                  = reserve_storyboard_generation.generation_request_id;
+
+            if not found then
+                raise;
+            end if;
+
+            return reserved;
+    end;
 
     return reserved;
 end;
 $$;
+
+-- Re-stated because `create or replace` on a function that did not previously exist at this exact
+-- signature leaves it executable by PUBLIC.
+revoke all on function public.reserve_storyboard_generation(uuid, uuid, uuid, text, text, text, text, integer)
+    from public, anon, authenticated;
+
+grant execute on function public.reserve_storyboard_generation(uuid, uuid, uuid, text, text, text, text, integer)
+    to authenticated;
+
+-- Belt and braces: if any seven-argument form survives from an earlier state, it is a reservation
+-- path with no idempotency key and must not remain callable.
+drop function if exists public.reserve_storyboard_generation(uuid, uuid, text, text, text, text, integer);
 
 drop function if exists public.has_active_storytopia_plus(uuid);
 

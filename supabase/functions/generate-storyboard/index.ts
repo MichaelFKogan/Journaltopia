@@ -16,6 +16,8 @@ import {
   requirePrompt,
   requireQuality,
   requireUUID,
+  STORYBOARD_REFUSAL_INSUFFICIENT_CREDITS,
+  STORYBOARD_REFUSAL_SUBSCRIPTION_REQUIRED,
   StoryboardFailure,
   type ReferenceImage,
 } from "../_shared/storyboard-generation.ts";
@@ -287,12 +289,20 @@ async function reserveGeneration(
   // Kept distinct from the credit failure below, because they lead somewhere different: this one to
   // Journaltopia+, that one to buying more credits. The reservation raises them separately for the
   // same reason.
-  if (message.includes("subscription_required")) {
-    throw new StoryboardFailure("Storyboard generation requires Journaltopia+.", 403);
+  if (message.includes(STORYBOARD_REFUSAL_SUBSCRIPTION_REQUIRED)) {
+    throw new StoryboardFailure(
+      "Storyboard generation requires Journaltopia+.",
+      403,
+      STORYBOARD_REFUSAL_SUBSCRIPTION_REQUIRED,
+    );
   }
 
-  if (message.includes("insufficient_generation_credits")) {
-    throw new StoryboardFailure("You do not have enough credits to generate this storyboard.", 402);
+  if (message.includes(STORYBOARD_REFUSAL_INSUFFICIENT_CREDITS)) {
+    throw new StoryboardFailure(
+      "You do not have enough credits to generate this storyboard.",
+      402,
+      STORYBOARD_REFUSAL_INSUFFICIENT_CREDITS,
+    );
   }
 
   if (message.includes("not_authenticated")) {

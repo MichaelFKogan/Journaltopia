@@ -89,6 +89,31 @@ struct ProfilePlaceholder: View {
     }
 }
 
+/// The compact Journaltopia+ affordance, shown where a credit balance would be misleading.
+///
+/// Deliberately small and unlabelled beyond the name: this appears in a toolbar next to someone's
+/// journal, and monetization that shouts there is worse than monetization that waits.
+struct JournaltopiaPlusPill: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 11, weight: .bold))
+
+            Text("Journaltopia+")
+                .font(.system(size: 12, weight: .bold))
+        }
+        .foregroundStyle(Color.storyPurple)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .fixedSize(horizontal: true, vertical: false)
+        .background(Color.white.opacity(0.86), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.storyPurple.opacity(0.34), lineWidth: 1)
+        )
+    }
+}
+
 struct CreditBalanceBadge: View {
     let balance: Int?
     var isRefreshing = false

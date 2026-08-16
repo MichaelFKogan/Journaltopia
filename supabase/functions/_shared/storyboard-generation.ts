@@ -31,12 +31,22 @@ export type ReferenceImage = {
 
 export class StoryboardFailure extends Error {
   readonly status: number;
+  /// A stable identifier for refusals the app has to *route* on rather than merely display.
+  ///
+  /// The message is written for a person and will be reworded; the code is a contract. Absent for
+  /// the ordinary failures, which the app only ever shows.
+  readonly code: string | null;
 
-  constructor(message: string, status = 500) {
+  constructor(message: string, status = 500, code: string | null = null) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
+
+/// Refusals the client routes on: one to the Journaltopia+ paywall, one to buying credits.
+export const STORYBOARD_REFUSAL_SUBSCRIPTION_REQUIRED = "subscription_required";
+export const STORYBOARD_REFUSAL_INSUFFICIENT_CREDITS = "insufficient_generation_credits";
 
 export function openAIKey(): string {
   const key = Deno.env.get("OPENAI_API_KEY");
@@ -229,7 +239,10 @@ export async function uploadGeneratedImage(
 
 export function failureResponse(error: unknown, context: string): Response {
   if (error instanceof StoryboardFailure) {
-    return jsonResponse({ error: error.message }, error.status);
+    return jsonResponse(
+      error.code ? { error: error.message, code: error.code } : { error: error.message },
+      error.status,
+    );
   }
 
   console.error(`[${context}] unexpected failure:`, error);

@@ -1795,6 +1795,8 @@ struct CreateEntryView: View {
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
     @EnvironmentObject private var signInGate: SignInGate
+    @EnvironmentObject private var entitlementGate: EntitlementGate
+    @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @Environment(\.scenePhase) private var scenePhase
 
     /// Which set of tables a save belongs to. Sample Studio authors into the sample tables; everyone
@@ -2818,16 +2820,34 @@ struct CreateEntryView: View {
         let photoImages = photos.map(\.image)
         let generationQuality = selectedImageGenerationQuality
         let creditCost = generationQuality.creditCost
-        // Only a balance we have actually read can turn the generation away here. When it is
-        // unknown, the generate-storyboard function decides, since it owns the reservation. Sample
-        // Studio authoring spends no credits, so a low balance must not block sample content.
-        if isShortOnGenerationCredits, !authoringMode.isSampleStudio {
-            generationErrorMessage = "You need \(formattedCreditCount(creditCost)) to generate this storyboard."
-            setStoryboardGenerationGlobalStatus(
-                kind: .failed,
-                message: generationErrorMessage ?? "You need \(formattedCreditCount(creditCost)) to generate this storyboard."
-            )
-            return
+
+        // Journaltopia+ and the balance, in that order, and only for real entries — Sample Studio
+        // authoring spends nothing and is deliberately outside all of this.
+        //
+        // Both checks are presentation. The reservation re-decides both server-side, inside the same
+        // transaction that takes the credit, so a modified client that skipped this gains nothing.
+        // What it buys is a paywall instead of a red error banner.
+        if !authoringMode.isSampleStudio {
+            // `.unresolved` refuses without presenting: the server has not answered yet, and
+            // showing a subscriber the paywall on a cold launch is worse than a moment's wait.
+            guard entitlementGate.requireJournaltopiaPlus(
+                for: generationQuality.entitlementAction,
+                retry: { startStoryboardGeneration() }
+            ) else {
+                if !subscriptionStore.state.isResolved {
+                    Task { await subscriptionStore.refreshServerEntitlement() }
+                }
+                return
+            }
+
+            guard entitlementGate.requireCredits(
+                creditCost,
+                balance: generationCreditStore.balance,
+                for: generationQuality.entitlementAction,
+                retry: { startStoryboardGeneration() }
+            ) else {
+                return
+            }
         }
 
         let requiresEntrySave = activeDraftID == nil || hasUnsavedDraftChanges
@@ -3077,15 +3097,43 @@ struct CreateEntryView: View {
                 await refreshGenerationCreditBalance()
 
                 await MainActor.run {
-                    generationErrorMessage = error.localizedDescription
                     storyboardGenerationPhase = .failed
                     isGeneratingStoryboard = false
                     isShowingStoryboardGenerationProgress = false
-                    setStoryboardGenerationGlobalStatus(
-                        kind: .failed,
-                        entryID: activeDraftID,
-                        message: error.localizedDescription
-                    )
+
+                    // The server is authoritative, and it has just contradicted whatever this client
+                    // believed. Two of its refusals are not failures at all — they are the paywall
+                    // and the credit screen arriving a step later than the local gate would have
+                    // shown them, because the local view of entitlement or balance was stale.
+                    // Leaving either as a red "generation failed" banner strands the user with no
+                    // idea what to do next.
+                    switch StoryboardGenerationRefusal(error: error) {
+                    case .subscriptionRequired:
+                        generationErrorMessage = nil
+                        subscriptionStore.markEntitlementStale()
+                        entitlementGate.presentSubscriptionRequired(
+                            for: selectedImageGenerationQuality.entitlementAction,
+                            retry: { startStoryboardGeneration() }
+                        )
+                        Task { await subscriptionStore.refreshServerEntitlement() }
+
+                    case .insufficientCredits:
+                        generationErrorMessage = nil
+                        entitlementGate.presentInsufficientCredits(
+                            needed: selectedImageGenerationQuality.creditCost,
+                            balance: generationCreditStore.balance,
+                            for: selectedImageGenerationQuality.entitlementAction,
+                            retry: { startStoryboardGeneration() }
+                        )
+
+                    case .other:
+                        generationErrorMessage = error.localizedDescription
+                        setStoryboardGenerationGlobalStatus(
+                            kind: .failed,
+                            entryID: activeDraftID,
+                            message: error.localizedDescription
+                        )
+                    }
                 }
             }
         }
@@ -6799,10 +6847,30 @@ struct CreateEntryView: View {
             && !generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost)
     }
 
+    /// The button stays enabled for a free user and for a subscriber who is short on credits: in
+    /// both cases tapping it now leads somewhere useful — the paywall, or the credit screen — and a
+    /// disabled button with no explanation is the thing this phase set out to remove.
+    ///
+    /// It *is* disabled while entitlement is unresolved, because the honest answer for that moment
+    /// is "checking", not "no".
     private var isStoryboardGenerationButtonDisabled: Bool {
         isGeneratingStoryboard
             || storyboardGenerationPhase == .completed
-            || isShortOnGenerationCredits
+            || isAwaitingEntitlementResolution
+    }
+
+    /// Signed in, real entry, and the server has not yet said whether this account has
+    /// Journaltopia+. Brief, and only on a cold launch.
+    private var isAwaitingEntitlementResolution: Bool {
+        guard !authoringMode.isSampleStudio, authStore.userID != nil else {
+            return false
+        }
+
+        return !subscriptionStore.state.isResolved
+    }
+
+    private var isSubscribedForGeneration: Bool {
+        authoringMode.isSampleStudio || subscriptionStore.state.isSubscribed
     }
 
     private var photosMenuBadgeCount: Int {
@@ -7580,13 +7648,13 @@ struct CreateEntryView: View {
             )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Generation Credits")
+                Text(generationCreditsStatusTitle)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.storyInk)
 
                 Text(generationCreditsStatusText)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(isShortOnGenerationCredits ? Color.red.opacity(0.82) : Color.homeMutedText)
+                    .foregroundStyle(generationCreditsStatusIsWarning ? Color.storyPurple : Color.homeMutedText)
                     .lineLimit(2)
                     .minimumScaleFactor(0.82)
             }
@@ -7602,11 +7670,43 @@ struct CreateEntryView: View {
         .shadow(color: .black.opacity(0.05), radius: 9, y: 3)
     }
 
+    /// The card reads as one sentence about *this* generation: what you have, what you picked, and
+    /// what it costs. `18 credits • HD costs 2`.
+    private var generationCreditsStatusTitle: String {
+        guard authStore.userID != nil else {
+            return "AI Credits"
+        }
+
+        guard let balance = generationCreditStore.balance else {
+            return "AI Credits"
+        }
+
+        let quality = selectedImageGenerationQuality
+        let plural = balance == 1 ? "credit" : "credits"
+        return "\(balance) \(plural) • \(quality.title) costs \(quality.creditCost)"
+    }
+
     private var generationCreditsStatusText: String {
-        let cost = selectedImageGenerationQuality.creditCost
+        let quality = selectedImageGenerationQuality
+        let cost = quality.creditCost
 
         guard authStore.userID != nil else {
             return "Sign in to use credits across devices."
+        }
+
+        if authoringMode.isSampleStudio {
+            return "Sample Studio generations are free."
+        }
+
+        // Entitlement first: a free user's balance is not the interesting fact about them, and
+        // "you need 2 credits" invites them to go looking for a way to buy 2 credits they cannot use.
+        switch subscriptionStore.state {
+        case .unresolved:
+            return "Checking your Journaltopia+ status…"
+        case .signedOut, .notSubscribed:
+            return "Journaltopia+ unlocks AI pages — 25 credits a month."
+        case .subscribed:
+            break
         }
 
         guard let balance = generationCreditStore.balance else {
@@ -7614,10 +7714,20 @@ struct CreateEntryView: View {
         }
 
         if balance < cost {
-            return "You need \(formattedCreditCount(cost)) to generate."
+            return quality == .highDefinition && balance >= OpenAIImageGenerationQuality.standard.creditCost
+                ? "Not enough for HD. Switch to Standard, or add credits."
+                : "Out of credits — tap Generate to add more."
         }
 
         return "\(formattedCreditCount(cost)) will be used after a successful image."
+    }
+
+    private var generationCreditsStatusIsWarning: Bool {
+        guard !authoringMode.isSampleStudio, authStore.userID != nil else {
+            return false
+        }
+
+        return !isSubscribedForGeneration || isShortOnGenerationCredits
     }
 
     private func generationCostChip(cost: Int) -> some View {
@@ -9929,7 +10039,7 @@ struct CreateEntryView: View {
 
             Text(generationButtonFootnote)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isShortOnGenerationCredits ? Color.red.opacity(0.82) : Color.storyInk.opacity(0.46))
+                .foregroundStyle(generationCreditsStatusIsWarning ? Color.storyPurple : Color.storyInk.opacity(0.46))
 
             Button {
                 showStoryboardGenerationProgressPreview()
@@ -9945,8 +10055,20 @@ struct CreateEntryView: View {
     }
 
     private var generationButtonFootnote: String {
+        if authoringMode.isSampleStudio {
+            return completedEntryOpenedStoryboardImage == nil ? "Estimated time: around 2 minutes" : "This will be saved as a new version."
+        }
+
+        if isAwaitingEntitlementResolution {
+            return "Checking your Journaltopia+ status…"
+        }
+
+        if authStore.userID != nil, !isSubscribedForGeneration {
+            return "Journaltopia+ required — tap to see what's included."
+        }
+
         if isShortOnGenerationCredits {
-            return "Add credits before generating another storyboard."
+            return "Tap to add more credits."
         }
 
         return completedEntryOpenedStoryboardImage == nil ? "Estimated time: around 2 minutes" : "This will be saved as a new version."

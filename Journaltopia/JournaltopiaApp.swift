@@ -21,6 +21,9 @@ struct JournaltopiaApp: App {
     /// One gate for the whole app rather than an alert per screen, so every account-required action
     /// refuses the same way and the sheet can be mounted once at the root.
     @StateObject private var signInGate = SignInGate()
+    /// The Journaltopia+ counterpart to `signInGate`, owned here for the same reason: one gate, one
+    /// presentation, mounted once, so no screen grows a paywall sheet of its own.
+    @StateObject private var entitlementGate = EntitlementGate()
 
     init() {
         JournaltopiaStorageMigration.migrateLegacyIdentifiersIfNeeded()
@@ -34,6 +37,7 @@ struct JournaltopiaApp: App {
                 .environmentObject(subscriptionStore)
                 .environmentObject(pendingStoryboardMonitor)
                 .environmentObject(signInGate)
+                .environmentObject(entitlementGate)
                 .onOpenURL { url in
                     authStore.handleOpenURL(url)
                 }

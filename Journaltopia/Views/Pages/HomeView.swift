@@ -5,6 +5,7 @@ import UIKit
 struct HomeView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var subscriptionStore: SubscriptionStore
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
@@ -97,18 +98,31 @@ struct HomeView: View {
         }
     }
 
+    /// A balance for subscribers, an invitation for everyone else.
+    ///
+    /// Showing a free account "0" beside a sparkle reads as a balance they could spend, which is
+    /// both wrong and a dead end — credits are not sold separately from Journaltopia+. The pill says
+    /// what the tap actually leads to instead. Neither variant is shown until the server has
+    /// answered, so a subscriber is never briefly invited to subscribe.
+    @ViewBuilder
     private var creditsButton: some View {
         NavigationLink {
             GenerationCreditsView()
                 .enableInteractivePopGesture()
         } label: {
-            CreditBalanceBadge(
-                balance: generationCreditStore.balance,
-                isRefreshing: generationCreditStore.isRefreshing
-            )
+            if subscriptionStore.state.isSubscribed || !subscriptionStore.state.isResolved {
+                CreditBalanceBadge(
+                    balance: generationCreditStore.balance,
+                    isRefreshing: generationCreditStore.isRefreshing
+                )
+            } else {
+                JournaltopiaPlusPill()
+            }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open generation credits")
+        .accessibilityLabel(
+            subscriptionStore.state.isSubscribed ? "Open AI credits" : "Learn about Journaltopia+"
+        )
     }
 
     private var settingsButton: some View {

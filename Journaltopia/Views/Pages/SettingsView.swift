@@ -4,9 +4,14 @@ struct SettingsView: View {
     @Binding var selectedPage: StoryPage
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @EnvironmentObject private var signInGate: SignInGate
+    @Environment(\.openURL) private var openURL
 
     @State private var isSigningOut = false
+    @State private var restoreOutcome: SubscriptionRestoreOutcome?
+    @State private var isRestoring = false
+    @State private var isManageSubscriptionPresented = false
 
     var body: some View {
         List {
@@ -16,7 +21,31 @@ struct SettingsView: View {
                 accountActionRow
             }
 
-            Section("Generation Credits") {
+            Section("Journaltopia+") {
+                subscriptionStatusRow
+
+                if authStore.userID != nil {
+                    switch subscriptionStore.state {
+                    case .subscribed:
+                        manageSubscriptionRow
+                        restorePurchasesRow
+                    case .notSubscribed:
+                        upgradeRow
+                        restorePurchasesRow
+                    case .unresolved, .signedOut:
+                        EmptyView()
+                    }
+                }
+
+                if let restoreOutcome {
+                    Text(restoreOutcome.message)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(restoreOutcome.isSuccess ? Color.storyPurple : Color.homeMutedText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Section("AI Credits") {
                 generationCreditsRow
             }
 
@@ -56,6 +85,124 @@ struct SettingsView: View {
             showsChevron: false
         )
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Journaltopia+
+
+    /// Status only — no marketing. Someone in Settings is looking for a fact.
+    private var subscriptionStatusRow: some View {
+        SettingsRowContent(
+            systemName: subscriptionStore.state.isSubscribed ? "checkmark.seal.fill" : "sparkles",
+            title: "Journaltopia+",
+            subtitle: subscriptionSubtitle,
+            showsChevron: false,
+            trailingContent: {
+                if subscriptionStore.state.isSubscribed {
+                    CreditBalanceBadge(
+                        balance: generationCreditStore.balance,
+                        isRefreshing: generationCreditStore.isRefreshing
+                    )
+                }
+            }
+        )
+        .padding(.vertical, 4)
+    }
+
+    private var upgradeRow: some View {
+        NavigationLink {
+            JournaltopiaPlusPaywallView(presentation: .page)
+                .enableInteractivePopGesture()
+        } label: {
+            SettingsRowContent(
+                systemName: "arrow.up.circle",
+                title: "Upgrade to Journaltopia+",
+                subtitle: upgradeSubtitle,
+                showsChevron: false
+            )
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Upgrade to Journaltopia+")
+    }
+
+    /// Apple's own sheet, not a hand-built App Store URL: it handles cancelling, changing plan and
+    /// refund requests, and it stays correct as those flows change.
+    private var manageSubscriptionRow: some View {
+        Button {
+            isManageSubscriptionPresented = true
+        } label: {
+            SettingsRowContent(
+                systemName: "creditcard",
+                title: "Manage Subscription",
+                subtitle: "Change or cancel in the App Store",
+                showsChevron: false
+            )
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .manageSubscriptionsSheetIfAvailable(isPresented: $isManageSubscriptionPresented)
+    }
+
+    private var restorePurchasesRow: some View {
+        Button {
+            restorePurchases()
+        } label: {
+            SettingsRowContent(
+                systemName: "arrow.clockwise",
+                title: isRestoring ? "Restoring…" : "Restore Purchases",
+                subtitle: "Bring an existing subscription to this account",
+                showsChevron: false,
+                trailingContent: {
+                    if isRestoring {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            )
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(isRestoring)
+    }
+
+    private var subscriptionSubtitle: String {
+        guard authStore.userID != nil else {
+            return "Sign in to see your plan"
+        }
+
+        switch subscriptionStore.state {
+        case .unresolved:
+            return "Checking your plan…"
+        case .signedOut:
+            return "Sign in to see your plan"
+        case .notSubscribed:
+            return "Not subscribed"
+        case .subscribed:
+            guard let periodEnd = subscriptionStore.state.currentPeriodEnd else {
+                return "Active"
+            }
+
+            return "Active · renews \(JournaltopiaPlusFormatting.formatted(periodEnd))"
+        }
+    }
+
+    private var upgradeSubtitle: String {
+        guard let price = subscriptionStore.localizedPrice else {
+            return "25 AI credits every month"
+        }
+
+        return "\(price) per month · 25 AI credits"
+    }
+
+    private func restorePurchases() {
+        isRestoring = true
+        restoreOutcome = nil
+
+        Task {
+            let outcome = await subscriptionStore.restorePurchases(isSignedIn: authStore.userID != nil)
+            await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+            restoreOutcome = outcome
+            isRestoring = false
+        }
     }
 
     private var generationCreditsRow: some View {
