@@ -19,6 +19,9 @@ import {
   verifierFor,
 } from "../_shared/apple-subscription.ts";
 import { jsonResponse } from "../_shared/storyboard-generation.ts";
+// Apple's own decoded-notification shape. Every field on it is optional, which is why the logging
+// below tolerates a missing notificationType rather than asserting one.
+import type { ResponseBodyV2DecodedPayload } from "npm:@apple/app-store-server-library@1.6.0";
 
 type NotificationRequest = {
   signedPayload?: string;
@@ -101,7 +104,7 @@ Deno.serve(async (request) => {
 /// and production notification URLs are configured separately in App Store Connect, and a
 /// misconfiguration should surface as a verification failure rather than as silently trusted data.
 async function verifyNotification(signedPayload: string): Promise<{
-  notification: { notificationType: string; subtype?: string };
+  notification: ResponseBodyV2DecodedPayload;
   verified: ReturnType<typeof toVerifiedSubscription> | null;
 }> {
   const environments = [
@@ -114,14 +117,7 @@ async function verifyNotification(signedPayload: string): Promise<{
   for (const environment of environments) {
     try {
       const verifier = verifierFor(environment);
-      const notification = await verifier.verifyAndDecodeNotification(signedPayload) as {
-        notificationType: string;
-        subtype?: string;
-        data?: {
-          signedTransactionInfo?: string;
-          signedRenewalInfo?: string;
-        };
-      };
+      const notification = await verifier.verifyAndDecodeNotification(signedPayload);
 
       const signedTransactionInfo = notification.data?.signedTransactionInfo;
       if (!signedTransactionInfo) {
@@ -144,11 +140,7 @@ async function verifyNotification(signedPayload: string): Promise<{
 
       return {
         notification,
-        verified: toVerifiedSubscription(
-          transaction as unknown as Record<string, unknown>,
-          renewal as unknown as Record<string, unknown> | null,
-          environment,
-        ),
+        verified: toVerifiedSubscription(transaction, renewal, environment),
       };
     } catch (error) {
       if (error instanceof AppleSubscriptionFailure && error.code === "not_configured") {

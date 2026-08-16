@@ -12,8 +12,16 @@
 // anything a client cared to sign for itself, which is the whole attack this endpoint exists to
 // stop.
 import {
+  AutoRenewStatus,
   Environment,
   SignedDataVerifier,
+} from "npm:@apple/app-store-server-library@1.6.0";
+// The decoded payload shapes, used rather than a structural stand-in so the fields this file reads
+// are the fields Apple actually documents — a renamed or mistyped one fails to compile instead of
+// silently reading undefined and producing a subscription with no period.
+import type {
+  JWSRenewalInfoDecodedPayload,
+  JWSTransactionDecodedPayload,
 } from "npm:@apple/app-store-server-library@1.6.0";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 // Apple's library is written against Node's Buffer. Deno provides it through the node compat
@@ -206,12 +214,12 @@ export async function verifySignedTransaction(
 /// deliberately the narrowest reading: an expiry date in the past, a revocation, or an upgrade that
 /// superseded this transaction all fall out of it.
 export function toVerifiedSubscription(
-  transaction: Record<string, unknown>,
-  renewal: Record<string, unknown> | null,
+  transaction: JWSTransactionDecodedPayload,
+  renewal: JWSRenewalInfoDecodedPayload | null,
   environment: Environment,
 ): VerifiedSubscription {
-  const productID = asText(transaction.productId);
-  const originalTransactionID = asText(transaction.originalTransactionId);
+  const productID = transaction.productId;
+  const originalTransactionID = transaction.originalTransactionId;
 
   if (!productID || !originalTransactionID) {
     throw new AppleSubscriptionFailure(
@@ -221,11 +229,12 @@ export function toVerifiedSubscription(
     );
   }
 
-  const purchaseDate = asMilliseconds(transaction.purchaseDate);
-  const expiresDate = asMilliseconds(transaction.expiresDate);
-  const revocationDate = asMilliseconds(transaction.revocationDate);
+  // Every date on the payload is optional in Apple's schema, so each is checked rather than assumed.
+  const purchaseDate = transaction.purchaseDate;
+  const expiresDate = transaction.expiresDate;
+  const revocationDate = transaction.revocationDate;
 
-  if (purchaseDate === null || expiresDate === null) {
+  if (purchaseDate === undefined || expiresDate === undefined) {
     throw new AppleSubscriptionFailure(
       "Apple returned a subscription with no period.",
       400,
@@ -233,12 +242,17 @@ export function toVerifiedSubscription(
     );
   }
 
-  // Apple's autoRenewStatus: 0 off, 1 on. Absent means we were not told.
-  const autoRenewRaw = renewal?.autoRenewStatus;
-  const autoRenewStatus = typeof autoRenewRaw === "number" ? autoRenewRaw === 1 : null;
+  // Absent means Apple did not tell us, which is different from "off" — a subscription with no
+  // renewal info attached must not be read as one the user cancelled.
+  const autoRenewStatus = renewal?.autoRenewStatus === undefined
+    ? null
+    : renewal.autoRenewStatus === AutoRenewStatus.ON;
 
   let status: VerifiedSubscription["status"];
-  if (revocationDate !== null) {
+  // `undefined`, not `null`: these come straight off Apple's optional payload fields. Comparing
+  // against null here read every absent revocation date as a revocation, which marked every
+  // subscription revoked and entitled nobody.
+  if (revocationDate !== undefined) {
     status = "revoked";
   } else if (expiresDate <= Date.now()) {
     // Apple keeps retrying a failed renewal for a while. Distinguishing that from a clean lapse
@@ -252,7 +266,7 @@ export function toVerifiedSubscription(
   return {
     productID,
     originalTransactionID,
-    latestTransactionID: asText(transaction.transactionId),
+    latestTransactionID: transaction.transactionId ?? null,
     status,
     periodStart: new Date(purchaseDate).toISOString(),
     periodEnd: new Date(expiresDate).toISOString(),
@@ -338,20 +352,4 @@ export function serviceRoleClient(): SupabaseClient {
   return createClient(projectURL, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-}
-
-function asText(value: unknown): string | null {
-  if (typeof value === "string" && value.length > 0) {
-    return value;
-  }
-
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-
-  return null;
-}
-
-function asMilliseconds(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
