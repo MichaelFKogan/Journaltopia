@@ -9992,6 +9992,7 @@ struct EntriesView: View {
         AddEntryToJournalPage(
             selectedJournalTitle: $selectedEntriesJournalTitle,
             selectedJournalTitles: $selectedEntriesJournalTitles,
+            authoringMode: isSampleAuthorMode ? .sampleStudio : .user,
             onSelect: { journalTitle in
                 addSelectedEntriesToJournals(Set<String>([journalTitle]))
             },
@@ -17009,6 +17010,7 @@ private struct JournalDetailEntryBrowser: View {
                 AddEntryToJournalPage(
                     selectedJournalTitle: $selectedEntriesJournalTitle,
                     selectedJournalTitles: $selectedEntriesJournalTitles,
+                    authoringMode: isSampleAuthorMode ? .sampleStudio : .user,
                     onSelect: { journalTitle in
                         addSelectedEntriesToJournals(Set([journalTitle]))
                     },
