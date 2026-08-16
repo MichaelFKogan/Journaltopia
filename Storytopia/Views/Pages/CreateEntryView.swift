@@ -1704,6 +1704,7 @@ struct CreateEntryView: View {
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
+    var isOpeningEntryFromEntries = false
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     var authoringMode: CreateEntryAuthoringMode = .user
@@ -1782,6 +1783,7 @@ struct CreateEntryView: View {
     @State private var isStoryDetailsTabCollapsed = true
     @State private var isShowingEntryOptionsPage = false
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
+    @State private var didResetForFreshCreatePresentation = false
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
     @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
@@ -2482,6 +2484,7 @@ struct CreateEntryView: View {
             }
         }
         .onAppear {
+            resetForFreshCreateIfNeeded()
             configureDirectJournalEntryIfNeeded()
             if !canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = false
@@ -2492,6 +2495,13 @@ struct CreateEntryView: View {
         }
         .onChange(of: activeDraftID) { newDraftID in
             handleActiveDraftChange(newDraftID)
+        }
+        .onChange(of: selectedPage) { newPage in
+            if newPage == .create {
+                resetForFreshCreateIfNeeded()
+            } else {
+                didResetForFreshCreatePresentation = false
+            }
         }
         .onChange(of: canShowEntryOptionsPage) { canShowOptions in
             if !canShowOptions {
@@ -2527,6 +2537,25 @@ struct CreateEntryView: View {
         }
     }
 
+    private func resetForFreshCreateIfNeeded() {
+        guard activeDraftID == nil, !isOpeningEntryFromEntries, !existingEntryStartsReadOnly else {
+            didResetForFreshCreatePresentation = false
+            return
+        }
+
+        guard !didResetForFreshCreatePresentation else {
+            return
+        }
+
+        clearEditor()
+        completedEntryOpenedStoryboardImage = nil
+        isOpeningCompletedEntryFromEntries = false
+        isPreviewingCompletedStoryboard = false
+        selectedEntryStoryboardIndex = nil
+        resetCompletedEntryStoryboardDrag()
+        didResetForFreshCreatePresentation = true
+    }
+
     private func handleActiveDraftChange(_ draftID: UUID?) {
         guard selectedPage == .create else {
             return
@@ -2539,9 +2568,15 @@ struct CreateEntryView: View {
 
         guard draftID != nil else {
             clearEditor()
+            completedEntryOpenedStoryboardImage = nil
+            isOpeningCompletedEntryFromEntries = false
+            isPreviewingCompletedStoryboard = false
+            selectedEntryStoryboardIndex = nil
+            didResetForFreshCreatePresentation = activeDraftID == nil && !isOpeningEntryFromEntries && !existingEntryStartsReadOnly
             return
         }
 
+        didResetForFreshCreatePresentation = false
         loadLinkedJournalTitle(for: draftID)
         loadSavedDraftIfNeeded()
         currentEntryStatus = resolvedCurrentEntryStatus()
