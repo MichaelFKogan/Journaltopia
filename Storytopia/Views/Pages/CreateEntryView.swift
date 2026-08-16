@@ -1787,14 +1787,49 @@ struct CreateEntryView: View {
     var isOpeningEntryFromEntries = false
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
-    var authoringMode: CreateEntryAuthoringMode = .user
+    var contentMode: StorytopiaContentMode = .user
     var existingEntryStartsReadOnly = false
     let dismissCreate: () -> Void
     var onJournalEntryCreated: (String, PrototypeEntry) -> Void = { _, _ in }
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
+    @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.scenePhase) private var scenePhase
+
+    /// Which set of tables a save belongs to. Sample Studio authors into the sample tables; everyone
+    /// else into their own account.
+    private var authoringMode: CreateEntryAuthoringMode {
+        contentMode.authoringMode
+    }
+
+    /// Signed out, the editor opens and types normally — the gate stops the writes, not the writing.
+    /// Everything that would put this entry somewhere permanent asks here first.
+    private var canPersistEntry: Bool {
+        contentMode.canPersistUserContent || contentMode.isSampleAuthoring
+    }
+
+    /// Whether an entry opened here came from the in-memory sample pack rather than from disk.
+    ///
+    /// Opening a sample entry used to mean writing a "temporary" copy of it into
+    /// `CreateEntryDraftStore` so this screen could read it back. Signed out that copy lands in the
+    /// anonymous scope, and it only gets cleaned up if the reader comes back — quit the app with a
+    /// sample entry open and it stayed there for the next account to inherit.
+    private var readsEntryFromSamplePack: Bool {
+        contentMode.showsSampleContent && !contentMode.isSampleAuthoring
+    }
+
+    private func loadedDraft(id: UUID) -> CreateEntryDraft? {
+        readsEntryFromSamplePack
+            ? SampleContentStore.entry(id: id)
+            : CreateEntryDraftStore.load(id: id)
+    }
+
+    private func loadedStoryboards(clientEntryID: UUID) -> [GeneratedStoryboard] {
+        readsEntryFromSamplePack
+            ? SampleContentStore.storyboards(clientEntryID: clientEntryID)
+            : GeneratedStoryboardStore.load(clientEntryIDs: [clientEntryID])
+    }
 
     @State private var selectedArtStyle = CreateEntryView.defaultArtStyle
     @AppStorage("StorytopiaImageGenerationQuality") private var selectedImageGenerationQualityRawValue = OpenAIImageGenerationQuality.standard.rawValue
@@ -2268,7 +2303,7 @@ struct CreateEntryView: View {
                 AddEntryToJournalPage(
                     selectedJournalTitle: $selectedCustomJournalTitle,
                     selectedJournalTitles: $selectedCustomJournalTitles,
-                    authoringMode: authoringMode,
+                    contentMode: contentMode,
                     onSelect: addEditedEntryToJournal,
                     onSaveSelection: saveEditedEntryJournalSelection
                 )
@@ -2279,7 +2314,7 @@ struct CreateEntryView: View {
         .sheet(isPresented: $isShowingJournalDestinationSheet) {
             AddToJournalSheet(
                 selectedJournalTitle: $selectedCustomJournalTitle,
-                authoringMode: authoringMode
+                contentMode: contentMode
             ) { journalTitle in
                 selectedCustomJournalTitle = journalTitle
                 isShowingJournalDestinationSheet = false
@@ -2734,7 +2769,7 @@ struct CreateEntryView: View {
 
     private func resolvedCurrentEntryStatus() -> JournalEntryStatus {
         if let activeDraftID,
-           let draft = CreateEntryDraftStore.load(id: activeDraftID),
+           let draft = loadedDraft(id: activeDraftID),
            let status = JournalEntryStatus(rawValue: draft.status) {
             return status
         }
@@ -2744,6 +2779,14 @@ struct CreateEntryView: View {
 
     private func startStoryboardGeneration() {
         guard !isGeneratingStoryboard else {
+            return
+        }
+
+        guard canPersistEntry else {
+            // Signing out is not a failed generation. This used to set `generationErrorMessage` and
+            // raise the red failure banner, which read as "something went wrong" rather than as
+            // "this needs an account".
+            signInGate.requireAccount(for: .generateStoryboard, retry: { startStoryboardGeneration() })
             return
         }
 
@@ -2767,12 +2810,7 @@ struct CreateEntryView: View {
             return
         }
 
-        guard authStore.userID != nil else {
-            generationErrorMessage = "Sign in before generating a storyboard."
-            setStoryboardGenerationGlobalStatus(
-                kind: .failed,
-                message: generationErrorMessage ?? "Sign in before generating a storyboard."
-            )
+        guard authoringMode.isSampleStudio || authStore.userID != nil else {
             return
         }
 
@@ -3847,7 +3885,10 @@ struct CreateEntryView: View {
     /// Sample Studio authors against cloud sample rows in a mode of its own, and a read-only
     /// completed entry has no edits to protect, so neither takes part.
     private var supportsLocalAutosave: Bool {
-        !authoringMode.isSampleStudio && !opensExistingEntryReadMode
+        // Signed out there is nowhere for an autosave to go: the draft store resolves to the
+        // anonymous scope, and data-loss protection that hands the writing to a different account
+        // is worse than none.
+        contentMode.canPersistUserContent && !opensExistingEntryReadMode
     }
 
     /// The editor's persisted state as one value, cheap enough to rebuild on every body pass: it
@@ -4175,6 +4216,19 @@ struct CreateEntryView: View {
 
     @discardableResult
     private func saveDraftToLocalAndCloud(forceSave: Bool, navigatesToOptions: Bool) async -> EntryCloudSaveState? {
+        guard canPersistEntry else {
+            // Saving signed out used to succeed: `EntrySaveService` wrote a local draft into the
+            // anonymous scope and marked it cloud-synchronized, so the toolbar reported "Saved" for
+            // an entry no account would ever hold — and which the next account to sign in inherited.
+            cancelToolbarSavedFeedback()
+            signInGate.requireAccount(for: .saveEntry, retry: {
+                Task {
+                    await saveDraftToLocalAndCloud(forceSave: forceSave, navigatesToOptions: navigatesToOptions)
+                }
+            })
+            return nil
+        }
+
         guard let payload = makeEntryDraftSavePayload(forceSave: forceSave) else {
             cancelToolbarSavedFeedback()
             if navigatesToOptions && canShowEntryOptionsPage {
@@ -4417,7 +4471,7 @@ struct CreateEntryView: View {
             return
         }
 
-        guard let draft = CreateEntryDraftStore.load(id: activeDraftID) else {
+        guard let draft = loadedDraft(id: activeDraftID) else {
             self.activeDraftID = nil
             isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
             clearEditor()
@@ -6622,7 +6676,7 @@ struct CreateEntryView: View {
     /// Deleting the whole entry only makes sense once it exists on disk, and sample studio
     /// entries are removed through their own authoring service instead.
     private var canDeleteCurrentEntry: Bool {
-        activeDraftID != nil && !authoringMode.isSampleStudio
+        activeDraftID != nil && !authoringMode.isSampleStudio && contentMode.canPersistUserContent
     }
 
     private var deleteEntryCard: some View {
@@ -6751,6 +6805,11 @@ struct CreateEntryView: View {
     @discardableResult
     private func addCurrentEntry(to journalTitle: String, id: UUID = UUID()) -> PrototypeEntry? {
         guard let entry = currentJournalEntry(id: id) else {
+            return nil
+        }
+
+        guard canPersistEntry else {
+            signInGate.requireAccount(for: .saveEntry)
             return nil
         }
 
@@ -7142,7 +7201,7 @@ struct CreateEntryView: View {
         setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         let entryID = activeDraftID ?? UUID()
-        let createdAt = activeDraftID.flatMap { CreateEntryDraftStore.load(id: $0)?.createdAt }
+        let createdAt = activeDraftID.flatMap { loadedDraft(id: $0)?.createdAt }
             ?? loadedDraftSnapshot?.createdAt
             ?? Date()
         Task {
@@ -7249,7 +7308,7 @@ struct CreateEntryView: View {
         Task {
             let payload = EntryDraftSavePayload(
                 id: entry.id,
-                createdAt: CreateEntryDraftStore.load(id: entry.id)?.createdAt ?? entry.createdAt,
+                createdAt: loadedDraft(id: entry.id)?.createdAt ?? entry.createdAt,
                 title: storyTitle,
                 text: entryText,
                 richText: currentEntryRichText(),
@@ -8385,7 +8444,7 @@ struct CreateEntryView: View {
         var seen = Set<UUID>()
         var storyboards: [GeneratedStoryboard] = []
 
-        for storyboard in generatedStoryboards + GeneratedStoryboardStore.load(clientEntryIDs: Set([entryID].compactMap { $0 })) {
+        for storyboard in generatedStoryboards + (entryID.map(loadedStoryboards(clientEntryID:)) ?? []) {
             guard
                 let clientEntryID = storyboard.clientEntryID,
                 clientEntryID == entryID,
@@ -8424,7 +8483,7 @@ struct CreateEntryView: View {
             return
         }
 
-        generatedStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: [activeDraftID])
+        generatedStoryboards = loadedStoryboards(clientEntryID: activeDraftID)
     }
 
     private func currentStoryboardsCard(fallbackImage: UIImage) -> some View {
@@ -8848,6 +8907,11 @@ struct CreateEntryView: View {
     }
 
     private func saveLibraryCharacter(_ character: EntryCharacter) {
+        guard canPersistEntry else {
+            signInGate.requireAccount(for: .saveCharacter)
+            return
+        }
+
         if let index = reusableCharacters.firstIndex(where: { $0.id == character.id }) {
             reusableCharacters[index] = character
         } else {
@@ -10506,10 +10570,11 @@ struct AddEntryToJournalPage: View {
     @Binding var selectedJournalTitle: String?
     @Binding var selectedJournalTitles: Set<String>
 
-    let authoringMode: CreateEntryAuthoringMode
+    let contentMode: StorytopiaContentMode
     let onSelect: (String) -> Void
     let onSaveSelection: (Set<String>) -> Void
 
+    @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.dismiss) private var dismiss
     @State private var pendingJournalTitles: Set<String> = []
     @State private var isCreateJournalAlertPresented = false
@@ -10519,19 +10584,25 @@ struct AddEntryToJournalPage: View {
     init(
         selectedJournalTitle: Binding<String?>,
         selectedJournalTitles: Binding<Set<String>>,
-        authoringMode: CreateEntryAuthoringMode = .user,
+        contentMode: StorytopiaContentMode = .user,
         onSelect: @escaping (String) -> Void,
         onSaveSelection: @escaping (Set<String>) -> Void
     ) {
         _selectedJournalTitle = selectedJournalTitle
         _selectedJournalTitles = selectedJournalTitles
-        self.authoringMode = authoringMode
+        self.contentMode = contentMode
         self.onSelect = onSelect
         self.onSaveSelection = onSaveSelection
     }
 
+    private var authoringMode: CreateEntryAuthoringMode {
+        contentMode.authoringMode
+    }
+
+    /// Signed-out browsing lists the sample journals rather than `UserChapterStore`, which resolves
+    /// to an empty anonymous scope and made this page look broken.
     private var journals: [PrototypeChapter] {
-        authoringMode.isSampleStudio ? sampleJournals : DailyJournalData.allChapters()
+        contentMode.showsSampleContent ? sampleJournals : DailyJournalData.allChapters()
     }
 
     private var trimmedNewJournalName: String {
@@ -10672,6 +10743,10 @@ struct AddEntryToJournalPage: View {
 
     private var createNewJournalButton: some View {
         Button {
+            guard signInGate.requireAccount(for: .createJournal, retry: { isCreateJournalAlertPresented = true }) else {
+                return
+            }
+
             isCreateJournalAlertPresented = true
         } label: {
             HStack(spacing: 8) {
@@ -10691,6 +10766,11 @@ struct AddEntryToJournalPage: View {
 
     private func createJournalAndAddEntry() {
         guard !trimmedNewJournalName.isEmpty else {
+            return
+        }
+
+        guard contentMode.canPersistUserContent || contentMode.isSampleAuthoring else {
+            signInGate.requireAccount(for: .createJournal)
             return
         }
 
@@ -10744,13 +10824,19 @@ struct AddEntryToJournalPage: View {
     }
 
     private func refreshSampleJournalsIfNeeded() {
-        guard authoringMode.isSampleStudio else {
+        guard contentMode.showsSampleContent else {
             return
         }
 
+        let loadsAuthoringPack = contentMode.isSampleAuthoring
+
         Task {
             do {
-                let journals = try await SupabaseSampleStoryService().loadAuthoringJournals()
+                // Authoring edits the pack it is signed in to administer; browsing reads the public
+                // one everybody sees.
+                let journals = loadsAuthoringPack
+                    ? try await SupabaseSampleStoryService().loadAuthoringJournals()
+                    : try await SupabaseSampleStoryService().loadActivePack().journals
                 let chapters = journals.map { $0.createEntryPrototypeChapter() }
                 await MainActor.run {
                     sampleJournals = chapters
@@ -10860,9 +10946,10 @@ private struct AddEntryJournalNotebookCover: View {
 private struct AddToJournalSheet: View {
     @Binding var selectedJournalTitle: String?
 
-    let authoringMode: CreateEntryAuthoringMode
+    let contentMode: StorytopiaContentMode
     let onSelect: (String) -> Void
 
+    @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab: AddToJournalTab = .existing
     @State private var searchText = ""
@@ -10879,8 +10966,12 @@ private struct AddToJournalSheet: View {
         "building.2.fill"
     ]
 
+    private var authoringMode: CreateEntryAuthoringMode {
+        contentMode.authoringMode
+    }
+
     private var journals: [PrototypeChapter] {
-        authoringMode.isSampleStudio ? sampleJournals : DailyJournalData.allChapters()
+        contentMode.showsSampleContent ? sampleJournals : DailyJournalData.allChapters()
     }
 
     private var filteredJournals: [PrototypeChapter] {
@@ -11148,6 +11239,11 @@ private struct AddToJournalSheet: View {
             return
         }
 
+        guard contentMode.canPersistUserContent || contentMode.isSampleAuthoring else {
+            signInGate.requireAccount(for: .createJournal)
+            return
+        }
+
         if authoringMode.isSampleStudio {
             createSampleJournal()
             return
@@ -11190,13 +11286,17 @@ private struct AddToJournalSheet: View {
     }
 
     private func refreshSampleJournalsIfNeeded() {
-        guard authoringMode.isSampleStudio else {
+        guard contentMode.showsSampleContent else {
             return
         }
 
+        let loadsAuthoringPack = contentMode.isSampleAuthoring
+
         Task {
             do {
-                let journals = try await SupabaseSampleStoryService().loadAuthoringJournals()
+                let journals = loadsAuthoringPack
+                    ? try await SupabaseSampleStoryService().loadAuthoringJournals()
+                    : try await SupabaseSampleStoryService().loadActivePack().journals
                 let chapters = journals.map { $0.createEntryPrototypeChapter() }
                 await MainActor.run {
                     sampleJournals = chapters

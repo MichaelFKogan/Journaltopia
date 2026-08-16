@@ -7,6 +7,59 @@ private func playJournalFloatingButtonHaptic() {
     UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.82)
 }
 
+/// Turns the sample pack's journals into the same `PrototypeChapter`/`PrototypeEntry` shapes every
+/// journal surface already renders.
+///
+/// It lives at file scope rather than inside `JournalView` because Journals is not the only screen
+/// that shows sample journals — the daily Daybook does too — and two screens deriving "which sample
+/// journal is this and what is in it" separately is exactly how they drift apart.
+@MainActor
+enum SampleJournalDisplay {
+    static func chapter(from journal: SampleJournal) -> PrototypeChapter {
+        PrototypeChapter(
+            id: journal.id,
+            title: journal.title,
+            subtitle: journal.subtitle ?? "Sample journal",
+            color: journal.colorHex.flatMap(Color.init(hex:)) ?? Color.storyPurple,
+            symbol: journal.symbol ?? "book.closed.fill",
+            coverImageName: journal.coverImageName,
+            remoteCover: journal.remoteCover,
+            kind: journal.kind == "storyboard" ? .storyboard : .journal,
+            isFavorite: journal.isFavorite,
+            createdAt: journal.createdAt,
+            updatedAt: journal.updatedAt,
+            entries: entries(from: journal.entries)
+        )
+    }
+
+    static func entries(from drafts: [CreateEntryDraft]) -> [PrototypeEntry] {
+        // A `for` loop rather than `map`: the closure `map` takes is not actor-isolated, and both
+        // this conversion and `PrototypeEntry.init` are.
+        var converted: [PrototypeEntry] = []
+        converted.reserveCapacity(drafts.count)
+        for draft in drafts {
+            converted.append(entry(from: draft))
+        }
+
+        return converted
+    }
+
+    static func entry(from entry: CreateEntryDraft) -> PrototypeEntry {
+        PrototypeEntry(
+            id: entry.id,
+            weekday: entry.date.formatted(.dateTime.weekday(.abbreviated)).uppercased(),
+            day: entry.date.formatted(.dateTime.day()),
+            title: entry.title.isEmpty ? "Untitled Sample" : entry.title,
+            body: entry.text,
+            richText: entry.richText,
+            time: entry.date.formatted(.dateTime.hour().minute()),
+            location: entry.location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : entry.location,
+            imageNames: [],
+            createdAt: entry.createdAt
+        )
+    }
+}
+
 private func sampleStoryboardsByMergingLocalFallbacks(
     remoteStoryboardsByEntryID: [UUID: [GeneratedStoryboard]],
     entries: [CreateEntryDraft],
@@ -163,9 +216,10 @@ struct JournalView: View {
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
-    var isSampleAuthorMode = false
+    var contentMode: StorytopiaContentMode = .user
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showsPrototypeData = false
@@ -189,6 +243,11 @@ struct JournalView: View {
     @State private var journalNavigationPath: [JournalRoute] = []
     @State private var sampleJournalLoadTask: Task<Void, Never>?
     @State private var sampleJournalEntryIDs: Set<UUID> = []
+    /// Whether the IDs in `sampleJournalEntryIDs` were written to `CreateEntryDraftStore`, which only
+    /// sample authoring does. The cleanup has to know which of the two places to clear, and it runs
+    /// *after* the mode has already changed — so it cannot ask the new mode where the old one put
+    /// them.
+    @State private var seededSampleDraftsToDisk = false
     @State private var sampleJournalsByID: [UUID: SampleJournal] = [:]
     @State private var areJournalPagesExpanded = false
     @State private var isJournalDetailVisible = false
@@ -222,7 +281,7 @@ struct JournalView: View {
         isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false),
         generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([]),
         storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil),
-        isSampleAuthorMode: Bool = false
+        contentMode: StorytopiaContentMode = .user
     ) {
         _selectedPage = selectedPage
         _isDraftSaved = isDraftSaved
@@ -233,7 +292,7 @@ struct JournalView: View {
         _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
         _generatedStoryboards = generatedStoryboards
         _storyboardGenerationStatus = storyboardGenerationStatus
-        self.isSampleAuthorMode = isSampleAuthorMode
+        self.contentMode = contentMode
         _chapters = State(initialValue: DailyJournalData.allChapters())
     }
 
@@ -271,7 +330,7 @@ struct JournalView: View {
                         selectedPage: $selectedPage,
                         generatedStoryboards: $generatedStoryboards,
                         embedsInNavigationStack: false,
-                        isSampleAuthorMode: isSampleAuthorMode
+                        contentMode: contentMode
                     )
                 case .credits:
                     GenerationCreditsView()
@@ -279,25 +338,11 @@ struct JournalView: View {
             }
         }
         .onAppear {
-            if usesSampleJournalContent {
-                loadSampleJournals()
-                return
-            }
-
-            chapters = DailyJournalData.allChapters()
-            loadCloudJournalsIfNeeded()
-            restorePendingCoverSyncIfNeeded()
+            reloadJournalsForCurrentMode()
         }
         .onChange(of: selectedPage) { newPage in
             if newPage != .create {
-                if usesSampleJournalContent {
-                    loadSampleJournals()
-                    return
-                }
-
-                chapters = DailyJournalData.allChapters()
-                loadCloudJournalsIfNeeded()
-                restorePendingCoverSyncIfNeeded()
+                reloadJournalsForCurrentMode()
             }
         }
         .onChange(of: journalNavigationPath) { newPath in
@@ -305,55 +350,20 @@ struct JournalView: View {
                 resetJournalCreateEntryState()
             }
         }
-        .onChange(of: authStore.userID) { userID in
+        // One trigger for every way the answer can change — signing in or out, the sample-author
+        // toggle, a session finishing its check. They used to be three handlers that disagreed about
+        // what a nil user ID meant.
+        .onChange(of: contentMode) { _ in
             journalPageBackground = JournalPageBackgroundStore.load()
-
-            guard userID != nil else {
-                resetJournalSessionState()
-                loadSampleJournals()
-                return
-            }
-
-            if usesSampleJournalContent {
-                loadSampleJournals()
-                return
-            }
-
-            chapters = DailyJournalData.allChapters()
-            loadCloudJournalsIfNeeded()
-            restorePendingCoverSyncIfNeeded()
-            retryPendingCoverSync()
-        }
-        .onChange(of: isSampleAuthorMode) { isEnabled in
             resetJournalSessionState()
-            if isEnabled {
-                loadSampleJournals()
-            } else if authStore.userID == nil {
-                loadSampleJournals()
-            } else if authStore.userID != nil {
-                chapters = DailyJournalData.allChapters()
-                loadCloudJournalsIfNeeded()
-                restorePendingCoverSyncIfNeeded()
-            }
+            reloadJournalsForCurrentMode(retriesCoverSync: true)
         }
         .onChange(of: scenePhase) { phase in
             guard phase == .active else {
                 return
             }
 
-            if usesSampleJournalContent {
-                loadSampleJournals()
-                return
-            }
-
-            guard authStore.userID != nil else {
-                return
-            }
-
-            chapters = DailyJournalData.allChapters()
-            loadCloudJournalsIfNeeded()
-            restorePendingCoverSyncIfNeeded()
-            retryPendingCoverSync()
+            reloadJournalsForCurrentMode(retriesCoverSync: true)
         }
         .preferredColorScheme(.light)
         .alert("Rename Journal", isPresented: isRenameAlertPresented) {
@@ -471,12 +481,18 @@ struct JournalView: View {
         showsJournalImageBackground && hasJournalPageBackground
     }
 
-    private var usesSampleJournalContent: Bool {
-        isSampleAuthorMode || authStore.userID == nil
+    private var isSampleAuthorMode: Bool {
+        contentMode.isSampleAuthoring
     }
 
+    private var usesSampleJournalContent: Bool {
+        contentMode.showsSampleContent
+    }
+
+    /// Whether journals on this screen belong to whoever is looking at them. Signed-out browsing is
+    /// reading someone else's demo pack, so nothing here is theirs to rearrange.
     private var canEditJournals: Bool {
-        isSampleAuthorMode || authStore.userID != nil
+        contentMode.canPersistUserContent || contentMode.isSampleAuthoring
     }
 
     private var journalSelectButton: some View {
@@ -498,6 +514,12 @@ struct JournalView: View {
 
     private var journalBackgroundButton: some View {
         Button {
+            // The chosen background is stored per account, so signed out it would be written into
+            // the anonymous scope and lost at the next sign-in.
+            guard signInGate.requireAccount(for: .customizeJournalCover, retry: { isShowingJournalBackgroundPicker = true }) else {
+                return
+            }
+
             isShowingJournalBackgroundPicker = true
         } label: {
             Image(systemName: hasJournalPageBackground ? "photo.fill.on.rectangle.fill" : "photo.on.rectangle")
@@ -695,7 +717,7 @@ struct JournalView: View {
                 }
                 .modifier(JournalDragModifier(
                     chapter: chapter,
-                    isEnabled: true,
+                    isEnabled: canEditJournals,
                     draggingJournalID: $draggingJournalID
                 ))
                 .onDrop(
@@ -704,7 +726,7 @@ struct JournalView: View {
                         chapter: chapter,
                         chapters: $chapters,
                         draggingJournalID: $draggingJournalID,
-                        isEnabled: true,
+                        isEnabled: canEditJournals,
                         onReorder: persistManualJournalOrder
                     )
                 )
@@ -767,12 +789,14 @@ struct JournalView: View {
             .listRowBackground(Color.homePageBackground)
             .listRowSeparatorTint(Color.storyInk.opacity(0.10))
             .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                Button {
-                    beginRenaming(chapter)
-                } label: {
-                    Label("Rename", systemImage: "pencil")
+                if canEditJournals {
+                    Button {
+                        beginRenaming(chapter)
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(Color.homeAccent)
                 }
-                .tint(Color.homeAccent)
             }
         }
         .onDelete(perform: deleteChapters)
@@ -850,11 +874,19 @@ struct JournalView: View {
     }
 
     private func beginRenaming(_ chapter: PrototypeChapter) {
+        guard signInGate.requireAccount(for: .editJournal) else {
+            return
+        }
+
         journalBeingRenamed = chapter
         renamedJournalTitle = chapter.title
     }
 
     private func beginCustomizing(_ chapter: PrototypeChapter) {
+        guard signInGate.requireAccount(for: .customizeJournalCover) else {
+            return
+        }
+
         journalBeingCustomized = refreshedChapter(chapter)
     }
 
@@ -1015,6 +1047,14 @@ struct JournalView: View {
     }
 
     private func handleCreateButtonTapped() {
+        // The alert is the write. Turning it away here rather than inside `createJournal()` is what
+        // keeps a signed-out visitor from typing a name into a dialog that was never going to keep
+        // it — and, before the gate existed, from having it written into `UserChapterStore` under
+        // the anonymous scope for the next account to inherit.
+        guard signInGate.requireAccount(for: .createJournal, retry: { isCreateJournalAlertPresented = true }) else {
+            return
+        }
+
         isCreateJournalAlertPresented = true
     }
 
@@ -1087,6 +1127,10 @@ struct JournalView: View {
     }
 
     private func requestDeleteJournals(_ journals: [PrototypeChapter]) {
+        guard signInGate.requireAccount(for: .deleteJournal) else {
+            return
+        }
+
         journalsPendingDeletion = journals
     }
 
@@ -1120,11 +1164,21 @@ struct JournalView: View {
     }
 
     private func moveChapters(from source: IndexSet, to destination: Int) {
+        guard canEditJournals else {
+            return
+        }
+
         chapters.move(fromOffsets: source, toOffset: destination)
         persistManualJournalOrder()
     }
 
     private func persistManualJournalOrder() {
+        // Last line of defence for the journal order: every affordance that reaches here is already
+        // disabled without an account, and none of them may write `UserChapterStore` anyway.
+        guard canEditJournals else {
+            return
+        }
+
         if isSampleAuthorMode {
             let orderedIDs = chapters.map(\.id)
             Task {
@@ -1223,7 +1277,7 @@ struct JournalView: View {
             onCreateEntryRequested: openFreshEntryFromJournalDetail,
             onChapterUpdated: updateChapterFromDetail,
             onOpenExistingEntry: openExistingEntryFromJournalDetail,
-            isSampleAuthorMode: isSampleAuthorMode
+            contentMode: contentMode
         ) { entry in
             guard let chapterIndex = chapters.firstIndex(where: { $0.id == chapter.id }) else {
                 return
@@ -1246,7 +1300,7 @@ struct JournalView: View {
         isOpeningEntryFromEntries = true
         isOpeningCompletedEntryFromEntries = isCompleted
         completedEntryOpenedStoryboardImage = storyboardImage
-        generatedStoryboards = GeneratedStoryboardStore.load()
+        generatedStoryboards = loadedStoryboardsForEntryOpening()
         activeDraftID = entry.id
         journalCreatePresentation = presentation
         pushJournalCreateEntryRoute()
@@ -1258,11 +1312,20 @@ struct JournalView: View {
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil
-        generatedStoryboards = GeneratedStoryboardStore.load()
+        generatedStoryboards = loadedStoryboardsForEntryOpening()
         journalEntryText = ""
         journalDraftStoryTitle = ""
         journalDraftStoryboardPhotos = Array(repeating: nil, count: 5)
         pushJournalCreateEntryRoute()
+    }
+
+    /// Signed-out browsing must not read the on-disk storyboard store at all. It resolves to the
+    /// `anonymous` scope, which is where a previous account's cache would land if a sign-out purge
+    /// had ever failed partway — and the samples are in memory anyway.
+    private func loadedStoryboardsForEntryOpening() -> [GeneratedStoryboard] {
+        usesSampleJournalContent && !isSampleAuthorMode
+            ? SampleContentStore.allStoryboards
+            : GeneratedStoryboardStore.load()
     }
 
     private var journalCreateEntryPage: some View {
@@ -1278,7 +1341,7 @@ struct JournalView: View {
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
             storyboardGenerationStatus: $storyboardGenerationStatus,
-            authoringMode: isSampleAuthorMode ? .sampleStudio : .user,
+            contentMode: contentMode,
             existingEntryStartsReadOnly: isOpeningEntryFromEntries,
             dismissCreate: {
                 popJournalCreateEntryRoute()
@@ -1374,6 +1437,29 @@ struct JournalView: View {
         journalFallbackCoverImageName(for: chapter, at: index)
     }
 
+    /// The one place that decides which library this screen is showing.
+    ///
+    /// `.loading` deliberately does nothing: the previous mode's journals stay on screen until the
+    /// session check settles, rather than the screen blanking and then filling twice.
+    private func reloadJournalsForCurrentMode(retriesCoverSync: Bool = false) {
+        guard contentMode.isResolved else {
+            return
+        }
+
+        if usesSampleJournalContent {
+            loadSampleJournals()
+            return
+        }
+
+        chapters = DailyJournalData.allChapters()
+        loadCloudJournalsIfNeeded()
+        restorePendingCoverSyncIfNeeded()
+
+        if retriesCoverSync {
+            retryPendingCoverSync()
+        }
+    }
+
     private func loadSampleJournals() {
         sampleJournalLoadTask?.cancel()
         sampleJournalLoadTask = Task {
@@ -1398,36 +1484,45 @@ struct JournalView: View {
             )
 
             await MainActor.run {
-                seedSampleDraftsForJournals(pack.entries)
-                let storyboardsByEntryID = sampleStoryboardsByMergingLocalFallbacks(
-                    remoteStoryboardsByEntryID: pack.storyboardsByEntryID,
-                    entries: pack.entries,
-                    repairsMissingRemote: isSampleAuthorMode
-                )
-                persistSampleStoryboardsForJournals(storyboardsByEntryID)
-                sampleJournalsByID = Dictionary(uniqueKeysWithValues: pack.journals.map { ($0.id, $0) })
-                chapters = pack.journals.map(sampleJournalChapter)
-                showsPrototypeData = true
-                editMode = .inactive
+                applySampleJournalPack(pack)
             }
         }
     }
 
-    private func sampleJournalChapter(from journal: SampleJournal) -> PrototypeChapter {
-        return PrototypeChapter(
-            id: journal.id,
-            title: journal.title,
-            subtitle: journal.subtitle ?? "Sample journal",
-            color: journal.colorHex.flatMap(Color.init(hex:)) ?? Color.storyPurple,
-            symbol: journal.symbol ?? "book.closed.fill",
-            coverImageName: journal.coverImageName,
-            remoteCover: journal.remoteCover,
-            kind: journal.kind == "storyboard" ? .storyboard : .journal,
-            isFavorite: journal.isFavorite,
-            createdAt: journal.createdAt,
-            updatedAt: journal.updatedAt,
-            entries: journal.entries.map(samplePrototypeEntry)
-        )
+    /// Signed-out browsing and sample authoring want the same journals on screen but must not share
+    /// a storage path.
+    ///
+    /// Authoring is a signed-in admin making real edits, so it keeps the round trip through the
+    /// on-disk stores it has always used — the entry editor writes drafts and storyboards there, and
+    /// `sampleStoryboardsByMergingLocalFallbacks` reads them back to show artwork that has been
+    /// generated but not yet uploaded.
+    ///
+    /// Browsing writes nothing. It hands the pack to ``SampleContentStore`` and the journal screens
+    /// read it from memory. That difference is the whole fix: the on-disk stores resolve to the
+    /// `anonymous` scope when signed out, and the anonymous scope is merged into whichever account
+    /// signs in next, so seeding the demo pack there was seeding it into a stranger's library.
+    @MainActor
+    private func applySampleJournalPack(_ pack: SampleStoryPack) {
+        if isSampleAuthorMode {
+            seededSampleDraftsToDisk = true
+            seedSampleDraftsForJournals(pack.entries)
+            let storyboardsByEntryID = sampleStoryboardsByMergingLocalFallbacks(
+                remoteStoryboardsByEntryID: pack.storyboardsByEntryID,
+                entries: pack.entries,
+                repairsMissingRemote: true
+            )
+            persistSampleStoryboardsForJournals(storyboardsByEntryID)
+        } else {
+            seededSampleDraftsToDisk = false
+            SampleContentStore.replace(with: pack)
+            sampleJournalEntryIDs = Set(SampleContentStore.orderedEntryIDs)
+            generatedStoryboards = SampleContentStore.allStoryboards
+        }
+
+        sampleJournalsByID = Dictionary(uniqueKeysWithValues: pack.journals.map { ($0.id, $0) })
+        chapters = pack.journals.map(SampleJournalDisplay.chapter(from:))
+        showsPrototypeData = true
+        editMode = .inactive
     }
 
     private func reconcileSampleJournalCovers(
@@ -1569,25 +1664,18 @@ struct JournalView: View {
     }
 
     private func removeSampleJournalDrafts() {
-        for entryID in sampleJournalEntryIDs {
-            CreateEntryDraftStore.delete(id: entryID)
+        // Only authoring ever put them on disk. Browsing's copies are in memory and go with the
+        // store, so deleting by ID here would be reaching into whatever scope is now active.
+        if seededSampleDraftsToDisk {
+            for entryID in sampleJournalEntryIDs {
+                CreateEntryDraftStore.delete(id: entryID)
+            }
+        } else {
+            SampleContentStore.clear()
         }
-        sampleJournalEntryIDs = []
-    }
 
-    private func samplePrototypeEntry(from entry: CreateEntryDraft) -> PrototypeEntry {
-        PrototypeEntry(
-            id: entry.id,
-            weekday: entry.date.formatted(.dateTime.weekday(.abbreviated)).uppercased(),
-            day: entry.date.formatted(.dateTime.day()),
-            title: entry.title.isEmpty ? "Untitled Sample" : entry.title,
-            body: entry.text,
-            richText: entry.richText,
-            time: entry.date.formatted(.dateTime.hour().minute()),
-            location: entry.location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : entry.location,
-            imageNames: [],
-            createdAt: entry.createdAt
-        )
+        seededSampleDraftsToDisk = false
+        sampleJournalEntryIDs = []
     }
 
     private func persistSampleStoryboardsForJournals(_ storyboardsByEntryID: [UUID: [GeneratedStoryboard]]) {
@@ -4597,8 +4685,12 @@ struct DaybookView: View {
     @Binding var selectedPage: StoryPage
     var embedsInNavigationStack = true
     var showsBottomNavigation = true
+    var contentMode: StorytopiaContentMode = .user
+
+    @EnvironmentObject private var signInGate: SignInGate
 
     @State private var chapters = DailyJournalData.allChapters()
+    @State private var sampleLoadTask: Task<Void, Never>?
     @State private var selectedTab: DaybookTab = .entries
     @State private var comicPageIndex = 0
     @State private var isComicReaderPresented = false
@@ -4625,9 +4717,17 @@ struct DaybookView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(embedsInNavigationStack ? .hidden : .visible, for: .navigationBar)
         .onAppear {
-            chapters = DailyJournalData.allChapters()
+            reloadChaptersForCurrentMode()
             comicPageIndex = clampedComicPageIndex(comicPageIndex)
             clampPreviewZoom()
+        }
+        .onChange(of: contentMode) { _ in
+            reloadChaptersForCurrentMode()
+            comicPageIndex = clampedComicPageIndex(comicPageIndex)
+        }
+        .onDisappear {
+            sampleLoadTask?.cancel()
+            sampleLoadTask = nil
         }
         .onChange(of: selectedTab) { newTab in
             clampPreviewZoom()
@@ -4653,6 +4753,49 @@ struct DaybookView: View {
                     accentColor: Color.homeAccent
                 )
             }
+        }
+    }
+
+    /// Daybook used to read `UserChapterStore` unconditionally, which meant a signed-out visitor got
+    /// a blank comic with no explanation. It browses the same sample pack as every other screen now.
+    private func reloadChaptersForCurrentMode() {
+        guard contentMode.isResolved else {
+            return
+        }
+
+        guard contentMode.showsSampleContent, !contentMode.isSampleAuthoring else {
+            sampleLoadTask?.cancel()
+            sampleLoadTask = nil
+            chapters = DailyJournalData.allChapters()
+            return
+        }
+
+        if !SampleContentStore.isEmpty {
+            chapters = sampleChaptersFromStore()
+        }
+
+        sampleLoadTask?.cancel()
+        sampleLoadTask = Task {
+            guard let pack = try? await SupabaseSampleStoryService().loadActivePack() else {
+                return
+            }
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            SampleContentStore.replace(with: pack)
+            chapters = pack.journals.map(SampleJournalDisplay.chapter(from:))
+        }
+    }
+
+    private func sampleChaptersFromStore() -> [PrototypeChapter] {
+        chapters.map { chapter in
+            var updated = chapter
+            updated.entries = SampleJournalDisplay.entries(
+                from: SampleContentStore.entries(ids: chapter.entries.map(\.id))
+            )
+            return updated
         }
     }
 
@@ -4733,6 +4876,10 @@ struct DaybookView: View {
             .accessibilityLabel("Choose month")
 
             Button {
+                guard signInGate.requireAccount(for: .createEntry, retry: { isShowingNewEntry = true }) else {
+                    return
+                }
+
                 isShowingNewEntry = true
             } label: {
                 Image(systemName: "plus")
@@ -4833,6 +4980,12 @@ struct DaybookView: View {
 
     private func addEntryToToday(_ entry: PrototypeEntry) {
         guard let chapter = chapters.first else {
+            return
+        }
+
+        // `StoryEntryStore` is account-scoped local storage. Without an account the write would land
+        // in the anonymous scope and be adopted by whoever signs in next.
+        guard signInGate.requireAccount(for: .createEntry) else {
             return
         }
 
@@ -5475,6 +5628,8 @@ private struct DaybookComicReaderView: View {
 }
 
 private struct JournalStoryboardComicReaderView: View {
+    @EnvironmentObject private var signInGate: SignInGate
+
     let storyboards: [GeneratedStoryboard]
     @Binding var currentPageIndex: Int
     let journalTitle: String
@@ -5630,6 +5785,10 @@ private struct JournalStoryboardComicReaderView: View {
                 }
 
                 Button {
+                    guard signInGate.requireAccount(for: .customizeJournalCover, retry: { isShowingCoverCustomization = true }) else {
+                        return
+                    }
+
                     isShowingCoverCustomization = true
                 } label: {
                     Label("Change Cover", systemImage: "photo.on.rectangle")
@@ -8798,7 +8957,7 @@ enum DailyJournalData {
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
-        isSampleAuthorMode: Bool = false,
+        contentMode: StorytopiaContentMode = .user,
         onAddEntry: @escaping (PrototypeEntry) -> Void
     ) -> some View {
         let datedChapter = dateTitledChapter(from: chapter, dayOffset: dayOffset)
@@ -8812,7 +8971,7 @@ enum DailyJournalData {
             onCreateEntryRequested: onCreateEntryRequested,
             onChapterUpdated: onChapterUpdated,
             onOpenExistingEntry: onOpenExistingEntry,
-            isSampleAuthorMode: isSampleAuthorMode,
+            contentMode: contentMode,
             onCreateStory: onAddEntry
         )
     }
@@ -9824,7 +9983,12 @@ struct EntriesView: View {
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
     @Binding var isOpeningEntryFromEntries: Bool
     @Binding var isOpeningCompletedEntryFromEntries: Bool
-    var isSampleAuthorMode = false
+    var contentMode: StorytopiaContentMode = .user
+    @EnvironmentObject private var signInGate: SignInGate
+
+    private var isSampleAuthorMode: Bool {
+        contentMode.isSampleAuthoring
+    }
 
     private let thumbnailRendererVersion = 12
     private let thumbnailRendererVersionKey = "StorytopiaEntryThumbnailRendererVersion"
@@ -9969,7 +10133,7 @@ struct EntriesView: View {
             .onChange(of: authStore.userID) { _ in
                 handleUserIDChange()
             }
-            .onChange(of: isSampleAuthorMode) { _ in
+            .onChange(of: contentMode) { _ in
                 handleSampleAuthorModeChange()
             }
             .onChange(of: selectedEntryTabRawValue) { _ in
@@ -10124,7 +10288,7 @@ struct EntriesView: View {
         AddEntryToJournalPage(
             selectedJournalTitle: $selectedEntriesJournalTitle,
             selectedJournalTitles: $selectedEntriesJournalTitles,
-            authoringMode: isSampleAuthorMode ? .sampleStudio : .user,
+            contentMode: contentMode,
             onSelect: { journalTitle in
                 addSelectedEntriesToJournals(Set<String>([journalTitle]))
             },
@@ -11153,6 +11317,20 @@ struct EntriesView: View {
     private func openSampleEntry(_ entry: CreateEntryDraft) {
         removeStaleSampleRecordsIfNeeded()
 
+        // Signed-out browsing reads the pack from memory, so there is nothing to stage on disk. The
+        // staging below exists only for sample authoring, whose editor round-trips through the local
+        // draft store — and it was the reason a sample entry left open at quit ended up in the next
+        // account's library.
+        if contentMode.showsSampleContent, !contentMode.isSampleAuthoring {
+            temporaryOpenedSampleEntryID = nil
+            openEntryItem(
+                .local(entry, cloudEntry: nil),
+                asCompleted: entry.status == JournalEntryStatus.completed.rawValue,
+                storyboardImage: sampleStoryboards(for: entry).first?.image
+            )
+            return
+        }
+
         let persistedSampleID = CreateEntryDraftStore.save(
             id: entry.id,
             title: entry.title,
@@ -11272,6 +11450,10 @@ struct EntriesView: View {
 
     private func removeStaleSampleRecordsIfNeeded() {
         guard !isSampleAuthorMode else {
+            return
+        }
+
+        guard contentMode.canPersistUserContent else {
             return
         }
 
@@ -11591,6 +11773,10 @@ struct EntriesView: View {
             return
         }
 
+        guard signInGate.requireAccount(for: .createEntry) else {
+            return
+        }
+
         isDuplicatingSelectedEntries = true
         entryDuplicateErrorMessage = nil
 
@@ -11887,11 +12073,14 @@ struct EntriesView: View {
     }
 
     private func requestDeleteEntry(_ entry: EntryDisplayItem) {
-        entriesPendingDeletion = [entry]
-        entryDeleteErrorMessage = nil
+        requestDeleteEntries([entry])
     }
 
     private func requestDeleteEntries(_ entries: [EntryDisplayItem]) {
+        guard signInGate.requireAccount(for: .deleteEntry) else {
+            return
+        }
+
         entriesPendingDeletion = entries
         entryDeleteErrorMessage = nil
     }
@@ -11937,6 +12126,10 @@ struct EntriesView: View {
     }
 
     private func beginRenaming(_ entry: CreateEntryDraft) {
+        guard signInGate.requireAccount(for: .editEntry) else {
+            return
+        }
+
         entryBeingRenamed = entry
         renamedEntryTitle = entryDisplayTitle(entry)
         entryRenameErrorMessage = nil
@@ -12096,12 +12289,16 @@ struct EntriesView: View {
             return
         }
 
+        // Signed out there is no order to keep: the list is the shared sample pack, and the local
+        // draft store it used to write into resolves to the anonymous scope.
+        guard contentMode.canPersistUserContent || contentMode.isSampleAuthoring else {
+            return
+        }
+
         applyManualEntryOrder(orderedIDs)
 
         if isSampleAuthorMode {
             persistManualSampleEntryOrder()
-        } else if authStore.userID == nil {
-            CreateEntryDraftStore.saveOrder(entries.map(\.id))
         } else {
             persistManualCloudEntryOrder()
         }
@@ -12443,6 +12640,11 @@ struct EntriesView: View {
 
             sampleEntries = pack.entries
             sampleStoryboardsByEntryID = pack.storyboardsByEntryID
+            if contentMode.showsSampleContent {
+                // Same pack the Journals tab browses. Sharing one in-memory copy is what keeps a
+                // sample entry openable from either screen without either of them writing to disk.
+                SampleContentStore.replace(with: pack)
+            }
             storeCurrentEntriesSessionSnapshot()
         }
     }
@@ -12457,6 +12659,12 @@ struct EntriesView: View {
     }
 
     private func refreshEntries(forceCloudReload: Bool = false) {
+        // A session still being checked is not a signed-out one. Falling through would clear the
+        // list and load samples over content that is about to come back.
+        guard contentMode.isResolved else {
+            return
+        }
+
         if isSampleAuthorMode {
             resetEntriesSessionState()
             entries = []
@@ -15151,6 +15359,7 @@ private struct PrototypeChapterDetailView: View {
     }
 
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var chapter: PrototypeChapter
@@ -15160,8 +15369,19 @@ private struct PrototypeChapterDetailView: View {
     let onCreateEntryRequested: ((CreateEntryPresentation) -> Void)?
     let onChapterUpdated: (PrototypeChapter) -> Void
     let onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)?
-    let isSampleAuthorMode: Bool
+    let contentMode: StorytopiaContentMode
     let entryDate: Date
+
+    private var isSampleAuthorMode: Bool {
+        contentMode.isSampleAuthoring
+    }
+
+    /// A sample journal belongs to the pack, not to the visitor, so it offers no "write the first
+    /// entry" button. Creating an entry is still one tap away on the Create tab, where the gate
+    /// explains itself.
+    private var allowsEntryCreation: Bool {
+        contentMode.canPersistUserContent || contentMode.isSampleAuthoring
+    }
     let presentation: Presentation
 
     @State private var selectedSection = "Media"
@@ -15392,7 +15612,7 @@ private struct PrototypeChapterDetailView: View {
         onCreateEntryRequested: ((CreateEntryPresentation) -> Void)? = nil,
         onChapterUpdated: @escaping (PrototypeChapter) -> Void = { _ in },
         onOpenExistingEntry: ((CreateEntryDraft, Bool, UIImage?, CreateEntryPresentation) -> Void)? = nil,
-        isSampleAuthorMode: Bool = false,
+        contentMode: StorytopiaContentMode = .user,
         onCreateStory: @escaping (PrototypeEntry) -> Void
     ) {
         let initialMembershipSnapshot = JournalDetailMembershipSnapshot.make(for: chapter)
@@ -15411,7 +15631,7 @@ private struct PrototypeChapterDetailView: View {
         self.onCreateEntryRequested = onCreateEntryRequested
         self.onChapterUpdated = onChapterUpdated
         self.onOpenExistingEntry = onOpenExistingEntry
-        self.isSampleAuthorMode = isSampleAuthorMode
+        self.contentMode = contentMode
         self.onCreateStory = onCreateStory
     }
 
@@ -15442,6 +15662,10 @@ private struct PrototypeChapterDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    guard signInGate.requireAccount(for: .customizeJournalCover, retry: { isShowingCoverCustomization = true }) else {
+                        return
+                    }
+
                     isShowingCoverCustomization = true
                 } label: {
                     ViewThatFits(in: .horizontal) {
@@ -15827,8 +16051,8 @@ private struct PrototypeChapterDetailView: View {
                         editMode: $editMode,
                         selectedEntryIDs: $selectedEntryIDs,
                         selectionBarAction: $journalDetailSelectionBarAction,
-                        isSampleAuthorMode: isSampleAuthorMode,
-                        allowsCreation: true,
+                        contentMode: contentMode,
+                        allowsCreation: allowsEntryCreation,
                         scrollViewportHeight: proxy.size.height,
                         onCreateEntry: {
                             openFreshEntryFromJournalDetail()
@@ -16460,6 +16684,10 @@ private struct PrototypeChapterDetailView: View {
     }
 
     private func deleteEntry(_ entry: PrototypeEntry) {
+        guard signInGate.requireAccount(for: .deleteEntry) else {
+            return
+        }
+
         chapter.entries.removeAll { $0.id == entry.id }
         StoryEntryStore.delete(entry, from: chapter.title)
         DeletedSampleEntryStore.add(entry, in: chapter.title)
@@ -16653,9 +16881,14 @@ private struct PrototypeChapterDetailView: View {
 
     @MainActor
     private func loadMediaStoryboards(clientEntryIDs: Set<UUID>) async {
+        // Signed-out browsing has no on-disk storyboards of its own, and the ones that would be
+        // there belong to the `anonymous` scope rather than to the pack.
+        let sourceStoryboards = contentMode.showsSampleContent && !contentMode.isSampleAuthoring
+            ? SampleContentStore.storyboards(clientEntryIDs: clientEntryIDs)
+            : GeneratedStoryboardStore.load(clientEntryIDs: clientEntryIDs)
         let localStoryboards = storyboardsForMedia(
             clientEntryIDs: clientEntryIDs,
-            in: GeneratedStoryboardStore.load(clientEntryIDs: clientEntryIDs)
+            in: sourceStoryboards
         )
         mediaStoryboards = cardSizedMediaStoryboards(localStoryboards)
         updateDisplayedMediaStoryboardCount()
@@ -17005,13 +17238,24 @@ private enum JournalDetailSelectionBarAction {
 
 private struct JournalDetailEntryBrowser: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var signInGate: SignInGate
 
     let chapter: PrototypeChapter
     @Binding var editMode: EditMode
     @Binding var selectedEntryIDs: Set<UUID>
     @Binding var selectionBarAction: JournalDetailSelectionBarAction?
-    let isSampleAuthorMode: Bool
+    let contentMode: StorytopiaContentMode
     let allowsCreation: Bool
+
+    private var isSampleAuthorMode: Bool {
+        contentMode.isSampleAuthoring
+    }
+
+    /// Signed-out browsing reads the pack from memory. Sample authoring and signed-in users keep
+    /// reading the on-disk stores, which is where their entries actually live.
+    private var readsSampleContentFromMemory: Bool {
+        contentMode.showsSampleContent && !contentMode.isSampleAuthoring
+    }
     let scrollViewportHeight: CGFloat
     let onCreateEntry: () -> Void
     let onOpenEntry: (CreateEntryDraft, Bool, UIImage?) -> Void
@@ -17152,7 +17396,7 @@ private struct JournalDetailEntryBrowser: View {
                 AddEntryToJournalPage(
                     selectedJournalTitle: $selectedEntriesJournalTitle,
                     selectedJournalTitles: $selectedEntriesJournalTitles,
-                    authoringMode: isSampleAuthorMode ? .sampleStudio : .user,
+                    contentMode: contentMode,
                     onSelect: { journalTitle in
                         addSelectedEntriesToJournals(Set([journalTitle]))
                     },
@@ -17207,23 +17451,26 @@ private struct JournalDetailEntryBrowser: View {
         }
     }
 
+    @ViewBuilder
     private var editSelectionButton: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                if editMode == .active {
-                    editMode = .inactive
-                    selectedEntryIDs = []
-                } else {
-                    editMode = .active
+        if allowsCreation {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if editMode == .active {
+                        editMode = .inactive
+                        selectedEntryIDs = []
+                    } else {
+                        editMode = .active
+                    }
                 }
+            } label: {
+                Text(editMode == .active ? "Done" : "Edit")
             }
-        } label: {
-            Text(editMode == .active ? "Done" : "Edit")
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(Color.homeAccent)
+            .buttonStyle(.plain)
+            .accessibilityLabel(editMode == .active ? "Done editing entries" : "Edit entries")
         }
-        .font(.system(size: 14, weight: .bold))
-        .foregroundStyle(Color.homeAccent)
-        .buttonStyle(.plain)
-        .accessibilityLabel(editMode == .active ? "Done editing entries" : "Edit entries")
     }
 
     private var layoutSwitcher: some View {
@@ -17589,9 +17836,13 @@ private struct JournalDetailEntryBrowser: View {
         self.membershipSnapshot = membershipSnapshot
 
         let memberIDs = Array(membershipSnapshot.memberIDs)
-        let loadedLocalEntries = CreateEntryDraftStore.load(ids: memberIDs, includeMedia: false)
+        let loadedLocalEntries = readsSampleContentFromMemory
+            ? SampleContentStore.entries(ids: memberIDs)
+            : CreateEntryDraftStore.load(ids: memberIDs, includeMedia: false)
         localEntries = loadedLocalEntries
-        let localStoryboards = GeneratedStoryboardStore.load(clientEntryIDs: membershipSnapshot.memberIDs)
+        let localStoryboards = readsSampleContentFromMemory
+            ? SampleContentStore.storyboards(clientEntryIDs: membershipSnapshot.memberIDs)
+            : GeneratedStoryboardStore.load(clientEntryIDs: membershipSnapshot.memberIDs)
         completedStoryboards = localStoryboards.map { storyboard in
             GeneratedStoryboard(
                 id: storyboard.id,
@@ -18113,6 +18364,10 @@ private struct JournalDetailEntryBrowser: View {
             return
         }
 
+        guard signInGate.requireAccount(for: .editEntry) else {
+            return
+        }
+
         selectedItems.forEach { item in
             let entry = entryForDisplay(item).prototypeEntry()
             journalTitles.sorted().forEach { journalTitle in
@@ -18133,12 +18388,20 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private func requestDeleteSelectedEntries() {
+        guard signInGate.requireAccount(for: .deleteEntry) else {
+            return
+        }
+
         entriesPendingDeletion = selectedItems
     }
 
     private func duplicateSelectedEntries() {
         let itemsToDuplicate = selectedItems
         guard !itemsToDuplicate.isEmpty, !isDuplicatingSelectedEntries else {
+            return
+        }
+
+        guard signInGate.requireAccount(for: .createEntry) else {
             return
         }
 

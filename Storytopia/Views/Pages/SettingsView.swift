@@ -204,6 +204,13 @@ private struct SettingsExtraView: View {
     @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @State private var isResettingGenerationCredits = false
 
+    private var contentMode: StorytopiaContentMode {
+        StorytopiaContentMode(
+            status: authStore.status,
+            isSampleAuthorModeEnabled: isSampleAuthorModeEnabled
+        )
+    }
+
     var body: some View {
         List {
             Section("Tests") {
@@ -272,7 +279,8 @@ private struct SettingsExtraView: View {
                     DaybookView(
                         selectedPage: $selectedPage,
                         embedsInNavigationStack: false,
-                        showsBottomNavigation: false
+                        showsBottomNavigation: false,
+                        contentMode: contentMode
                     )
                     .enableInteractivePopGesture()
                 }
@@ -397,7 +405,7 @@ private struct SampleStudioView: View {
                     completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                     isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
                     storyboardGenerationStatus: $storyboardGenerationStatus,
-                    authoringMode: .sampleStudio,
+                    contentMode: .sampleAuthoring,
                     dismissCreate: {
                         closeCreateAndRefresh()
                     }
