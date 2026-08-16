@@ -2971,19 +2971,58 @@ private struct JournalStoryboardCoverCandidate: Identifiable {
     }
 }
 
+/// Single source of truth for which cover is selected in the journal cover picker.
+/// Color / image / storyboard / Unsplash are mutually exclusive — never independently "selected".
+private enum JournalCustomizationCoverSource: Equatable {
+    case color
+    case storyboard(id: UUID?)
+    case image(name: String)
+    case unsplash(JournalRemoteCover)
+
+    static func resolving(
+        remoteCover: JournalRemoteCover?,
+        coverImageName: String?,
+        storedCoverImage: UIImage?,
+        storyboardCandidates: [JournalStoryboardCoverCandidate]
+    ) -> Self {
+        if let remoteCover {
+            return .unsplash(remoteCover)
+        }
+        if let coverImageName, !coverImageName.isEmpty {
+            return .image(name: coverImageName)
+        }
+        if let storedCoverImage {
+            let matchedID = Self.matchingStoryboardID(for: storedCoverImage, in: storyboardCandidates)
+            return .storyboard(id: matchedID)
+        }
+        return .color
+    }
+
+    private static func matchingStoryboardID(
+        for image: UIImage,
+        in candidates: [JournalStoryboardCoverCandidate]
+    ) -> UUID? {
+        let matches = candidates.filter { candidate in
+            abs(candidate.image.size.width - image.size.width) < 0.5
+                && abs(candidate.image.size.height - image.size.height) < 0.5
+        }
+        guard matches.count == 1 else {
+            return nil
+        }
+        return matches[0].id
+    }
+}
+
 private struct JournalCustomizationSheet: View {
     let chapter: PrototypeChapter
     let initialStoryboardCovers: [JournalStoryboardCoverCandidate]
     let onSave: (JournalCustomization) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedColorHex: String
-    @State private var selectedCoverImageName: String?
-    @State private var selectedRemoteCover: JournalRemoteCover?
+    @State private var coverSource: JournalCustomizationCoverSource
     @State private var selectedStoredCoverImage: UIImage?
-    @State private var selectedStoryboardCoverID: UUID?
     @State private var storyboardCoverCandidates: [JournalStoryboardCoverCandidate]
     @State private var isLoadingStoryboardCovers = false
-    @State private var clearsStoredCover = false
     @State private var unsplashQuery: String
     @State private var unsplashPhotos: [UnsplashCoverPhoto] = []
     @State private var unsplashResultsCache: [String: [UnsplashCoverPhoto]] = [:]
@@ -3002,10 +3041,22 @@ private struct JournalCustomizationSheet: View {
         self.onSave = onSave
         let initialColorHex = JournalColorOption.hexString(for: chapter.color)
         let initialStoredCoverImage = JournalCoverStore.image(for: chapter)
+        let initialCoverSource = JournalCustomizationCoverSource.resolving(
+            remoteCover: chapter.remoteCover,
+            coverImageName: chapter.coverImageName,
+            storedCoverImage: initialStoredCoverImage,
+            storyboardCandidates: initialStoryboardCovers
+        )
         _selectedColorHex = State(initialValue: initialColorHex)
-        _selectedCoverImageName = State(initialValue: chapter.coverImageName)
-        _selectedRemoteCover = State(initialValue: chapter.remoteCover)
-        _selectedStoredCoverImage = State(initialValue: initialStoredCoverImage)
+        _coverSource = State(initialValue: initialCoverSource)
+        _selectedStoredCoverImage = State(
+            initialValue: {
+                if case .storyboard = initialCoverSource {
+                    return initialStoredCoverImage
+                }
+                return nil
+            }()
+        )
         _storyboardCoverCandidates = State(initialValue: initialStoryboardCovers)
         _unsplashQuery = State(initialValue: "")
     }
@@ -3081,6 +3132,34 @@ private struct JournalCustomizationSheet: View {
         Color(hex: selectedColorHex) ?? chapter.color
     }
 
+    private var selectedCoverImageName: String? {
+        if case .image(let name) = coverSource {
+            return name
+        }
+        return nil
+    }
+
+    private var selectedRemoteCover: JournalRemoteCover? {
+        if case .unsplash(let remoteCover) = coverSource {
+            return remoteCover
+        }
+        return nil
+    }
+
+    private var selectedStoryboardCoverID: UUID? {
+        if case .storyboard(let id) = coverSource {
+            return id
+        }
+        return nil
+    }
+
+    private var isColorCoverSelected: Bool {
+        if case .color = coverSource {
+            return true
+        }
+        return false
+    }
+
     private var coverImageCandidates: [String] {
         var seen = Set<String>()
         return chapter.entries
@@ -3137,7 +3216,7 @@ private struct JournalCustomizationSheet: View {
                             .fill(option.color)
                             .frame(width: 42, height: 42)
                             .overlay {
-                                if selectedColorHex == option.hex {
+                                if isColorCoverSelected, selectedColorHex == option.hex {
                                     Image(systemName: "checkmark")
                                         .font(.system(size: 15, weight: .heavy))
                                         .foregroundStyle(.white)
@@ -3187,8 +3266,6 @@ private struct JournalCustomizationSheet: View {
                             selectStoryboardCover(candidate)
                         } label: {
                             let isSelected = selectedStoryboardCoverID == candidate.id
-                                && selectedRemoteCover == nil
-                                && selectedCoverImageName == nil
 
                             CoverPhotoTile(isSelected: isSelected) {
                                 Image(uiImage: candidate.image)
@@ -3211,8 +3288,6 @@ private struct JournalCustomizationSheet: View {
                             selectStoryboardCoverImage(named: imageName)
                         } label: {
                             let isSelected = selectedCoverImageName == imageName
-                                && selectedRemoteCover == nil
-                                && selectedStoryboardCoverID == nil
 
                             CoverPhotoTile(isSelected: isSelected) {
                                 Image(imageName)
@@ -3362,14 +3437,41 @@ private struct JournalCustomizationSheet: View {
     }
 
     private func saveCurrentSelection() {
-        let remoteCover = selectedRemoteCover
+        let coverImageName: String?
+        let remoteCover: JournalRemoteCover?
+        let storedCoverImage: UIImage?
+        let clearsStoredCover: Bool
+
+        switch coverSource {
+        case .color:
+            coverImageName = nil
+            remoteCover = nil
+            storedCoverImage = nil
+            clearsStoredCover = true
+        case .storyboard:
+            coverImageName = nil
+            remoteCover = nil
+            storedCoverImage = selectedStoredCoverImage
+            clearsStoredCover = false
+        case .image(let name):
+            coverImageName = name
+            remoteCover = nil
+            storedCoverImage = nil
+            clearsStoredCover = true
+        case .unsplash(let cover):
+            coverImageName = nil
+            remoteCover = cover
+            storedCoverImage = nil
+            clearsStoredCover = true
+        }
+
         onSave(
             JournalCustomization(
                 chapterID: chapter.id,
                 color: selectedColor,
-                coverImageName: selectedCoverImageName,
+                coverImageName: coverImageName,
                 remoteCover: remoteCover,
-                storedCoverImage: selectedStoredCoverImage,
+                storedCoverImage: storedCoverImage,
                 clearsStoredCover: clearsStoredCover
             )
         )
@@ -3426,11 +3528,8 @@ private struct JournalCustomizationSheet: View {
 
         withTransaction(transaction) {
             selectedColorHex = option.hex
-            selectedCoverImageName = nil
-            selectedRemoteCover = nil
+            coverSource = .color
             selectedStoredCoverImage = nil
-            selectedStoryboardCoverID = nil
-            clearsStoredCover = true
         }
     }
 
@@ -3439,11 +3538,8 @@ private struct JournalCustomizationSheet: View {
         transaction.disablesAnimations = true
 
         withTransaction(transaction) {
-            selectedCoverImageName = imageName
-            selectedRemoteCover = nil
+            coverSource = .image(name: imageName)
             selectedStoredCoverImage = nil
-            selectedStoryboardCoverID = nil
-            clearsStoredCover = true
         }
     }
 
@@ -3452,11 +3548,8 @@ private struct JournalCustomizationSheet: View {
         transaction.disablesAnimations = true
 
         withTransaction(transaction) {
-            selectedCoverImageName = nil
-            selectedRemoteCover = nil
+            coverSource = .storyboard(id: candidate.id)
             selectedStoredCoverImage = candidate.image
-            selectedStoryboardCoverID = candidate.id
-            clearsStoredCover = false
         }
     }
 
@@ -3465,17 +3558,16 @@ private struct JournalCustomizationSheet: View {
         transaction.disablesAnimations = true
 
         withTransaction(transaction) {
-            selectedCoverImageName = nil
             selectedStoredCoverImage = nil
-            selectedStoryboardCoverID = nil
-            clearsStoredCover = true
-            selectedRemoteCover = JournalRemoteCover(
-                source: .unsplash,
-                imageURL: photo.imageURL,
-                thumbnailURL: photo.thumbnailURL,
-                attributionName: photo.attributionName,
-                attributionURL: photo.attributionURL,
-                downloadLocation: photo.downloadLocation
+            coverSource = .unsplash(
+                JournalRemoteCover(
+                    source: .unsplash,
+                    imageURL: photo.imageURL,
+                    thumbnailURL: photo.thumbnailURL,
+                    attributionName: photo.attributionName,
+                    attributionURL: photo.attributionURL,
+                    downloadLocation: photo.downloadLocation
+                )
             )
         }
     }
@@ -3502,6 +3594,7 @@ private struct JournalCustomizationSheet: View {
                 .sorted { $0.createdAt > $1.createdAt }
 
             guard !matchingRows.isEmpty else {
+                resolveStoryboardCoverSelectionIfNeeded(in: storyboardCoverCandidates)
                 return
             }
 
@@ -3532,8 +3625,27 @@ private struct JournalCustomizationSheet: View {
 
             GeneratedStoryboardStore.save(persistedStoryboards)
             storyboardCoverCandidates = loadedCandidates.sorted { $0.createdAt > $1.createdAt }
+            resolveStoryboardCoverSelectionIfNeeded(in: storyboardCoverCandidates)
         } catch {
             return
+        }
+    }
+
+    private func resolveStoryboardCoverSelectionIfNeeded(in candidates: [JournalStoryboardCoverCandidate]) {
+        guard case .storyboard(let selectedID) = coverSource, selectedID == nil else {
+            return
+        }
+        guard let selectedStoredCoverImage else {
+            return
+        }
+        let resolved = JournalCustomizationCoverSource.resolving(
+            remoteCover: nil,
+            coverImageName: nil,
+            storedCoverImage: selectedStoredCoverImage,
+            storyboardCandidates: candidates
+        )
+        if case .storyboard(let id) = resolved, id != nil {
+            coverSource = resolved
         }
     }
 }
