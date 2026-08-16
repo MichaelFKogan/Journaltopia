@@ -27,6 +27,14 @@ enum StoryboardGenerationTarget {
     }
 }
 
+/// What a generation request came back with. Real user entries are fire-and-poll now: the function
+/// reserves the row and answers immediately, so there is no image to hand back yet — only the id of
+/// the generation to reconcile later. Sample Studio still runs synchronously and returns its result.
+enum StoryboardGenerationDispatch {
+    case pending(PendingStoryboardGeneration)
+    case completed(StoryboardGenerationResult)
+}
+
 /// The storyboard the Edge Function generated, stored, and recorded. Callers adopt this row instead
 /// of uploading and inserting their own copy of the same image.
 struct StoryboardGenerationResult {
@@ -83,6 +91,14 @@ struct OpenAIImageGenerationService {
         let panelLayout: String?
         let isPrimary: Bool
         let createdAt: String?
+        /// Absent from the Sample Studio function, which still answers only when it has finished.
+        let generationStatus: String?
+
+        /// The image exists only once the row says so. Anything non-terminal means the server has
+        /// accepted the job and will finish it after this response.
+        var isStillGenerating: Bool {
+            generationStatus == "pending" || generationStatus == "processing"
+        }
     }
 
     private struct GenerateStoryboardErrorResponse: Decodable {
@@ -99,7 +115,7 @@ struct OpenAIImageGenerationService {
         quality: OpenAIImageGenerationQuality,
         images: [UIImage],
         characters: [EntryCharacter] = []
-    ) async throws -> StoryboardGenerationResult {
+    ) async throws -> StoryboardGenerationDispatch {
         let references = orderedGenerationReferences(characters: characters, originalImages: images)
         let prompt = makePrompt(
             title: title,
@@ -136,13 +152,25 @@ struct OpenAIImageGenerationService {
                 accessToken: session.accessToken
             )
 
+            if response.isStillGenerating {
+                // Nothing is awaited from here. The function read the reference images before it
+                // answered and removes them itself once the job is done, so this path leaves both
+                // the staging files and the generation to the server.
+                return .pending(
+                    PendingStoryboardGeneration(
+                        id: response.storyboardID,
+                        clientEntryID: response.clientEntryID ?? clientEntryID
+                    )
+                )
+            }
+
             let image = try await downloadStoryboard(
                 storagePath: response.storagePath,
                 bucketName: target.storyboardBucketName
             )
             await removeReferenceImages(referenceImagePaths)
 
-            return StoryboardGenerationResult(
+            return .completed(StoryboardGenerationResult(
                 storyboardID: response.storyboardID,
                 clientEntryID: response.clientEntryID ?? response.sampleEntryID ?? clientEntryID,
                 storagePath: response.storagePath,
@@ -152,7 +180,7 @@ struct OpenAIImageGenerationService {
                 isPrimary: response.isPrimary,
                 createdAt: Self.timestamp(from: response.createdAt),
                 image: image
-            )
+            ))
         } catch {
             await removeReferenceImages(referenceImagePaths)
             throw error

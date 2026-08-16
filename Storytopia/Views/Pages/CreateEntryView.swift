@@ -1762,6 +1762,7 @@ struct CreateEntryView: View {
     var onJournalEntryCreated: (String, PrototypeEntry) -> Void = { _, _ in }
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
 
     @State private var selectedArtStyle = CreateEntryView.defaultArtStyle
     @AppStorage("StorytopiaImageGenerationQuality") private var selectedImageGenerationQualityRawValue = OpenAIImageGenerationQuality.standard.rawValue
@@ -2074,6 +2075,18 @@ struct CreateEntryView: View {
             if case .unavailable(let message) = state {
                 speechRecognitionAlertMessage = message
             }
+        }
+        // The generation this page started is finished by the server and reconciled by the monitor,
+        // whether or not the page is still open. These two keep the page in step when it is.
+        .onReceive(pendingStoryboardMonitor.$restoredStoryboard.compactMap { $0 }) { storyboard in
+            adoptReconciledStoryboard(storyboard)
+        }
+        .onReceive(pendingStoryboardMonitor.$status.compactMap { $0 }) { status in
+            guard status.kind == .failed else {
+                return
+            }
+
+            adoptReconciledFailure(status)
         }
         .alert(
             "Dictation Unavailable",
@@ -2654,6 +2667,15 @@ struct CreateEntryView: View {
             return
         }
 
+        // A generation that survived a relaunch is still running even though this page is new. Show
+        // it rather than starting — and paying for — a second one for the same entry.
+        if let activeDraftID, pendingStoryboardMonitor.hasPendingGeneration(for: activeDraftID) {
+            isGeneratingStoryboard = true
+            storyboardGenerationPhase = .generating
+            isShowingStoryboardGenerationProgress = true
+            return
+        }
+
         let journalTitle = selectedEntryJournalTitle
 
         guard let generationPayload = makeEntryDraftSavePayload(forceSave: true) else {
@@ -2751,8 +2773,8 @@ struct CreateEntryView: View {
                     )
                 }
 
-                print("[Storytopia] Calling OpenAI.")
-                let generation = try await OpenAIImageGenerationService().generateStoryboard(
+                print("[Storytopia] Requesting storyboard generation.")
+                let dispatch = try await OpenAIImageGenerationService().generateStoryboard(
                     clientEntryID: prepareResult.localDraftID,
                     target: authoringMode.isSampleStudio ? .sampleStudio : .userEntry,
                     title: storyTitle,
@@ -2763,7 +2785,33 @@ struct CreateEntryView: View {
                     images: photoImages,
                     characters: entryCharacters
                 )
-                print("[Storytopia] OpenAI response received.")
+
+                // A real entry's generation now belongs to the server. Nothing below is awaited for
+                // it: the pending id is written to disk, the monitor takes over, and this page is
+                // free to be closed, backgrounded, or killed.
+                if case .pending(let pendingGeneration) = dispatch {
+                    print("[Storytopia] Storyboard generation accepted: \(pendingGeneration.id).")
+
+                    await MainActor.run {
+                        // The journal link does not depend on the image, so it is written now rather
+                        // than at completion, which may happen in a different session entirely.
+                        linkEntryToJournalIfNeeded(
+                            journalTitle: journalTitle,
+                            clientEntryID: prepareResult.localDraftID
+                        )
+                        pendingStoryboardMonitor.track(pendingGeneration)
+                        storyboardGenerationPhase = .generating
+                    }
+
+                    await refreshGenerationCreditBalance()
+                    return
+                }
+
+                guard case .completed(let generation) = dispatch else {
+                    return
+                }
+
+                print("[Storytopia] Storyboard generation completed in-session.")
 
                 await MainActor.run {
                     storyboardGenerationPhase = .savingResult
@@ -2835,16 +2883,10 @@ struct CreateEntryView: View {
                     textAlignmentRawValue: generationPayload.textAlignmentRawValue
                 )
 
-                if let journalTitle,
-                   let journalEntry = currentJournalEntry(id: prepareResult.localDraftID) {
-                    StoryEntryStore.upsert(journalEntry, to: journalTitle, syncsToCloud: false)
-                    onJournalEntryCreated(journalTitle, journalEntry)
-                    EntryJournalLinkStore.save(
-                        journalTitle: journalTitle,
-                        journalEntryID: journalEntry.id,
-                        for: prepareResult.localDraftID
-                    )
-                }
+                linkEntryToJournalIfNeeded(
+                    journalTitle: journalTitle,
+                    clientEntryID: prepareResult.localDraftID
+                )
 
                 let completionResult: EntrySaveResult
                 if authoringMode.isSampleStudio {
@@ -2915,6 +2957,65 @@ struct CreateEntryView: View {
 
     private func refreshGenerationCreditBalance() async {
         await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+    }
+
+    /// Paperclips the entry into its journal. Called at request time for fire-and-poll generations,
+    /// because it depends on the entry rather than on the artwork, and the artwork may not arrive
+    /// until a later session.
+    private func linkEntryToJournalIfNeeded(journalTitle: String?, clientEntryID: UUID) {
+        guard
+            let journalTitle,
+            let journalEntry = currentJournalEntry(id: clientEntryID)
+        else {
+            return
+        }
+
+        StoryEntryStore.upsert(journalEntry, to: journalTitle, syncsToCloud: false)
+        onJournalEntryCreated(journalTitle, journalEntry)
+        EntryJournalLinkStore.save(
+            journalTitle: journalTitle,
+            journalEntryID: journalEntry.id,
+            for: clientEntryID
+        )
+    }
+
+    /// A storyboard the monitor reconciled. The image, the local store, and the entry's completed
+    /// status were all written by the pending-generation service; what is left is this page catching
+    /// up to them — but only when the generation belongs to the entry currently open.
+    private func adoptReconciledStoryboard(_ storyboard: GeneratedStoryboard) {
+        guard
+            let clientEntryID = storyboard.clientEntryID,
+            clientEntryID == activeDraftID
+        else {
+            return
+        }
+
+        generatedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: generatedStoryboards)
+        currentEntryStatus = .completed
+        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+        loadedDraftSnapshot = currentDraftSnapshot(id: clientEntryID)
+        toolbarSavedSnapshot = loadedDraftSnapshot
+        storyboardGenerationPhase = .completed
+        isGeneratingStoryboard = false
+        isShowingStoryboardGenerationProgress = false
+        addedJournalTitle = selectedEntryJournalTitle
+        isOpeningCompletedEntryFromEntries = true
+        completedEntryOpenedStoryboardImage = storyboard.image
+        selectedEntryStoryboardIndex = 0
+        isShowingEntryOptionsPage = true
+    }
+
+    /// The server declared this generation failed and settled its credits. The page stops waiting and
+    /// shows the reason; the banner carries the refund wording.
+    private func adoptReconciledFailure(_ failedStatus: StoryboardGenerationGlobalStatus) {
+        guard failedStatus.entryID == activeDraftID else {
+            return
+        }
+
+        generationErrorMessage = failedStatus.message
+        storyboardGenerationPhase = .failed
+        isGeneratingStoryboard = false
+        isShowingStoryboardGenerationProgress = false
     }
 
     private func setStoryboardGenerationGlobalStatus(

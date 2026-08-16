@@ -5,12 +5,15 @@
 //  Created by Mike Kogan on 5/28/26.
 //
 
+import Combine
 import SwiftUI
 import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedPage: StoryPage = .home
     @State private var pageBehindCreate: StoryPage = .home
@@ -84,12 +87,37 @@ struct ContentView: View {
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
             reloadScopedLocalState()
+
+            // Launch is the first of the two moments a generation can be picked back up. Anything
+            // still running on the server from a previous session resumes being watched here.
+            pendingStoryboardMonitor.attach(creditStore: generationCreditStore)
+            pendingStoryboardMonitor.resume(isSignedIn: authStore.userID != nil)
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else {
+                pendingStoryboardMonitor.suspend()
+                return
+            }
+
+            pendingStoryboardMonitor.resume(isSignedIn: authStore.userID != nil)
+        }
+        .onReceive(pendingStoryboardMonitor.$status.compactMap { $0 }) { restoredStatus in
+            // The monitor owns the banner for anything it is watching, including generations this
+            // session never saw start.
+            withAnimation(.snappy(duration: 0.24)) {
+                storyboardGenerationStatus = restoredStatus
+            }
+        }
+        .onReceive(pendingStoryboardMonitor.$restoredStoryboard.compactMap { $0 }) { storyboard in
+            generatedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: generatedStoryboards)
+            pendingStoryboardMonitor.consumeRestoredStoryboard()
         }
         .onChange(of: authStore.userID) { userID in
             Task {
                 await generationCreditStore.refresh(isSignedIn: userID != nil)
             }
             reloadScopedLocalState()
+            pendingStoryboardMonitor.resume(isSignedIn: userID != nil)
         }
         .onChange(of: selectedPage) { _ in
             endWindowEditing()
@@ -308,6 +336,8 @@ struct ContentView: View {
                 openedStoryboardGenerationImage = image
             }
         case .dismiss:
+            // Both writers have to forget it, or the monitor's next tick puts it straight back.
+            pendingStoryboardMonitor.dismissStatus()
             withAnimation(.snappy(duration: 0.24)) {
                 storyboardGenerationStatus = nil
             }
@@ -444,7 +474,11 @@ private struct StoryboardGenerationBottomBanner: View {
                     onAction(.open)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-                .accessibilityLabel(status.title)
+                .accessibilityLabel(
+                    status.isRestored && status.kind == .running
+                        ? "\(status.title), still running on Storytopia's servers"
+                        : status.title
+                )
                 .accessibilityHint(status.kind == .completed ? "Opens the generated storyboard image" : status.message)
             }
         }
@@ -609,5 +643,6 @@ struct ContentView_Previews: PreviewProvider {
         ContentView()
             .environmentObject(SupabaseAuthStore.preview)
             .environmentObject(GenerationCreditStore())
+            .environmentObject(PendingStoryboardGenerationMonitor())
     }
 }

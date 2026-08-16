@@ -130,8 +130,10 @@ private struct EntryStoryboardPayload: Encodable, Sendable {
     let panelLayout: String?
     let prompt: String?
     let isPrimary: Bool
-    let generationStatus: String
 
+    // `generation_status` is deliberately absent. The generation lifecycle belongs to the server —
+    // the app is not granted the column — and a storyboard written through this payload is an
+    // already-finished image being recorded or duplicated, which is exactly the column default.
     enum CodingKeys: String, CodingKey {
         case id
         case userID = "user_id"
@@ -142,7 +144,6 @@ private struct EntryStoryboardPayload: Encodable, Sendable {
         case panelLayout = "panel_layout"
         case prompt
         case isPrimary = "is_primary"
-        case generationStatus = "generation_status"
     }
 }
 
@@ -355,8 +356,7 @@ struct SupabaseStoryboardService {
                         generationQuality: storyboard.generationQuality,
                         panelLayout: storyboard.panelLayout.flatMap { trimmedOrNil($0) },
                         prompt: nil,
-                        isPrimary: storyboard.isPrimary,
-                        generationStatus: "completed"
+                        isPrimary: storyboard.isPrimary
                     ),
                     onConflict: "id"
                 )

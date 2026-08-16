@@ -15799,6 +15799,7 @@ private struct PrototypeChapterDetailView: View {
                         editMode: $editMode,
                         selectedEntryIDs: $selectedEntryIDs,
                         selectionBarAction: $journalDetailSelectionBarAction,
+                        isSampleAuthorMode: isSampleAuthorMode,
                         allowsCreation: true,
                         scrollViewportHeight: proxy.size.height,
                         onCreateEntry: {
@@ -16981,6 +16982,7 @@ private struct JournalDetailEntryBrowser: View {
     @Binding var editMode: EditMode
     @Binding var selectedEntryIDs: Set<UUID>
     @Binding var selectionBarAction: JournalDetailSelectionBarAction?
+    let isSampleAuthorMode: Bool
     let allowsCreation: Bool
     let scrollViewportHeight: CGFloat
     let onCreateEntry: () -> Void
