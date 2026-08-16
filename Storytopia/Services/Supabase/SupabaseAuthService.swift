@@ -80,14 +80,29 @@ final class SupabaseAuthStore: ObservableObject {
     func signOut() async {
         errorMessage = nil
 
+        var signOutError: Error?
         do {
             try await client.auth.signOut()
-            StorytopiaLocalAccountScope.setActiveUserID(nil)
-            currentUser = nil
-            status = .signedOut
         } catch {
-            errorMessage = userFacingMessage(for: error)
+            signOutError = error
         }
+
+        // Supabase drops the local session before it calls the logout endpoint, so this device is
+        // signed out whether or not that call came back cleanly. The purge therefore runs on both
+        // paths: a network error is no reason to leave one account's journals, drafts, storyboards
+        // and cached images on the device for whoever signs in next.
+        LocalUserDataPurge.purgeAll()
+        StorytopiaLocalAccountScope.setActiveUserID(nil)
+
+        if let signOutError {
+            // Auth state stays with `startListening()`, which the emitted sign-out event reaches on
+            // its own — unchanged from before the purge existed.
+            errorMessage = userFacingMessage(for: signOutError)
+            return
+        }
+
+        currentUser = nil
+        status = .signedOut
     }
 
     func refreshCurrentUser() async {
