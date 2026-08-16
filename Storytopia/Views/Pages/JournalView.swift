@@ -12905,6 +12905,13 @@ struct EntriesView: View {
             return localDraftID
         }
 
+        // Opening an entry normally refreshes the local cache from the cloud. When the local copy
+        // holds autosaved edits the user has not committed yet, that download is older than what is
+        // on disk, so the entry is opened from disk instead — and the download is skipped entirely.
+        if CreateEntryCloudMaterialization.decision(for: item.id) == .preserveLocalEdits {
+            return item.id
+        }
+
         var entry = entryForDisplay(item)
         let photos: [CreateEntryReferencePhoto]
         let characters: [EntryCharacter]
@@ -12959,7 +12966,8 @@ struct EntriesView: View {
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
             thumbnail: entry.thumbnail,
-            createdAt: entry.createdAt
+            createdAt: entry.createdAt,
+            cloudSyncState: .synchronized
         )
     }
 
@@ -18438,6 +18446,12 @@ private struct JournalDetailEntryBrowser: View {
             return displayEntry
         }
 
+        // Same protection as the Entries list: an entry opened from inside a journal must not have
+        // locally autosaved edits replaced by the older snapshot the server still holds.
+        if CreateEntryCloudMaterialization.decision(for: item.id) == .preserveLocalEdits {
+            return CreateEntryDraftStore.load(id: item.id) ?? displayEntry
+        }
+
         do {
             let fullCloudEntry = try await SupabaseEntryRepository().getEntry(id: cloudEntry.id)
             let cloudDraft = CreateEntryDraft.fromCloud(fullCloudEntry, thumbnail: displayEntry.thumbnail)
@@ -18479,7 +18493,8 @@ private struct JournalDetailEntryBrowser: View {
                 isHighlighted: cloudDraft.isHighlighted,
                 textAlignmentRawValue: cloudDraft.textAlignmentRawValue,
                 thumbnail: cloudDraft.thumbnail,
-                createdAt: cloudDraft.createdAt
+                createdAt: cloudDraft.createdAt,
+                cloudSyncState: .synchronized
             )
 
             return CreateEntryDraftStore.load(id: cloudDraft.id) ?? cloudDraft

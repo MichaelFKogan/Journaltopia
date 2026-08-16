@@ -488,7 +488,37 @@ private enum JournalPromptCategory: String, CaseIterable, Identifiable {
     }
 }
 
-private struct LoadedCreateEntryDraftSnapshot: Equatable {
+/// Every user-editable field the editor persists into a `CreateEntryDraft`, in one Equatable value.
+///
+/// Autosave watches this rather than a handful of individual bindings, for two reasons. Formatting
+/// is persisted too — a font, a paper style, a text colour, an art style, a date — and losing an
+/// hour of styling to a kill is no better than losing the words. And a single UI action usually
+/// moves several of these at once; comparing one normalized value means that action produces one
+/// change to react to instead of four.
+///
+/// Deliberately excluded: the thumbnail and the rich-text formatting flags, which are derived from
+/// what is already here, and `createdAt`/`id`, which are identity rather than content.
+struct CreateEntryAutosaveSignature: Equatable {
+    let title: String
+    let text: String
+    let richText: NotebookRichTextDocument?
+    let photoIDs: [UUID]
+    let characters: [LoadedCreateEntryDraftSnapshot.CharacterSnapshot]
+    let artStyle: String
+    let location: String
+    let date: Date
+    let datePrecision: EntryDatePrecision
+    let savesDraft: Bool
+    let isPrivate: Bool
+    let statusRawValue: String
+    let fontChoiceRawValue: String
+    let textColorIndex: Int
+    let textSize: Double
+    let paperStyleRawValue: String
+    let paperColorIndex: Int
+}
+
+struct LoadedCreateEntryDraftSnapshot: Equatable {
     struct CharacterSnapshot: Equatable {
         let id: UUID
         let name: String
@@ -1764,6 +1794,7 @@ struct CreateEntryView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedArtStyle = CreateEntryView.defaultArtStyle
     @AppStorage("StorytopiaImageGenerationQuality") private var selectedImageGenerationQualityRawValue = OpenAIImageGenerationQuality.standard.rawValue
@@ -1865,6 +1896,21 @@ struct CreateEntryView: View {
     @State private var selectedKeyboardTextType: CreateKeyboardTextType = .body
     @State private var editorSelectionState = NotebookTextSelectionState()
     @State private var isKeyboardDismissInProgress = false
+    @State private var autosaveScheduler = LocalDraftAutosaveScheduler()
+    /// Set the moment the session decides how it ends — discard, delete, or an exit that has
+    /// already saved. Everything after that point, including the editor's own teardown and the
+    /// `onDisappear` flush, must not put content back on disk.
+    @State private var isAutosaveSuspended = false
+    /// What local autosave last wrote to disk. Deliberately separate from `loadedDraftSnapshot`,
+    /// which stays pinned to the last *cloud* commit so the Save/Discard/Cancel prompt keeps
+    /// appearing for work that only exists on this device.
+    @State private var autosavedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
+    /// True when the draft on disk is ahead of Supabase. Read back from the draft on open, so an
+    /// entry restored after a relaunch still knows it has uncommitted work.
+    @State private var hasUncommittedLocalEdits = false
+    /// The id an autosave just minted for this compose session. Adopting it must not be mistaken
+    /// for the user switching entries, which would tear the editor down mid-sentence.
+    @State private var autosaveAdoptedDraftID: UUID?
 
     private func dismissKeyboard() {
         isKeyboardDismissInProgress = true
@@ -2059,6 +2105,10 @@ struct CreateEntryView: View {
     private var editorWithPrimarySheets: some View {
         editorWithOverlays
         .onDisappear {
+            // The editor can also leave without an explicit decision — a swipe back, a navigation
+            // from elsewhere. Those still deserve their pending write. Exits that already decided
+            // (save, discard, delete) suspended autosave first, so this is a no-op for them.
+            flushLocalAutosave()
             speechTranscriber.stop()
             dismissKeyboard()
             UIApplication.shared.connectedScenes
@@ -2554,6 +2604,8 @@ struct CreateEntryView: View {
             }
         }
         .onAppear {
+            // Appearing is the start of an editing session, whatever ended the last one.
+            isAutosaveSuspended = false
             resetForFreshCreateIfNeeded()
             configureDirectJournalEntryIfNeeded()
             if !canShowEntryOptionsPage {
@@ -2581,6 +2633,18 @@ struct CreateEntryView: View {
         }
         .onChange(of: cloudSaveState) { newState in
             updateSavedConfirmationReveal(for: newState)
+        }
+        .onChange(of: currentAutosaveSignature) { _ in
+            handleEditorContentChange()
+        }
+        .onChange(of: scenePhase) { phase in
+            // Backgrounding is the last moment the app is guaranteed to run code before it can be
+            // killed, so the debounce is skipped and the write happens now.
+            guard phase != .active else {
+                return
+            }
+
+            flushLocalAutosave()
         }
     }
 
@@ -2625,6 +2689,9 @@ struct CreateEntryView: View {
         selectedEntryStoryboardIndex = nil
         resetCompletedEntryStoryboardDrag()
         didResetForFreshCreatePresentation = true
+        // A fresh editing session re-arms autosave after whatever ended the last one.
+        isAutosaveSuspended = false
+        restoreUnfinishedComposeIfNeeded()
     }
 
     private func handleActiveDraftChange(_ draftID: UUID?) {
@@ -2632,6 +2699,18 @@ struct CreateEntryView: View {
             return
         }
 
+        // The compose session just adopted the id its own autosave minted. Nothing about what the
+        // user is looking at changed, so the editor must not be torn down and reloaded.
+        if let draftID, draftID == autosaveAdoptedDraftID {
+            autosaveAdoptedDraftID = nil
+            return
+        }
+
+        autosaveAdoptedDraftID = nil
+        // Whatever was queued belongs to the entry being left behind.
+        cancelPendingLocalAutosave()
+        autosavedDraftSnapshot = nil
+        isAutosaveSuspended = false
         resetCompletedEntryStoryboardDrag()
         dismissKeyboard()
         isFullScreenEditorVisible = false
@@ -2752,6 +2831,15 @@ struct CreateEntryView: View {
                     phase: storyboardGenerationPhase
                 )
                 setCloudSaveState(prepareResult.state)
+                // Generation still force-saves exactly as it did before. That save is a real cloud
+                // commit, so the entry stops being an unfinished compose here rather than waiting
+                // for artwork that may not arrive until a later session.
+                if prepareResult.state.isConfirmedSave {
+                    markLocalDraftCommitted(
+                        id: prepareResult.localDraftID,
+                        snapshot: currentDraftSnapshot(id: prepareResult.localDraftID)
+                    )
+                }
                 if case .failed(let message) = prepareResult.state {
                     throw StoryboardGenerationError.openAIMessage(message)
                 }
@@ -2915,6 +3003,7 @@ struct CreateEntryView: View {
                     let completedSnapshot = currentDraftSnapshot(id: completionResult.localDraftID)
                     loadedDraftSnapshot = completedSnapshot
                     toolbarSavedSnapshot = completedSnapshot
+                    markLocalDraftCommitted(id: completionResult.localDraftID, snapshot: completedSnapshot)
                     generatedStoryboards = storyboardsAfterLocalSave
                     GeneratedStoryboardStore.save(generatedStoryboards)
                     currentEntryStatus = .completed
@@ -3543,6 +3632,14 @@ struct CreateEntryView: View {
     }
 
     private var hasUnsavedDraftChanges: Bool {
+        // An entry reopened after a relaunch matches the copy on disk, but that copy may itself be
+        // an autosave that never reached Supabase. The draft's own flag is the only thing that
+        // still remembers, so it has to count as unsaved here — otherwise the Save prompt would
+        // stay silent over work the cloud has never seen.
+        if hasUncommittedLocalEdits {
+            return true
+        }
+
         guard let loadedDraftSnapshot else {
             return hasDraftContent
         }
@@ -3607,6 +3704,8 @@ struct CreateEntryView: View {
     }
 
     private func closeEditorWithoutSaving() {
+        isAutosaveSuspended = true
+        cancelPendingLocalAutosave()
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.32)) {
             dismissCreate()
@@ -3712,6 +3811,9 @@ struct CreateEntryView: View {
 
     private func saveDraftAndExit(forceSave: Bool) {
         dismissKeyboard()
+        // The cloud save below is about to write the same content this would have written, so the
+        // queued autosave is redundant at best and stale by the time it fires at worst.
+        cancelPendingLocalAutosave()
 
         Task {
             if hasDraftContent || forceSave {
@@ -3721,6 +3823,7 @@ struct CreateEntryView: View {
                 }
             }
 
+            isAutosaveSuspended = true
             withAnimation(.snappy(duration: 0.32)) {
                 dismissCreate()
             }
@@ -3734,6 +3837,199 @@ struct CreateEntryView: View {
         }
     }
 
+    // MARK: - Local autosave
+    //
+    // Local autosave is data-loss protection, not synchronization. It writes the editor's current
+    // state into the same `CreateEntryDraftStore` everything else reads and never touches Supabase,
+    // so the user can write for an hour at the cost of a few small local writes. Committing to the
+    // cloud stays the explicit Save button's job.
+
+    /// Sample Studio authors against cloud sample rows in a mode of its own, and a read-only
+    /// completed entry has no edits to protect, so neither takes part.
+    private var supportsLocalAutosave: Bool {
+        !authoringMode.isSampleStudio && !opensExistingEntryReadMode
+    }
+
+    /// The editor's persisted state as one value, cheap enough to rebuild on every body pass: it
+    /// touches only editor state, never the draft on disk.
+    private var currentAutosaveSignature: CreateEntryAutosaveSignature {
+        CreateEntryAutosaveSignature(
+            title: storyTitle,
+            text: entryText,
+            richText: entryRichText,
+            photoIDs: currentReferencePhotoIDs,
+            characters: currentCharacterSnapshots,
+            artStyle: selectedArtStyle,
+            location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+            date: storyDate,
+            datePrecision: storyDatePrecision,
+            savesDraft: savesDraft,
+            isPrivate: isPrivateEntry,
+            statusRawValue: currentEntryStatus.rawValue,
+            fontChoiceRawValue: selectedFontChoice.rawValue,
+            textColorIndex: selectedTextColorIndex,
+            textSize: previewTextSize,
+            paperStyleRawValue: selectedPaperStyleChoice.rawValue,
+            paperColorIndex: selectedPaperColorIndex
+        )
+    }
+
+    /// Called whenever the persisted editor state changes. Programmatic changes — hydration,
+    /// `clearEditor`, adopting a saved snapshot — reach this too, which is why the write itself
+    /// re-checks whether anything actually differs rather than trusting the trigger.
+    private func handleEditorContentChange() {
+        guard supportsLocalAutosave, !isAutosaveSuspended else {
+            return
+        }
+
+        autosaveScheduler.schedule {
+            performLocalAutosave()
+        }
+    }
+
+    private func cancelPendingLocalAutosave() {
+        autosaveScheduler.cancelPending()
+    }
+
+    /// Writes now instead of waiting out the debounce, for the moments where the wait may never
+    /// finish: the app going to the background, and the editor going away.
+    private func flushLocalAutosave() {
+        autosaveScheduler.flush {
+            performLocalAutosave()
+        }
+    }
+
+    private func performLocalAutosave() {
+        guard supportsLocalAutosave, !isAutosaveSuspended else {
+            return
+        }
+
+        // A cloud save in flight owns this draft. Letting an autosave interleave would re-flag
+        // content as uncommitted that Supabase is in the middle of confirming.
+        guard !isBlockingSaveInProgress, !isToolbarSaveInProgress, !isGeneratingStoryboard else {
+            return
+        }
+
+        guard hasDraftContent, hasUnsavedDraftChanges else {
+            return
+        }
+
+        // Nothing has changed since the last local write, so there is nothing to protect.
+        if let autosavedDraftSnapshot,
+           currentDraftSnapshot(id: autosavedDraftSnapshot.id) == autosavedDraftSnapshot {
+            return
+        }
+
+        let isNewComposeSession = activeDraftID == nil
+
+        if let draftID = activeDraftID,
+           !hasMediaChangesSinceLastAutosave,
+           CreateEntryDraftStore.exists(id: draftID) {
+            let richText = currentEntryRichText()
+            let formatting = currentEntryPreviewFormatting(from: richText)
+            let didWrite = CreateEntryDraftStore.autosaveEditorState(
+                id: draftID,
+                title: storyTitle,
+                text: entryText,
+                richText: richText,
+                artStyle: selectedArtStyle,
+                location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+                date: storyDate,
+                datePrecision: storyDatePrecision,
+                savesDraft: savesDraft,
+                isPrivate: isPrivateEntry,
+                fontChoiceRawValue: selectedFontChoice.rawValue,
+                textColorIndex: selectedTextColorIndex,
+                textSize: previewTextSize,
+                paperStyleRawValue: selectedPaperStyleChoice.rawValue,
+                paperColorIndex: selectedPaperColorIndex,
+                isBold: formatting.isBold,
+                isItalic: formatting.isItalic,
+                isUnderlined: formatting.isUnderlined,
+                isStrikethrough: formatting.isStrikethrough,
+                isHighlighted: formatting.isHighlighted,
+                textAlignmentRawValue: formatting.textAlignmentRawValue
+            )
+
+            if didWrite {
+                finishLocalAutosave(id: draftID, isNewComposeSession: false)
+                return
+            }
+        }
+
+        // Either the draft has no directory yet or its photos and characters moved, so the full
+        // write — the one that re-encodes media — is the only one that captures the truth.
+        guard
+            let pendingSave = makePendingDraftSave(forceSave: false),
+            let savedDraftID = persistDraftSave(pendingSave, cloudSyncState: .uncommitted)
+        else {
+            return
+        }
+
+        finishLocalAutosave(id: savedDraftID, isNewComposeSession: isNewComposeSession)
+    }
+
+    private var hasMediaChangesSinceLastAutosave: Bool {
+        guard let autosavedDraftSnapshot else {
+            return true
+        }
+
+        return currentReferencePhotoIDs != autosavedDraftSnapshot.photoIDs
+            || currentCharacterSnapshots != autosavedDraftSnapshot.characters
+    }
+
+    private func finishLocalAutosave(id: UUID, isNewComposeSession: Bool) {
+        if isNewComposeSession {
+            // A brand-new entry now has the local identity it will keep all the way into Supabase:
+            // `client_entry_id` is the same id on both sides, so committing it later updates this
+            // draft rather than creating a second one.
+            autosaveAdoptedDraftID = id
+            activeDraftID = id
+            UnfinishedCreateSessionStore.setDraftID(id)
+        }
+
+        hasUncommittedLocalEdits = true
+        autosavedDraftSnapshot = currentDraftSnapshot(id: id)
+    }
+
+    /// Retires everything that says "this draft is ahead of the cloud", in one place so the flag,
+    /// the snapshot, and the recovery pointer cannot drift apart. Called only once Supabase has
+    /// confirmed the entry.
+    private func markLocalDraftCommitted(id: UUID, snapshot: LoadedCreateEntryDraftSnapshot) {
+        cancelPendingLocalAutosave()
+        hasUncommittedLocalEdits = false
+        autosavedDraftSnapshot = snapshot
+        UnfinishedCreateSessionStore.clearIfMatches(draftID: id)
+    }
+
+    /// Picks the unfinished compose back up when the user returns to a fresh Create page, instead
+    /// of handing them an empty editor and leaving their writing stranded on disk.
+    private func restoreUnfinishedComposeIfNeeded() {
+        guard
+            supportsLocalAutosave,
+            activeDraftID == nil,
+            !presentation.isEditDraft,
+            !presentation.savesDirectlyToJournal,
+            !isOpeningEntryFromEntries
+        else {
+            return
+        }
+
+        guard let recoveredDraftID = UnfinishedCreateSessionStore.draftID else {
+            return
+        }
+
+        guard CreateEntryDraftStore.exists(id: recoveredDraftID) else {
+            UnfinishedCreateSessionStore.clear()
+            return
+        }
+
+        activeDraftID = recoveredDraftID
+        loadLinkedJournalTitle(for: recoveredDraftID)
+        loadSavedDraftIfNeeded()
+        currentEntryStatus = resolvedCurrentEntryStatus()
+    }
+
     private func makePendingDraftSave(forceSave: Bool) -> PendingCreateEntryDraftSave? {
         guard hasDraftContent || forceSave else {
             return nil
@@ -3745,7 +4041,7 @@ struct CreateEntryView: View {
 
         return PendingCreateEntryDraftSave(
             id: activeDraftID,
-            createdAt: activeDraftID.flatMap { CreateEntryDraftStore.load(id: $0)?.createdAt }
+            createdAt: activeDraftID.flatMap { CreateEntryDraftStore.createdAt(id: $0) }
                 ?? loadedDraftSnapshot?.createdAt,
             title: storyTitle,
             text: entryText,
@@ -3785,7 +4081,10 @@ struct CreateEntryView: View {
     }
 
     @discardableResult
-    private func persistDraftSave(_ pendingSave: PendingCreateEntryDraftSave) -> UUID? {
+    private func persistDraftSave(
+        _ pendingSave: PendingCreateEntryDraftSave,
+        cloudSyncState: CreateEntryDraftCloudSyncState = .unchanged
+    ) -> UUID? {
         let draftThumbnail = DraftThumbnailRenderer.render(
             title: pendingSave.title,
             text: pendingSave.text,
@@ -3830,7 +4129,8 @@ struct CreateEntryView: View {
             isHighlighted: pendingSave.isHighlighted,
             textAlignmentRawValue: pendingSave.textAlignmentRawValue,
             thumbnail: draftThumbnail,
-            createdAt: pendingSave.createdAt
+            createdAt: pendingSave.createdAt,
+            cloudSyncState: cloudSyncState
         ) {
             EntryLocationRecentStore.add(pendingSave.location)
             recentEntryLocations = EntryLocationRecentStore.all
@@ -3884,6 +4184,9 @@ struct CreateEntryView: View {
         }
 
         stageSelectedJournalMemberships(for: payload.id)
+        // The explicit save is the cloud checkpoint. Nothing local should still be waiting to write
+        // behind it.
+        cancelPendingLocalAutosave()
         setCloudSaveState(payload.photos.isEmpty ? .saving : .uploadingPhotos)
 
         do {
@@ -3909,6 +4212,16 @@ struct CreateEntryView: View {
                 let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
                 loadedDraftSnapshot = savedSnapshot
                 toolbarSavedSnapshot = savedSnapshot
+                if editorMatchesCommittedPayload(payload) {
+                    markLocalDraftCommitted(id: result.localDraftID, snapshot: savedSnapshot)
+                } else {
+                    // The user kept typing while the save was in flight, so what reached Supabase is
+                    // already behind the editor. Keep the draft flagged as ahead of the cloud and
+                    // give the newer text an autosave of its own rather than declaring it committed.
+                    hasUncommittedLocalEdits = true
+                    autosavedDraftSnapshot = nil
+                    handleEditorContentChange()
+                }
                 completeToolbarSavedFeedback(for: savedSnapshot)
             } else {
                 cancelToolbarSavedFeedback()
@@ -3926,6 +4239,14 @@ struct CreateEntryView: View {
         }
     }
 
+    /// Whether the editor still holds exactly the writing that was sent to Supabase. A cloud save
+    /// takes real time, and anything typed during it is not in the payload that landed.
+    private func editorMatchesCommittedPayload(_ payload: EntryDraftSavePayload) -> Bool {
+        payload.title == storyTitle
+            && payload.text == entryText
+            && payload.richText == currentEntryRichText()
+    }
+
     private func retryCloudSave() {
         guard !isToolbarSaveInProgress else {
             return
@@ -3938,15 +4259,43 @@ struct CreateEntryView: View {
     }
 
     private func discardDraftAndExit() {
+        // Suspending and cancelling first is what makes the rest of this deterministic: no queued
+        // write can land between here and the moment the local draft is removed, and the flush in
+        // `onDisappear` will find autosave suspended.
+        isAutosaveSuspended = true
+        cancelPendingLocalAutosave()
+
+        var discardOutcome: DiscardLocalEditsPolicy.Outcome?
+        if let activeDraftID {
+            // A compose session that never reached Supabase is identified by the recovery pointer,
+            // not by the presentation: adopting an autosaved id flips this page to "edit" even
+            // though nothing has been saved anywhere.
+            let outcome = DiscardLocalEditsPolicy.outcome(
+                isUnfinishedCompose: UnfinishedCreateSessionStore.draftID == activeDraftID,
+                hasUncommittedLocalEdits: hasUncommittedLocalEdits
+                    || CreateEntryDraftStore.hasUncommittedLocalEdits(id: activeDraftID),
+                hasCommittedCloudVersion: hasCommittedCloudVersion(of: activeDraftID)
+            )
+            applyDiscardOutcome(outcome, for: activeDraftID)
+            discardOutcome = outcome
+        }
+
+        if discardOutcome == .deleteUnfinishedCompose {
+            clearEditor()
+            activeDraftID = nil
+            isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
+            withAnimation(.snappy(duration: 0.32)) {
+                dismissCreate()
+            }
+            return
+        }
+
         if presentation.isEditDraft {
             closeEditorWithoutSaving()
             return
         }
 
         clearEditor()
-        if let activeDraftID {
-            CreateEntryDraftStore.delete(id: activeDraftID)
-        }
         activeDraftID = nil
         isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
         withAnimation(.snappy(duration: 0.32)) {
@@ -3954,7 +4303,46 @@ struct CreateEntryView: View {
         }
     }
 
+    /// Whether Supabase holds a committed version of this entry for a discard to fall back to.
+    /// Sample Studio entries live in their own tables and never autosave, and an entry whose save
+    /// gave up is on this device only — neither has a committed copy to restore.
+    private func hasCommittedCloudVersion(of draftID: UUID) -> Bool {
+        authStore.userID != nil
+            && !authoringMode.isSampleStudio
+            && !EntryCloudSyncFailureStore.isNotSaved(clientEntryID: draftID)
+    }
+
+    private func applyDiscardOutcome(_ outcome: DiscardLocalEditsPolicy.Outcome, for draftID: UUID) {
+        hasUncommittedLocalEdits = false
+        autosavedDraftSnapshot = nil
+
+        switch outcome {
+        case .deleteUnfinishedCompose:
+            CreateEntryDraftStore.delete(id: draftID)
+            UnfinishedCreateSessionStore.clear()
+            EntryCloudSyncFailureStore.clear(clientEntryID: draftID)
+        case .deleteLocalCache:
+            // The committed version is in Supabase, so the local draft is a cache of it and the
+            // discarded writing is the only thing in that cache that is not. Deleting it is what
+            // makes the discard immediate and total: nothing is left to reappear offline, and the
+            // next open has to rematerialize the committed entry. Storyboards and journal links
+            // are keyed by client entry id in their own stores and are deliberately untouched.
+            CreateEntryDraftStore.delete(id: draftID)
+            loadedDraftSnapshot = nil
+        case .keepLocalCopy:
+            // Nothing committed anywhere to restore, so the user's only copy stays put. It stops
+            // claiming to be ahead of the cloud so a later download may still refresh it.
+            CreateEntryDraftStore.markCloudSynchronized(id: draftID)
+        }
+    }
+
     private func clearEditor() {
+        // The reset is about to blank every binding autosave watches. Dropping the pending write
+        // first is what stops an empty editor from being written over the draft it just left.
+        cancelPendingLocalAutosave()
+        autosavedDraftSnapshot = nil
+        hasUncommittedLocalEdits = false
+        autosaveAdoptedDraftID = nil
         storyTitle = ""
         entryText = ""
         entryRichText = nil
@@ -4021,6 +4409,11 @@ struct CreateEntryView: View {
         }
 
         if loadedDraftSnapshot?.id == activeDraftID {
+            // The editor already holds this draft. Re-arm the autosave baseline, which switching
+            // drafts clears, so the next write can still take the cheap metadata-only path.
+            if autosavedDraftSnapshot == nil {
+                autosavedDraftSnapshot = loadedDraftSnapshot
+            }
             return
         }
 
@@ -4053,6 +4446,10 @@ struct CreateEntryView: View {
         selectedPaperStyleChoice = draft.paperStyleRawValue.flatMap(CreatePaperStyleChoice.init(rawValue:)) ?? .defaultChoice
         selectedPaperColorIndex = min(max(draft.paperColorIndex ?? 0, 0), CreateFormattingPalette.paperColors.count - 1)
         loadedDraftSnapshot = currentDraftSnapshot(id: draft.id)
+        // The editor now matches disk, so there is nothing for autosave to write until the user
+        // types. Whether *disk* matches Supabase is a separate question, and the draft knows.
+        autosavedDraftSnapshot = loadedDraftSnapshot
+        hasUncommittedLocalEdits = CreateEntryDraftStore.hasUncommittedLocalEdits(id: draft.id)
 
         // A save that exhausted its retries left a marker behind. Re-raise it so reopening the
         // entry still says "not in the cloud" instead of looking like a clean, synced draft.
@@ -4082,7 +4479,7 @@ struct CreateEntryView: View {
             location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
             date: storyDate,
             datePrecision: storyDatePrecision,
-            createdAt: CreateEntryDraftStore.load(id: id)?.createdAt ?? loadedDraftSnapshot?.createdAt ?? Date(),
+            createdAt: CreateEntryDraftStore.createdAt(id: id) ?? loadedDraftSnapshot?.createdAt ?? Date(),
             savesDraft: savesDraft,
             isPrivate: isPrivateEntry,
             fontChoiceRawValue: selectedFontChoice.rawValue,
@@ -6741,6 +7138,7 @@ struct CreateEntryView: View {
         }
 
         dismissKeyboard()
+        cancelPendingLocalAutosave()
         setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         let entryID = activeDraftID ?? UUID()
@@ -6820,6 +7218,11 @@ struct CreateEntryView: View {
                 journalEntryID: savedEntry.id,
                 for: result.localDraftID
             )
+            markLocalDraftCommitted(
+                id: result.localDraftID,
+                snapshot: currentDraftSnapshot(id: result.localDraftID)
+            )
+            isAutosaveSuspended = true
             clearEditor()
             activeDraftID = nil
             dismissCreate()
@@ -6840,6 +7243,7 @@ struct CreateEntryView: View {
             return
         }
 
+        cancelPendingLocalAutosave()
         setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         Task {
@@ -6908,6 +7312,7 @@ struct CreateEntryView: View {
                     let savedSnapshot = currentDraftSnapshot(id: result.localDraftID)
                     loadedDraftSnapshot = savedSnapshot
                     toolbarSavedSnapshot = savedSnapshot
+                    markLocalDraftCommitted(id: result.localDraftID, snapshot: savedSnapshot)
                     completeToolbarSavedFeedback(for: savedSnapshot)
                 } else {
                     cancelToolbarSavedFeedback()
@@ -8172,6 +8577,9 @@ struct CreateEntryView: View {
 
         isConfirmingEntryDeletion = false
         isDeletingEntry = true
+        // The entry is on its way out; nothing may write it back while the delete is in flight.
+        isAutosaveSuspended = true
+        cancelPendingLocalAutosave()
         dismissKeyboard()
         let isSignedIn = authStore.userID != nil
 
@@ -8199,6 +8607,8 @@ struct CreateEntryView: View {
             } catch {
                 await MainActor.run {
                     isDeletingEntry = false
+                    // The entry survived, and so does the editing session it belongs to.
+                    isAutosaveSuspended = false
                     entryDeletionErrorMessage = "Could not delete this entry. Check your connection and try again."
                 }
             }
