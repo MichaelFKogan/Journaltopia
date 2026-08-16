@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		17C3F88D300B0B0800DE84D6 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 17C3F88C300B0B0800DE84D6 /* Supabase */; };
+		17E2278130325CFF00C1FD56 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 17E2278030325CFF00C1FD56 /* StoreKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -24,6 +25,8 @@
 		17B501D82FC8D5F80003C9B7 /* Journaltopia.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Journaltopia.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		17C3F88E300B121900DE84D6 /* Config/Supabase.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Supabase.xcconfig; sourceTree = "<group>"; };
 		17D0A0012FD0000000000002 /* JournaltopiaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JournaltopiaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		17E2278030325CFF00C1FD56 /* StoreKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StoreKit.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk/System/Library/Frameworks/StoreKit.framework; sourceTree = DEVELOPER_DIR; };
+		17E2278230325D5A00C1FD56 /* Journaltopia.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Journaltopia.storekit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -58,6 +61,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				17C3F88D300B0B0800DE84D6 /* Supabase in Frameworks */,
+				17E2278130325CFF00C1FD56 /* StoreKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -74,9 +78,11 @@
 		17B501CF2FC8D5F80003C9B7 = {
 			isa = PBXGroup;
 			children = (
+				17E2278230325D5A00C1FD56 /* Journaltopia.storekit */,
 				17B501DA2FC8D5F80003C9B7 /* Journaltopia */,
 				17D0A0012FD0000000000003 /* JournaltopiaTests */,
 				17C3F88E300B121900DE84D6 /* Config/Supabase.xcconfig */,
+				17E2277F30325CFF00C1FD56 /* Frameworks */,
 				17B501D92FC8D5F80003C9B7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -88,6 +94,14 @@
 				17D0A0012FD0000000000002 /* JournaltopiaTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		17E2277F30325CFF00C1FD56 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				17E2278030325CFF00C1FD56 /* StoreKit.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
