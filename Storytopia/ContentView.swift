@@ -84,6 +84,10 @@ struct ContentView: View {
             }
         }
         .task {
+            // The credit balance is account state that lives on an object rather than on disk, so
+            // the sign-out purge has to be handed it before it can clear it.
+            LocalUserDataPurge.register(generationCreditStore: generationCreditStore)
+
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
             reloadScopedLocalState()

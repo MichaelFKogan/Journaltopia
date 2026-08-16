@@ -3874,6 +3874,10 @@ private enum JournalRemoteCoverImageCache {
     static func save(_ image: UIImage, for url: URL) {
         cache.setObject(image, forKey: url as NSURL)
     }
+
+    static func removeAll() {
+        cache.removeAllObjects()
+    }
 }
 
 private struct JournalColorOption: Identifiable {
@@ -9733,6 +9737,21 @@ private enum EntriesSessionMemoryCache {
         let hasMoreCloudEntries: Bool
         let nextCloudEntryOffset: Int
         let cloudEntriesErrorMessage: String?
+    }
+}
+
+/// `LocalUserDataPurge`'s hook into this file.
+///
+/// `EntriesCloudFetchCache`, `EntriesSessionMemoryCache` and `JournalRemoteCoverImageCache` are
+/// file-private and live as long as the process does. Deleting their disk backing on sign-out is not
+/// enough on its own: the copies already in memory hold the previous account's entries, thumbnails
+/// and covers, and would keep being served to the next account until the app was killed. Nothing but
+/// the sign-out purge should call this.
+enum JournalLocalCachePurge {
+    static func purgeInMemoryCaches() {
+        EntriesCloudFetchCache.invalidate(for: nil)
+        EntriesSessionMemoryCache.invalidate(userID: nil)
+        JournalRemoteCoverImageCache.removeAll()
     }
 }
 
