@@ -488,7 +488,37 @@ private enum JournalPromptCategory: String, CaseIterable, Identifiable {
     }
 }
 
-private struct LoadedCreateEntryDraftSnapshot: Equatable {
+/// Every user-editable field the editor persists into a `CreateEntryDraft`, in one Equatable value.
+///
+/// Autosave watches this rather than a handful of individual bindings, for two reasons. Formatting
+/// is persisted too — a font, a paper style, a text colour, an art style, a date — and losing an
+/// hour of styling to a kill is no better than losing the words. And a single UI action usually
+/// moves several of these at once; comparing one normalized value means that action produces one
+/// change to react to instead of four.
+///
+/// Deliberately excluded: the thumbnail and the rich-text formatting flags, which are derived from
+/// what is already here, and `createdAt`/`id`, which are identity rather than content.
+struct CreateEntryAutosaveSignature: Equatable {
+    let title: String
+    let text: String
+    let richText: NotebookRichTextDocument?
+    let photoIDs: [UUID]
+    let characters: [LoadedCreateEntryDraftSnapshot.CharacterSnapshot]
+    let artStyle: String
+    let location: String
+    let date: Date
+    let datePrecision: EntryDatePrecision
+    let savesDraft: Bool
+    let isPrivate: Bool
+    let statusRawValue: String
+    let fontChoiceRawValue: String
+    let textColorIndex: Int
+    let textSize: Double
+    let paperStyleRawValue: String
+    let paperColorIndex: Int
+}
+
+struct LoadedCreateEntryDraftSnapshot: Equatable {
     struct CharacterSnapshot: Equatable {
         let id: UUID
         let name: String
@@ -2604,19 +2634,7 @@ struct CreateEntryView: View {
         .onChange(of: cloudSaveState) { newState in
             updateSavedConfirmationReveal(for: newState)
         }
-        .onChange(of: entryText) { _ in
-            handleEditorContentChange()
-        }
-        .onChange(of: storyTitle) { _ in
-            handleEditorContentChange()
-        }
-        .onChange(of: entryRichText) { _ in
-            handleEditorContentChange()
-        }
-        .onChange(of: currentReferencePhotoIDs) { _ in
-            handleEditorContentChange()
-        }
-        .onChange(of: currentCharacterSnapshots) { _ in
+        .onChange(of: currentAutosaveSignature) { _ in
             handleEditorContentChange()
         }
         .onChange(of: scenePhase) { phase in
@@ -3832,9 +3850,33 @@ struct CreateEntryView: View {
         !authoringMode.isSampleStudio && !opensExistingEntryReadMode
     }
 
-    /// Called from the editor's content bindings. Programmatic changes — hydration, `clearEditor`,
-    /// adopting a saved snapshot — reach this too, which is why the write itself re-checks whether
-    /// anything actually differs rather than trusting the trigger.
+    /// The editor's persisted state as one value, cheap enough to rebuild on every body pass: it
+    /// touches only editor state, never the draft on disk.
+    private var currentAutosaveSignature: CreateEntryAutosaveSignature {
+        CreateEntryAutosaveSignature(
+            title: storyTitle,
+            text: entryText,
+            richText: entryRichText,
+            photoIDs: currentReferencePhotoIDs,
+            characters: currentCharacterSnapshots,
+            artStyle: selectedArtStyle,
+            location: storyLocation.trimmingCharacters(in: .whitespacesAndNewlines),
+            date: storyDate,
+            datePrecision: storyDatePrecision,
+            savesDraft: savesDraft,
+            isPrivate: isPrivateEntry,
+            statusRawValue: currentEntryStatus.rawValue,
+            fontChoiceRawValue: selectedFontChoice.rawValue,
+            textColorIndex: selectedTextColorIndex,
+            textSize: previewTextSize,
+            paperStyleRawValue: selectedPaperStyleChoice.rawValue,
+            paperColorIndex: selectedPaperColorIndex
+        )
+    }
+
+    /// Called whenever the persisted editor state changes. Programmatic changes — hydration,
+    /// `clearEditor`, adopting a saved snapshot — reach this too, which is why the write itself
+    /// re-checks whether anything actually differs rather than trusting the trigger.
     private func handleEditorContentChange() {
         guard supportsLocalAutosave, !isAutosaveSuspended else {
             return
@@ -4217,32 +4259,35 @@ struct CreateEntryView: View {
     }
 
     private func discardDraftAndExit() {
+        // Suspending and cancelling first is what makes the rest of this deterministic: no queued
+        // write can land between here and the moment the local draft is removed, and the flush in
+        // `onDisappear` will find autosave suspended.
         isAutosaveSuspended = true
         cancelPendingLocalAutosave()
 
-        // A compose session that has never been committed to the cloud is identified by the
-        // recovery pointer, not by the presentation: adopting an autosaved id flips this page to
-        // "edit" even though nothing has been saved anywhere. Discarding it has to take the local
-        // draft and the pointer with it, or the discarded text comes back on the next launch.
-        if let activeDraftID, UnfinishedCreateSessionStore.draftID == activeDraftID {
+        var discardOutcome: DiscardLocalEditsPolicy.Outcome?
+        if let activeDraftID {
+            // A compose session that never reached Supabase is identified by the recovery pointer,
+            // not by the presentation: adopting an autosaved id flips this page to "edit" even
+            // though nothing has been saved anywhere.
+            let outcome = DiscardLocalEditsPolicy.outcome(
+                isUnfinishedCompose: UnfinishedCreateSessionStore.draftID == activeDraftID,
+                hasUncommittedLocalEdits: hasUncommittedLocalEdits
+                    || CreateEntryDraftStore.hasUncommittedLocalEdits(id: activeDraftID),
+                hasCommittedCloudVersion: hasCommittedCloudVersion(of: activeDraftID)
+            )
+            applyDiscardOutcome(outcome, for: activeDraftID)
+            discardOutcome = outcome
+        }
+
+        if discardOutcome == .deleteUnfinishedCompose {
             clearEditor()
-            CreateEntryDraftStore.delete(id: activeDraftID)
-            UnfinishedCreateSessionStore.clear()
-            EntryCloudSyncFailureStore.clear(clientEntryID: activeDraftID)
-            self.activeDraftID = nil
+            activeDraftID = nil
             isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
             withAnimation(.snappy(duration: 0.32)) {
                 dismissCreate()
             }
             return
-        }
-
-        // An entry that already exists in Supabase keeps its previous behaviour — the local copy is
-        // left where it is — but it stops claiming to be ahead of the cloud, so the next time it is
-        // opened the committed version is free to refresh it.
-        if let activeDraftID {
-            CreateEntryDraftStore.markCloudSynchronized(id: activeDraftID)
-            hasUncommittedLocalEdits = false
         }
 
         if presentation.isEditDraft {
@@ -4251,13 +4296,43 @@ struct CreateEntryView: View {
         }
 
         clearEditor()
-        if let activeDraftID {
-            CreateEntryDraftStore.delete(id: activeDraftID)
-        }
         activeDraftID = nil
         isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
         withAnimation(.snappy(duration: 0.32)) {
             dismissCreate()
+        }
+    }
+
+    /// Whether Supabase holds a committed version of this entry for a discard to fall back to.
+    /// Sample Studio entries live in their own tables and never autosave, and an entry whose save
+    /// gave up is on this device only — neither has a committed copy to restore.
+    private func hasCommittedCloudVersion(of draftID: UUID) -> Bool {
+        authStore.userID != nil
+            && !authoringMode.isSampleStudio
+            && !EntryCloudSyncFailureStore.isNotSaved(clientEntryID: draftID)
+    }
+
+    private func applyDiscardOutcome(_ outcome: DiscardLocalEditsPolicy.Outcome, for draftID: UUID) {
+        hasUncommittedLocalEdits = false
+        autosavedDraftSnapshot = nil
+
+        switch outcome {
+        case .deleteUnfinishedCompose:
+            CreateEntryDraftStore.delete(id: draftID)
+            UnfinishedCreateSessionStore.clear()
+            EntryCloudSyncFailureStore.clear(clientEntryID: draftID)
+        case .deleteLocalCache:
+            // The committed version is in Supabase, so the local draft is a cache of it and the
+            // discarded writing is the only thing in that cache that is not. Deleting it is what
+            // makes the discard immediate and total: nothing is left to reappear offline, and the
+            // next open has to rematerialize the committed entry. Storyboards and journal links
+            // are keyed by client entry id in their own stores and are deliberately untouched.
+            CreateEntryDraftStore.delete(id: draftID)
+            loadedDraftSnapshot = nil
+        case .keepLocalCopy:
+            // Nothing committed anywhere to restore, so the user's only copy stays put. It stops
+            // claiming to be ahead of the cloud so a later download may still refresh it.
+            CreateEntryDraftStore.markCloudSynchronized(id: draftID)
         }
     }
 

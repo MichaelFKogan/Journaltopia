@@ -74,6 +74,46 @@ enum CreateEntryCloudMaterialization {
     }
 }
 
+/// What discarding unsaved edits should do to the copy in `CreateEntryDraftStore`.
+///
+/// Clearing the uncommitted flag alone is not a discard: it leaves the discarded writing sitting in
+/// the local cache, where it stays visible until some later cloud download happens to replace it —
+/// and never, if the device is offline. The fix is to make the local cache stop holding the
+/// discarded text at all, which for a cloud-backed entry means deleting it so the next open has to
+/// rematerialize the committed version.
+///
+/// The one case that must not be deleted is an entry with nothing committed anywhere to fall back
+/// to. There, the "discarded" edits are the only copy of the entry that exists, and throwing them
+/// away would be data loss rather than a discard.
+enum DiscardLocalEditsPolicy {
+    enum Outcome: Equatable {
+        /// A compose session that never reached Supabase. The draft *is* the discarded work.
+        case deleteUnfinishedCompose
+        /// Supabase holds the committed version. Drop the dirty cache and refetch it on next open.
+        case deleteLocalCache
+        /// Nothing to restore from, or nothing uncommitted to discard. Leave the draft alone.
+        case keepLocalCopy
+    }
+
+    static func outcome(
+        isUnfinishedCompose: Bool,
+        hasUncommittedLocalEdits: Bool,
+        hasCommittedCloudVersion: Bool
+    ) -> Outcome {
+        if isUnfinishedCompose {
+            return .deleteUnfinishedCompose
+        }
+
+        // Nothing was autosaved, so the copy on disk is already the committed one and deleting it
+        // would only cost a needless download.
+        guard hasUncommittedLocalEdits else {
+            return .keepLocalCopy
+        }
+
+        return hasCommittedCloudVersion ? .deleteLocalCache : .keepLocalCopy
+    }
+}
+
 /// Debounces local autosave: one write a couple of seconds after typing stops, rather than one per
 /// keystroke.
 ///
