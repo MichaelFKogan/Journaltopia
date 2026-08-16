@@ -15,11 +15,22 @@ struct SignInView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
     let presentationMode: PresentationMode
+    let promptTitle: String?
+    let promptSubtitle: String?
+    let onContinueBrowsing: (() -> Void)?
 
     @State private var signingInProvider: SignInProvider?
 
-    init(presentationMode: PresentationMode) {
+    init(
+        presentationMode: PresentationMode,
+        promptTitle: String? = nil,
+        promptSubtitle: String? = nil,
+        onContinueBrowsing: (() -> Void)? = nil
+    ) {
         self.presentationMode = presentationMode
+        self.promptTitle = promptTitle
+        self.promptSubtitle = promptSubtitle
+        self.onContinueBrowsing = onContinueBrowsing
     }
 
     var body: some View {
@@ -71,6 +82,8 @@ struct SignInView: View {
             if let errorMessage = authStore.errorMessage {
                 errorText(errorMessage)
             }
+
+            continueBrowsingButton
         }
     }
 
@@ -267,8 +280,35 @@ struct SignInView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    @ViewBuilder
+    private var continueBrowsingButton: some View {
+        if let onContinueBrowsing, canContinueBrowsing {
+            Button(action: onContinueBrowsing) {
+                Text(continueBrowsingTitle)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.homeAccent)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private var isAuthInteractionDisabled: Bool {
         signingInProvider != nil || authStore.status == .loading
+    }
+
+    private var canContinueBrowsing: Bool {
+        switch authStore.status {
+        case .signedOut, .misconfigured:
+            return signingInProvider == nil
+        case .loading, .signedIn:
+            return false
+        }
+    }
+
+    private var continueBrowsingTitle: String {
+        presentationMode == .sheet ? "Keep Browsing" : "Continue Without Signing In"
     }
 
     private var headerIconName: String {
@@ -291,6 +331,10 @@ struct SignInView: View {
         case .misconfigured:
             return "Sign In Needs Setup"
         case .loading, .signedOut:
+            if let promptTitle {
+                return promptTitle
+            }
+
             return presentationMode == .sheet ? "Sign In to Continue" : "Sign In to Storytopia"
         }
     }
@@ -304,6 +348,10 @@ struct SignInView: View {
         case .loading:
             return "Looking for an existing account session."
         case .signedOut:
+            if let promptSubtitle {
+                return promptSubtitle
+            }
+
             switch presentationMode {
             case .fullScreen:
                 return "Save your journals, entries, characters, and storyboard credits across devices."

@@ -33,6 +33,7 @@ struct ContentView: View {
     @State private var homeStorySoFarPresentation: HomeStorySoFarPresentation?
     @State private var homeStorySoFarPageIndex: Int
     @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
+    @AppStorage("StorytopiaSignedOutSignInPromptDismissed") private var isSignedOutSignInPromptDismissed = false
 
     init() {
         _entryText = State(initialValue: "")
@@ -82,6 +83,11 @@ struct ContentView: View {
                 StoryboardGenerationImagePreview(image: openedStoryboardGenerationImage) {
                     self.openedStoryboardGenerationImage = nil
                 }
+            }
+        }
+        .fullScreenCover(isPresented: isInitialSignedOutSignInPresented) {
+            SignInView(presentationMode: .fullScreen) {
+                isSignedOutSignInPromptDismissed = true
             }
         }
         // Mounted at the root so any screen, sheet or pushed destination can raise it without
@@ -201,6 +207,19 @@ struct ContentView: View {
             set: { isPresented in
                 if !isPresented {
                     homeStorySoFarPresentation = nil
+                }
+            }
+        )
+    }
+
+    private var isInitialSignedOutSignInPresented: Binding<Bool> {
+        Binding(
+            get: {
+                authStore.status == .signedOut && !isSignedOutSignInPromptDismissed
+            },
+            set: { isPresented in
+                if !isPresented {
+                    isSignedOutSignInPromptDismissed = true
                 }
             }
         )
