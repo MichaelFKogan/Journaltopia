@@ -32,6 +32,7 @@ struct ContentView: View {
     @State private var isOpeningCompletedEntryFromEntries: Bool
     @State private var homeStorySoFarPresentation: HomeStorySoFarPresentation?
     @State private var homeStorySoFarPageIndex: Int
+    @AppStorage("StorytopiaHasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @AppStorage("StorytopiaSignedOutSignInPromptDismissed") private var isSignedOutSignInPromptDismissed = false
 
@@ -83,6 +84,11 @@ struct ContentView: View {
                 StoryboardGenerationImagePreview(image: openedStoryboardGenerationImage) {
                     self.openedStoryboardGenerationImage = nil
                 }
+            }
+        }
+        .fullScreenCover(isPresented: isOnboardingPresented) {
+            OnboardingView {
+                completeOnboarding()
             }
         }
         .fullScreenCover(isPresented: isInitialSignedOutSignInPresented) {
@@ -215,7 +221,7 @@ struct ContentView: View {
     private var isInitialSignedOutSignInPresented: Binding<Bool> {
         Binding(
             get: {
-                authStore.status == .signedOut && !isSignedOutSignInPromptDismissed
+                hasCompletedOnboarding && authStore.status == .signedOut && !isSignedOutSignInPromptDismissed
             },
             set: { isPresented in
                 if !isPresented {
@@ -223,6 +229,23 @@ struct ContentView: View {
                 }
             }
         )
+    }
+
+    private var isOnboardingPresented: Binding<Bool> {
+        Binding(
+            get: { !hasCompletedOnboarding },
+            set: { isPresented in
+                if !isPresented {
+                    completeOnboarding()
+                }
+            }
+        )
+    }
+
+    private func completeOnboarding() {
+        hasCompletedOnboarding = true
+        // First-run users should land in signed-out sample browsing, not immediately behind auth.
+        isSignedOutSignInPromptDismissed = true
     }
 
     private func selectPage(_ newPage: StoryPage) {

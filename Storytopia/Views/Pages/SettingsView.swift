@@ -198,6 +198,7 @@ private struct SettingsExtraView: View {
     @Binding var selectedPage: StoryPage
     @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @State private var isResettingGenerationCredits = false
+    @State private var isOnboardingPreviewPresented = false
 
     private var contentMode: StorytopiaContentMode {
         StorytopiaContentMode(
@@ -218,6 +219,22 @@ private struct SettingsExtraView: View {
                     SupabaseJournalTestView()
                         .enableInteractivePopGesture()
                 }
+            }
+
+            Section("Onboarding") {
+                Button {
+                    isOnboardingPreviewPresented = true
+                } label: {
+                    SettingsRowContent(
+                        systemName: "sparkles.rectangle.stack",
+                        title: "Preview Onboarding",
+                        subtitle: "Open the first-launch walkthrough",
+                        showsChevron: false
+                    )
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Preview onboarding")
             }
 
             Section("Credits") {
@@ -332,6 +349,11 @@ private struct SettingsExtraView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .preferredColorScheme(.light)
+        .fullScreenCover(isPresented: $isOnboardingPreviewPresented) {
+            OnboardingView {
+                isOnboardingPreviewPresented = false
+            }
+        }
     }
 
     private var resetGenerationCreditsSubtitle: String {
