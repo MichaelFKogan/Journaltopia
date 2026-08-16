@@ -105,7 +105,61 @@ struct JournalEntryPayload: Encodable, Sendable {
     let isHighlighted: Bool?
     let textAlignmentRawValue: String?
     let displayOrder: Int?
-    let createdAt: Date? = nil
+    let createdAt: Date?
+
+    init(
+        userID: UUID,
+        clientEntryID: UUID,
+        title: String?,
+        content: String?,
+        status: String,
+        richText: NotebookRichTextDocument?,
+        artStyle: String?,
+        location: String?,
+        entryDate: Date?,
+        datePrecision: String?,
+        savesDraft: Bool?,
+        isPrivate: Bool?,
+        fontChoiceRawValue: String?,
+        textColorIndex: Int?,
+        textSize: Double?,
+        paperStyleRawValue: String?,
+        paperColorIndex: Int?,
+        isBold: Bool?,
+        isItalic: Bool?,
+        isUnderlined: Bool?,
+        isStrikethrough: Bool?,
+        isHighlighted: Bool?,
+        textAlignmentRawValue: String?,
+        displayOrder: Int?,
+        createdAt: Date? = nil
+    ) {
+        self.userID = userID
+        self.clientEntryID = clientEntryID
+        self.title = title
+        self.content = content
+        self.status = status
+        self.richText = richText
+        self.artStyle = artStyle
+        self.location = location
+        self.entryDate = entryDate
+        self.datePrecision = datePrecision
+        self.savesDraft = savesDraft
+        self.isPrivate = isPrivate
+        self.fontChoiceRawValue = fontChoiceRawValue
+        self.textColorIndex = textColorIndex
+        self.textSize = textSize
+        self.paperStyleRawValue = paperStyleRawValue
+        self.paperColorIndex = paperColorIndex
+        self.isBold = isBold
+        self.isItalic = isItalic
+        self.isUnderlined = isUnderlined
+        self.isStrikethrough = isStrikethrough
+        self.isHighlighted = isHighlighted
+        self.textAlignmentRawValue = textAlignmentRawValue
+        self.displayOrder = displayOrder
+        self.createdAt = createdAt
+    }
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
