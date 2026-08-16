@@ -33,7 +33,7 @@ update public.profiles
 set generation_credits = 10
 where id = 'aaaaaaaa-0000-4000-8000-000000000001';
 
--- Reserving requires an active Storytopia+ subscription as of 20260817094000. This file is about
+-- Reserving requires an active Journaltopia+ subscription as of 20260817094000. This file is about
 -- what happens *after* a reservation succeeds, so the entitlement is set up once here and the
 -- entitlement rules themselves are tested in subscription_credit_system_test.sql.
 insert into public.subscriptions (
@@ -42,7 +42,7 @@ insert into public.subscriptions (
 )
 values (
     'aaaaaaaa-0000-4000-8000-000000000001',
-    'com.storytopia.plus.monthly',
+    'com.journaltopia.plus.monthly',
     'lifecycle-original-transaction',
     'active',
     now() - interval '2 days',

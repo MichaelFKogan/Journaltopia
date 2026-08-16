@@ -1,4 +1,4 @@
--- The monthly Storytopia+ credit grant.
+-- The monthly Journaltopia+ credit grant.
 --
 -- Called once per subscription period, after something trustworthy has confirmed that period exists.
 -- Today that means a row in public.subscriptions written by hand; from the StoreKit phase onward it

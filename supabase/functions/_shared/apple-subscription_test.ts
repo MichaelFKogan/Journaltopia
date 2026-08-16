@@ -74,7 +74,7 @@ const HOUR = 60 * 60 * 1000;
 
 function transaction(overrides: Partial<JWSTransactionDecodedPayload> = {}): JWSTransactionDecodedPayload {
   return {
-    productId: "com.storytopia.plus.monthly",
+    productId: "com.journaltopia.plus.monthly",
     originalTransactionId: "2000000000000001",
     transactionId: "2000000000000002",
     purchaseDate: Date.now() - HOUR,
@@ -89,7 +89,7 @@ Deno.test("a current subscription is active", () => {
   const verified = toVerifiedSubscription(transaction(), null, Environment.SANDBOX);
 
   assertEquals(verified.status, "active");
-  assertEquals(verified.productID, "com.storytopia.plus.monthly");
+  assertEquals(verified.productID, "com.journaltopia.plus.monthly");
   assertEquals(verified.originalTransactionID, "2000000000000001");
   assertEquals(verified.latestTransactionID, "2000000000000002");
   assertEquals(verified.environment, "sandbox");
@@ -259,7 +259,7 @@ Deno.test("a forged transaction is rejected", withAppleConfig(async () => {
   const forged = [
     btoa(JSON.stringify({ alg: "ES256", x5c: [TEST_ROOT_CA_BASE64] })).replaceAll("=", ""),
     btoa(JSON.stringify({
-      productId: "com.storytopia.plus.monthly",
+      productId: "com.journaltopia.plus.monthly",
       originalTransactionId: "forged-1",
       purchaseDate: Date.now(),
       expiresDate: Date.now() + 30 * 24 * HOUR,

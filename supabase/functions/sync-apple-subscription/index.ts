@@ -1,4 +1,4 @@
-// Binds a verified Apple subscription to the signed-in Storytopia account.
+// Binds a verified Apple subscription to the signed-in Journaltopia account.
 //
 // Called by the app after a purchase, after a restore, and on launch reconciliation. All three send
 // the same thing — the signed transaction Apple gave StoreKit — and all three are safe to repeat:
@@ -55,14 +55,14 @@ Deno.serve(async (request) => {
 
     const outcome = await applyVerifiedSubscription(serviceRoleClient(), userID, verified);
 
-    // The Apple subscription already belongs to a different Storytopia account. Reported as a
+    // The Apple subscription already belongs to a different Journaltopia account. Reported as a
     // structured 409 rather than an opaque failure, because the app has to say something specific
     // about it and there is no safe automatic resolution: re-pointing the row would take an active
     // subscription away from whoever is using it.
     if (outcome.conflict === "already_bound_to_another_account") {
       return jsonResponse(
         {
-          error: "This Apple subscription is already linked to a different Storytopia account.",
+          error: "This Apple subscription is already linked to a different Journaltopia account.",
           code: outcome.conflict,
           isEntitled: false,
         },

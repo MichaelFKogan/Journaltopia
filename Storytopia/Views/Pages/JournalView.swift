@@ -10714,7 +10714,7 @@ struct EntriesView: View {
                     .foregroundStyle(Color.homeAccent)
                     .padding(.top, 1)
 
-                Text("Explore a few sample stories to see how Storytopia works. Your own entries will appear here once you begin writing.")
+                Text("Explore a few sample stories to see how Journaltopia works. Your own entries will appear here once you begin writing.")
                     .font(.system(size: 12, weight: .semibold))
                     .lineSpacing(2)
                     .foregroundStyle(Color.homeMutedText)
@@ -12108,7 +12108,7 @@ struct EntriesView: View {
             entriesPendingDeletion = failedEntries
             entryDeleteErrorMessage = isSampleAuthorMode
                 ? "Could not delete from the sample author pack. Check your connection and try again."
-                : "Could not delete from Storytopia cloud. Check your connection and try again."
+                : "Could not delete from Journaltopia cloud. Check your connection and try again."
         }
     }
 
@@ -12181,7 +12181,7 @@ struct EntriesView: View {
                 entryRenameErrorMessage = nil
                 refreshEntries(forceCloudReload: true)
             } catch {
-                entryRenameErrorMessage = "Could not sync the sample title to Storytopia cloud."
+                entryRenameErrorMessage = "Could not sync the sample title to Journaltopia cloud."
             }
             return
         }
@@ -12243,7 +12243,7 @@ struct EntriesView: View {
                 )
                 await loadCloudEntriesIfNeeded(forceReload: true)
             } catch {
-                entryRenameErrorMessage = "Saved locally. Could not sync the title to Storytopia cloud."
+                entryRenameErrorMessage = "Saved locally. Could not sync the title to Journaltopia cloud."
                 return
             }
         }
@@ -17130,7 +17130,7 @@ private struct PrototypeChapterDetailView: View {
                 )
             } catch {
                 await MainActor.run {
-                    mediaStoryboardErrorMessage = "Could not save media order to Storytopia cloud."
+                    mediaStoryboardErrorMessage = "Could not save media order to Journaltopia cloud."
                 }
             }
         }
@@ -18513,7 +18513,7 @@ private struct JournalDetailEntryBrowser: View {
                 )
             } catch {
                 entriesPendingDeletion = itemsToDelete
-                errorMessage = "Could not delete from Storytopia cloud. Check your connection and try again."
+                errorMessage = "Could not delete from Journaltopia cloud. Check your connection and try again."
                 return
             }
         }
@@ -18557,7 +18557,7 @@ private struct JournalDetailEntryBrowser: View {
                 )
             } catch {
                 entriesPendingDeletion = items
-                errorMessage = "Could not delete from Storytopia cloud. Check your connection and try again."
+                errorMessage = "Could not delete from Journaltopia cloud. Check your connection and try again."
                 return false
             }
         }

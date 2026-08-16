@@ -572,7 +572,7 @@ enum JournalEntryRepositoryError: LocalizedError, TransientCloudFailure {
         case .operationFailed:
             return "The entry could not be saved. Please try again."
         case .temporarilyUnavailable:
-            return "Storytopia cloud could not be reached. Please try again."
+            return "Journaltopia cloud could not be reached. Please try again."
         }
     }
 
@@ -615,7 +615,7 @@ enum StoryJournalRepositoryError: LocalizedError, TransientCloudFailure {
         case .invalidCover:
             return "The journal cover could not be prepared for upload."
         case .temporarilyUnavailable:
-            return "Storytopia cloud could not be reached. Please try again."
+            return "Journaltopia cloud could not be reached. Please try again."
         }
     }
 

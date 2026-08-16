@@ -1,4 +1,4 @@
--- Puts Storytopia+ in front of storyboard generation, and puts every credit movement in the ledger.
+-- Puts Journaltopia+ in front of storyboard generation, and puts every credit movement in the ledger.
 --
 -- Two functions are replaced. Both keep the behaviour 20260815190000 gave them — the reservation is
 -- still one transaction, the failing transition is still the only refund and still runs under
@@ -17,7 +17,7 @@
 --   not_authenticated              no session
 --   invalid_credit_cost            nonsense cost
 --   entry_not_found                the entry is not the caller's
---   subscription_required          no active Storytopia+          <- new
+--   subscription_required          no active Journaltopia+          <- new
 --   insufficient_generation_credits  entitled, but out of credits (raised by spend_generation_credit)
 --
 -- subscription_required and insufficient_generation_credits stay distinct because the app has to do

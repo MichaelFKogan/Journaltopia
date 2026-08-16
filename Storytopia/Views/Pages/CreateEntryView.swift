@@ -2888,7 +2888,7 @@ struct CreateEntryView: View {
                    authStore.userID != nil,
                    requiresEntrySave,
                    prepareResult.cloudEntry == nil {
-                    throw StoryboardGenerationError.openAIMessage("Could not prepare this entry in Storytopia cloud.")
+                    throw StoryboardGenerationError.openAIMessage("Could not prepare this entry in Journaltopia cloud.")
                 }
 
                 await MainActor.run {

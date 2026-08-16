@@ -34,7 +34,7 @@ struct SupabaseSampleStoryService {
     private let client: SupabaseClient
     private let bucketName = "sample-story-assets"
     private let authoringPackSlug = "storytopia-first-run"
-    private let authoringPackTitle = "Storytopia First-Run Samples"
+    private let authoringPackTitle = "Journaltopia First-Run Samples"
     private let authoringLocale = "en"
 
     init(client: SupabaseClient = SupabaseService.shared) {

@@ -196,7 +196,7 @@ export async function requestStoryboardImage(options: {
   try {
     body = await response.json();
   } catch {
-    throw new StoryboardFailure("OpenAI returned a response Storytopia could not read.", 502);
+    throw new StoryboardFailure("OpenAI returned a response Journaltopia could not read.", 502);
   }
 
   const base64Image = body.data?.[0]?.b64_json;

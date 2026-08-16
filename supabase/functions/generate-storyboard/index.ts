@@ -250,7 +250,7 @@ async function assertEntryExists(
   }
 
   if (!data) {
-    throw new StoryboardFailure("This entry was not found in Storytopia cloud.", 404);
+    throw new StoryboardFailure("This entry was not found in Journaltopia cloud.", 404);
   }
 }
 
@@ -285,10 +285,10 @@ async function reserveGeneration(
   const message = error?.message ?? "";
 
   // Kept distinct from the credit failure below, because they lead somewhere different: this one to
-  // Storytopia+, that one to buying more credits. The reservation raises them separately for the
+  // Journaltopia+, that one to buying more credits. The reservation raises them separately for the
   // same reason.
   if (message.includes("subscription_required")) {
-    throw new StoryboardFailure("Storyboard generation requires Storytopia+.", 403);
+    throw new StoryboardFailure("Storyboard generation requires Journaltopia+.", 403);
   }
 
   if (message.includes("insufficient_generation_credits")) {
@@ -300,7 +300,7 @@ async function reserveGeneration(
   }
 
   if (message.includes("entry_not_found")) {
-    throw new StoryboardFailure("This entry was not found in Storytopia cloud.", 404);
+    throw new StoryboardFailure("This entry was not found in Journaltopia cloud.", 404);
   }
 
   console.error("[generate-storyboard] reserve_storyboard_generation failed:", message);

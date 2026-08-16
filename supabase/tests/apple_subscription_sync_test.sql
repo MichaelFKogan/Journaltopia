@@ -1,4 +1,4 @@
--- Binding a verified Apple subscription to a Storytopia account.
+-- Binding a verified Apple subscription to a Journaltopia account.
 --
 -- Run with: supabase test db   (requires the local Supabase stack)
 --
@@ -71,7 +71,7 @@ select is(
 select throws_like(
     $$select public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-bogus', 'apple-txn-bogus',
+        'com.journaltopia.plus.monthly', 'apple-txn-bogus', 'apple-txn-bogus',
         'definitely_subscribed', now(), now() + interval '30 days', true, 'sandbox'
     )$$,
     '%invalid_subscription_status%',
@@ -81,7 +81,7 @@ select throws_like(
 select throws_like(
     $$select public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', '', '',
+        'com.journaltopia.plus.monthly', '', '',
         'active', now(), now() + interval '30 days', true, 'sandbox'
     )$$,
     '%missing_original_transaction_id%',
@@ -92,7 +92,7 @@ select throws_like(
 select is(
     (select granted from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
         'active', date_trunc('second', now()), now() + interval '30 days', true, 'sandbox'
     )),
     25,
@@ -121,7 +121,7 @@ select ok(
 select is(
     (select granted from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
         'active', date_trunc('second', now()), now() + interval '30 days', true, 'sandbox'
     )),
     0,
@@ -131,7 +131,7 @@ select is(
 select is(
     (select already_granted from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
         'active', date_trunc('second', now()), now() + interval '30 days', true, 'sandbox'
     )),
     true,
@@ -155,7 +155,7 @@ select is(
 select is(
     (select granted from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
         'active', date_trunc('second', now()), now() + interval '30 days', true, 'sandbox'
     )),
     0,
@@ -171,7 +171,7 @@ where id = 'abababab-0000-4000-8000-000000000001';
 select is(
     (select granted from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
         'active', date_trunc('second', now()) + interval '30 days', now() + interval '60 days', true, 'sandbox'
     )),
     25,
@@ -195,7 +195,7 @@ select is(
 select is(
     (select granted from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-1',
         'active', date_trunc('second', now()), now() + interval '30 days', true, 'sandbox'
     )),
     0,
@@ -214,11 +214,11 @@ select ok(
     'an out-of-order redelivery does not rewind the period'
 );
 
--- G. One Apple subscription, one Storytopia account ------------------------------------------------
+-- G. One Apple subscription, one Journaltopia account ------------------------------------------------
 select is(
     (select conflict from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000002',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
         'active', date_trunc('second', now()) + interval '30 days', now() + interval '60 days', true, 'sandbox'
     )),
     'already_bound_to_another_account',
@@ -252,7 +252,7 @@ select ok(
 select is(
     (select is_entitled from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
         'expired', date_trunc('second', now()) + interval '30 days', now() + interval '60 days', false, 'sandbox'
     )),
     false,
@@ -301,7 +301,7 @@ select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 select is(
     (select is_entitled from public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
         'revoked', date_trunc('second', now()) + interval '30 days', now() + interval '60 days', false, 'sandbox'
     )),
     false,
@@ -320,7 +320,7 @@ select ok(
 select is(
     (select conflict from public.sync_apple_subscription(
         null,
-        'com.storytopia.plus.monthly', 'apple-txn-never-seen', 'apple-txn-never-seen',
+        'com.journaltopia.plus.monthly', 'apple-txn-never-seen', 'apple-txn-never-seen',
         'active', now(), now() + interval '30 days', true, 'sandbox'
     )),
     'unknown_subscription',
@@ -330,7 +330,7 @@ select is(
 select is(
     (select bound_user_id from public.sync_apple_subscription(
         null,
-        'com.storytopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
+        'com.journaltopia.plus.monthly', 'apple-txn-1', 'apple-txn-2',
         'active', date_trunc('second', now()) + interval '30 days', now() + interval '60 days', true, 'sandbox'
     )),
     'abababab-0000-4000-8000-000000000001',

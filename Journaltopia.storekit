@@ -68,7 +68,7 @@
       "localizations" : [
 
       ],
-      "name" : "Storytopia Plus",
+      "name" : "Journaltopia Plus",
       "subscriptions" : [
         {
           "adHocOffers" : [
@@ -85,13 +85,13 @@
           "localizations" : [
             {
               "description" : "Turn your journal entries into AI graphic novel pages, with 25 generation credits every month.",
-              "displayName" : "Storytopia+",
+              "displayName" : "Journaltopia+",
               "locale" : "en_US"
             }
           ],
-          "productID" : "com.storytopia.plus.monthly",
+          "productID" : "com.journaltopia.plus.monthly",
           "recurringSubscriptionPeriod" : "P1M",
-          "referenceName" : "Storytopia Plus Monthly",
+          "referenceName" : "Journaltopia Plus Monthly",
           "subscriptionGroupID" : "21594730",
           "type" : "RecurringSubscription"
         }

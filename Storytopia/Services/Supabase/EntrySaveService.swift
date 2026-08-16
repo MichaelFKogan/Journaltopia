@@ -384,7 +384,7 @@ enum SupabaseStoryboardError: LocalizedError {
         case .invalidImage:
             return "The generated storyboard could not be prepared for upload."
         case .notAuthenticated:
-            return "Sign in before saving a storyboard to Storytopia cloud."
+            return "Sign in before saving a storyboard to Journaltopia cloud."
         case .syncFailed:
             return "Storyboard cloud sync failed. Please try again."
         case .downloadFailed:
@@ -406,7 +406,7 @@ enum SupabaseEntryThumbnailError: LocalizedError, TransientCloudFailure {
         case .syncFailed:
             return "Entry thumbnail sync failed. Please try again."
         case .temporarilyUnavailable:
-            return "Entry thumbnail sync could not reach Storytopia cloud."
+            return "Entry thumbnail sync could not reach Journaltopia cloud."
         case .downloadFailed:
             return "Could not download this entry thumbnail."
         }
@@ -1094,7 +1094,7 @@ struct EntrySaveService {
             // outlives this screen instead of flashing a message that the next state change wipes.
             return notSavedResult(
                 localDraftID: localDraftID,
-                reason: "Saved on this device only. Storytopia cloud could not be reached.",
+                reason: "Saved on this device only. Journaltopia cloud could not be reached.",
                 error: error
             )
         }

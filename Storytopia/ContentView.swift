@@ -581,7 +581,7 @@ private struct StoryboardGenerationBottomBanner: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .accessibilityLabel(
                     status.isRestored && status.kind == .running
-                        ? "\(status.title), still running on Storytopia's servers"
+                        ? "\(status.title), still running on Journaltopia's servers"
                         : status.title
                 )
                 .accessibilityHint(status.kind == .completed ? "Opens the generated storyboard image" : status.message)

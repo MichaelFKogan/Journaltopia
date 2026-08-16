@@ -1,4 +1,4 @@
-# Storytopia Sample Story Content
+# Journaltopia Sample Story Content
 
 Sample stories live outside user data. They are public/read-only app content that the Entries page can fetch, cache, and render through the same UI used for real entries.
 

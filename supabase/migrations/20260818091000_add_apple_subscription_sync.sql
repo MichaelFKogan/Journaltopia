@@ -1,4 +1,4 @@
--- The one place a verified Apple subscription becomes Storytopia+ entitlement.
+-- The one place a verified Apple subscription becomes Journaltopia+ entitlement.
 --
 -- Both server paths land here — the client-initiated sync after a purchase or restore, and the App
 -- Store server notification that arrives with no client at all — so that a renewal grants the same
@@ -58,7 +58,7 @@ begin
     for update;
 
     if found then
-        -- Cross-account protection. Apple's subscription identity already belongs to a Storytopia
+        -- Cross-account protection. Apple's subscription identity already belongs to a Journaltopia
         -- account; binding it to a second one would give two users entitlement from one purchase,
         -- and re-pointing user_id would silently move an active subscription away from whoever is
         -- currently relying on it. Refused, reported, and nothing written — in particular no grant,
@@ -80,7 +80,7 @@ begin
         target_user := existing.user_id;
     elsif target_user is null then
         -- The notification path with nothing to attach to: Apple is telling us about a subscription
-        -- no Storytopia account has ever synced. There is no honest way to guess the owner, so it is
+        -- no Journaltopia account has ever synced. There is no honest way to guess the owner, so it is
         -- reported rather than invented. The client sync will bind it the next time that user opens
         -- the app.
         return query

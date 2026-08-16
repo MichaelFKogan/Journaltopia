@@ -54,7 +54,7 @@ insert into public.subscriptions (
 )
 values (
     'aaaaaaaa-0000-4000-8000-000000000002',
-    'com.storytopia.plus.monthly',
+    'com.journaltopia.plus.monthly',
     'credit-security-original-transaction',
     'active',
     now() - interval '1 day',

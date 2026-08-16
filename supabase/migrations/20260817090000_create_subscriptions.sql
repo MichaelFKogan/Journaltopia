@@ -1,4 +1,4 @@
--- Storytopia+ entitlement. This is the record of what Apple has told us about a subscription, and
+-- Journaltopia+ entitlement. This is the record of what Apple has told us about a subscription, and
 -- it is the only thing the server will accept as proof that a user is entitled.
 --
 -- Nothing here trusts a client. The table is written by the server alone; a signed-in user may read
@@ -14,7 +14,7 @@ create table if not exists public.subscriptions (
     -- change rather than a schema migration.
     provider text not null default 'apple',
 
-    -- The App Store product this entitlement came from, e.g. the monthly Storytopia+ subscription.
+    -- The App Store product this entitlement came from, e.g. the monthly Journaltopia+ subscription.
     product_id text not null,
 
     -- Apple's stable identity for a subscription across every renewal. This is the join key for
@@ -60,7 +60,7 @@ create table if not exists public.subscriptions (
 );
 
 -- One Apple subscription identity, one row, globally. This is what stops the same purchase from
--- entitling two Storytopia accounts: a second user who signs in and presents the same
+-- entitling two Journaltopia accounts: a second user who signs in and presents the same
 -- original_transaction_id collides here instead of being granted a parallel entitlement.
 --
 -- Re-binding a subscription to a different account is still possible — it is an UPDATE of user_id on
@@ -97,7 +97,7 @@ revoke all on public.subscriptions from anon, authenticated;
 grant select on public.subscriptions to authenticated;
 grant select, insert, update, delete on public.subscriptions to service_role;
 
--- Is this user entitled to Storytopia+ right now? -------------------------------------------------
+-- Is this user entitled to Journaltopia+ right now? -------------------------------------------------
 -- One definition, used by the reservation path and by the client-facing read model, so the two can
 -- never disagree about what "subscribed" means.
 --

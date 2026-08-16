@@ -402,7 +402,7 @@ private struct SampleStudioView: View {
         } else {
             List {
                 Section {
-                    Text("Create and edit the public first-run sample stories using Storytopia's real entry flow. Saves go to the sample tables and sample-story-assets bucket.")
+                    Text("Create and edit the public first-run sample stories using Journaltopia's real entry flow. Saves go to the sample tables and sample-story-assets bucket.")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.homeMutedText)
                         .fixedSize(horizontal: false, vertical: true)

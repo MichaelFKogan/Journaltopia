@@ -1,4 +1,4 @@
-# Storytopia — Path to Launch
+# Journaltopia — Path to Launch
 
 Ordered so that each phase unblocks the next. Phases 0–4 are release-blocking. Phases 5–7 are polish and can slip.
 

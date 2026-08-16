@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import StoreKit
 
-/// Storytopia+ on the client: the App Store product, the purchase and restore operations, and the
+/// Journaltopia+ on the client: the App Store product, the purchase and restore operations, and the
 /// listener that keeps the server told about what Apple has done.
 ///
 /// The division of responsibility this type exists to hold:
@@ -30,8 +30,8 @@ final class SubscriptionStore: ObservableObject {
         case awaitingApproval
     }
 
-    /// The server's answer about this account. See ``StorytopiaPlusState``.
-    @Published private(set) var state: StorytopiaPlusState = .unresolved
+    /// The server's answer about this account. See ``JournaltopiaPlusState``.
+    @Published private(set) var state: JournaltopiaPlusState = .unresolved
     @Published private(set) var product: Product?
     @Published private(set) var purchasePhase: PurchasePhase = .idle
     @Published private(set) var isReconciling = false
@@ -49,13 +49,13 @@ final class SubscriptionStore: ObservableObject {
     }
 
     private let syncService: AppleSubscriptionSyncService
-    private let entitlementService: StorytopiaPlusEntitlementService
+    private let entitlementService: JournaltopiaPlusEntitlementService
     private var listenerTask: Task<Void, Never>?
     private weak var creditStore: GenerationCreditStore?
 
     init(
         syncService: AppleSubscriptionSyncService = AppleSubscriptionSyncService(),
-        entitlementService: StorytopiaPlusEntitlementService = StorytopiaPlusEntitlementService()
+        entitlementService: JournaltopiaPlusEntitlementService = JournaltopiaPlusEntitlementService()
     ) {
         self.syncService = syncService
         self.entitlementService = entitlementService
@@ -115,7 +115,7 @@ final class SubscriptionStore: ObservableObject {
 
     /// Clears this device's presentation of a subscription without touching the server's record.
     ///
-    /// Called on sign-out. The subscription belongs to the Storytopia account, not to the device, so
+    /// Called on sign-out. The subscription belongs to the Journaltopia account, not to the device, so
     /// signing out forgets what was on screen and nothing else — and the next account to sign in
     /// starts from `.unresolved` rather than inheriting the previous one's entitlement.
     func resetLocalState() {
@@ -127,13 +127,13 @@ final class SubscriptionStore: ObservableObject {
 
     // MARK: - Purchasing
 
-    /// Buys Storytopia+.
+    /// Buys Journaltopia+.
     ///
     /// Returns once Apple has answered. Entitlement itself is *not* established by the return value:
     /// a successful purchase is verified, sent to the server, and only then reflected in `state`,
     /// and a purchase that Apple defers resolves later through the listener.
     @discardableResult
-    func purchaseStorytopiaPlus(isSignedIn: Bool) async -> Bool {
+    func purchaseJournaltopiaPlus(isSignedIn: Bool) async -> Bool {
         errorMessage = nil
 
         // Binding needs an account. Purchasing first and signing in afterwards would leave a paid
@@ -145,7 +145,7 @@ final class SubscriptionStore: ObservableObject {
         }
 
         guard let product = await resolvedProduct() else {
-            errorMessage = "Storytopia+ is unavailable right now. Please try again."
+            errorMessage = "Journaltopia+ is unavailable right now. Please try again."
             return false
         }
 
@@ -188,7 +188,7 @@ final class SubscriptionStore: ObservableObject {
                 return false
             }
         } catch {
-            print("[Storytopia] Storytopia+ purchase failed: \(error)")
+            print("[Storytopia] Journaltopia+ purchase failed: \(error)")
             errorMessage = "The purchase could not be completed. Please try again."
             return false
         }
@@ -239,7 +239,7 @@ final class SubscriptionStore: ObservableObject {
                 continue
             }
 
-            guard StorytopiaProducts.subscriptionIdentifiers.contains(transaction.productID) else {
+            guard JournaltopiaProducts.subscriptionIdentifiers.contains(transaction.productID) else {
                 continue
             }
 
@@ -255,7 +255,7 @@ final class SubscriptionStore: ObservableObject {
             // An unreadable answer is not evidence of no subscription. Leaving the previous state in
             // place — including `.unresolved` — keeps a network blip from presenting a paywall to a
             // paying subscriber.
-            print("[Storytopia] Storytopia+ entitlement refresh failed: \(error.localizedDescription)")
+            print("[Storytopia] Journaltopia+ entitlement refresh failed: \(error.localizedDescription)")
         }
     }
 
@@ -267,7 +267,7 @@ final class SubscriptionStore: ObservableObject {
             return
         }
 
-        guard StorytopiaProducts.subscriptionIdentifiers.contains(transaction.productID) else {
+        guard JournaltopiaProducts.subscriptionIdentifiers.contains(transaction.productID) else {
             // Not ours, but still Apple's to be told about, or it is redelivered forever.
             await transaction.finish()
             return
@@ -298,7 +298,7 @@ final class SubscriptionStore: ObservableObject {
             await transaction.finish()
 
             if result.grantedCredits > 0 {
-                print("[Storytopia] Storytopia+ period granted \(result.grantedCredits) credits.")
+                print("[Storytopia] Journaltopia+ period granted \(result.grantedCredits) credits.")
             }
 
             return result.isEntitled
@@ -308,7 +308,7 @@ final class SubscriptionStore: ObservableObject {
             return false
         } catch {
             // Deliberately unfinished. The next launch, foreground, or listener delivery tries again.
-            print("[Storytopia] Storytopia+ sync deferred: \(error.localizedDescription)")
+            print("[Storytopia] Journaltopia+ sync deferred: \(error.localizedDescription)")
             errorMessage = (error as? LocalizedError)?.errorDescription
             return false
         }
@@ -363,10 +363,10 @@ final class SubscriptionStore: ObservableObject {
         }
 
         do {
-            let products = try await Product.products(for: StorytopiaProducts.subscriptionIdentifiers)
-            product = products.first { $0.id == StorytopiaProducts.storytopiaPlusMonthly }
+            let products = try await Product.products(for: JournaltopiaProducts.subscriptionIdentifiers)
+            product = products.first { $0.id == JournaltopiaProducts.journaltopiaPlusMonthly }
         } catch {
-            print("[Storytopia] Storytopia+ product load failed: \(error.localizedDescription)")
+            print("[Storytopia] Journaltopia+ product load failed: \(error.localizedDescription)")
         }
     }
 

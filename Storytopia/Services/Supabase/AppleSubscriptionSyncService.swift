@@ -46,7 +46,7 @@ struct AppleSubscriptionSyncResult: Decodable, Sendable {
 
 enum AppleSubscriptionSyncError: LocalizedError, Equatable {
     case notAuthenticated
-    /// This Apple subscription already belongs to a different Storytopia account. There is no safe
+    /// This Apple subscription already belongs to a different Journaltopia account. There is no safe
     /// automatic resolution — re-pointing it would take an active subscription away from whoever is
     /// currently using it — so it is surfaced as its own case for Phase 4 to explain.
     case alreadyBoundToAnotherAccount
@@ -56,9 +56,9 @@ enum AppleSubscriptionSyncError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .notAuthenticated:
-            return "Sign in to link your Storytopia+ subscription to your account."
+            return "Sign in to link your Journaltopia+ subscription to your account."
         case .alreadyBoundToAnotherAccount:
-            return "This Apple subscription is already linked to a different Storytopia account."
+            return "This Apple subscription is already linked to a different Journaltopia account."
         case .verificationFailed(let message):
             return message
         case .unavailable:
@@ -155,10 +155,10 @@ struct AppleSubscriptionSyncService {
 
 /// The server's own view of this account's plan, read through RLS.
 ///
-/// This is the authoritative answer for anything that gates on Storytopia+. StoreKit's opinion is
+/// This is the authoritative answer for anything that gates on Journaltopia+. StoreKit's opinion is
 /// what the app uses to know a purchase happened; this is what the app uses to know the server
 /// agrees, and the server is what `generate-storyboard` consults.
-struct StorytopiaPlusEntitlementService {
+struct JournaltopiaPlusEntitlementService {
     private let client: SupabaseClient
 
     init(client: SupabaseClient = SupabaseService.shared) {
@@ -179,7 +179,7 @@ struct StorytopiaPlusEntitlementService {
         }
     }
 
-    func fetchEntitlement() async throws -> StorytopiaPlusState {
+    func fetchEntitlement() async throws -> JournaltopiaPlusState {
         do {
             _ = try await client.auth.session
         } catch {

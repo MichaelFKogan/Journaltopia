@@ -465,7 +465,7 @@ struct OpenAIImageGenerationService {
         The finished page should feel as though a thoughtful graphic novelist studied the
         memory and selected the most meaningful visual moments.
 
-        STORYTOPIA'S PURPOSE:
+        JOURNALTOPIA'S PURPOSE:
 
         Turn memories into graphic novel pages so people can see their own lives from a
         new perspective.

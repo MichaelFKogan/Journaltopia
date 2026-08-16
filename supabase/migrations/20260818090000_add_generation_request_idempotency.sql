@@ -86,7 +86,7 @@ begin
     end if;
 
     -- The authoritative entitlement check, unchanged from 20260817094000 and still ahead of any
-    -- spending, so a user without Storytopia+ is turned away having been charged nothing.
+    -- spending, so a user without Journaltopia+ is turned away having been charged nothing.
     if not public.has_active_storytopia_plus(caller) then
         raise exception 'subscription_required';
     end if;

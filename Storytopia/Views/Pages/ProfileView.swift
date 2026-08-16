@@ -663,7 +663,7 @@ struct ProfileView: View {
             print("[Storytopia] Profile storyboard grid load failed: \(error.localizedDescription)")
             generatedStoryboards = []
             hasMoreProfileStoryboards = false
-            profileStoryboardErrorMessage = "Could not load your completed AI storyboards from Storytopia cloud."
+            profileStoryboardErrorMessage = "Could not load your completed AI storyboards from Journaltopia cloud."
         }
     }
 

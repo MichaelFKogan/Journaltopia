@@ -40,7 +40,7 @@ insert into public.subscriptions (
 )
 values (
     'dddddddd-0000-4000-8000-000000000001',
-    'com.storytopia.plus.monthly',
+    'com.journaltopia.plus.monthly',
     'idempotency-original-transaction',
     'active',
     now() - interval '1 day',
@@ -217,7 +217,7 @@ insert into public.subscriptions (
 )
 values (
     'dddddddd-0000-4000-8000-000000000002',
-    'com.storytopia.plus.monthly',
+    'com.journaltopia.plus.monthly',
     'idempotency-original-transaction-two',
     'active',
     now() - interval '1 day',

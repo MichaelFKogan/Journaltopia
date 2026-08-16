@@ -335,16 +335,16 @@ struct SignInView: View {
                 return promptTitle
             }
 
-            return presentationMode == .sheet ? "Sign In to Continue" : "Sign In to Storytopia"
+            return presentationMode == .sheet ? "Sign In to Continue" : "Sign In to Journaltopia"
         }
     }
 
     private var subtitle: String {
         switch authStore.status {
         case .signedIn:
-            return "Your Storytopia account is ready on this device."
+            return "Your Journaltopia account is ready on this device."
         case .misconfigured:
-            return "Storytopia cannot reach its account provider until configuration is complete."
+            return "Journaltopia cannot reach its account provider until configuration is complete."
         case .loading:
             return "Looking for an existing account session."
         case .signedOut:

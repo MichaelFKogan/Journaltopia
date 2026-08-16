@@ -1,4 +1,4 @@
--- Storytopia+ entitlement, the credit ledger, and the monthly grant.
+-- Journaltopia+ entitlement, the credit ledger, and the monthly grant.
 --
 -- Run with: supabase test db   (requires the local Supabase stack)
 --
@@ -129,7 +129,7 @@ select ok(
     'the verified-purchase path may grant subscription credits'
 );
 
--- One Apple subscription, one Storytopia account ---------------------------------------------------
+-- One Apple subscription, one Journaltopia account ---------------------------------------------------
 insert into public.subscriptions (
     id, user_id, product_id, original_transaction_id, status,
     current_period_start, current_period_end, environment
@@ -137,7 +137,7 @@ insert into public.subscriptions (
 values (
     'aaaabbbb-0000-4000-8000-000000000001',
     'eeeeeeee-0000-4000-8000-000000000001',
-    'com.storytopia.plus.monthly',
+    'com.journaltopia.plus.monthly',
     'apple-original-transaction-1',
     'active',
     date_trunc('second', now()) - interval '3 days',
@@ -152,7 +152,7 @@ select throws_ok(
     )
     values (
         'eeeeeeee-0000-4000-8000-000000000002',
-        'com.storytopia.plus.monthly',
+        'com.journaltopia.plus.monthly',
         'apple-original-transaction-1',
         'active',
         now(),
@@ -299,7 +299,7 @@ select throws_like(
         'eeee/ffff/one.jpg', 'Anime', 'low', 'an unsubscribed afternoon', 1
     )$$,
     '%subscription_required%',
-    'reserving without Storytopia+ is refused'
+    'reserving without Journaltopia+ is refused'
 );
 
 select is(
@@ -506,7 +506,7 @@ select is(
 
 select is(
     (select product_id from public.storytopia_plus_entitlement),
-    'com.storytopia.plus.monthly',
+    'com.journaltopia.plus.monthly',
     'the read model reports which product entitles the user'
 );
 

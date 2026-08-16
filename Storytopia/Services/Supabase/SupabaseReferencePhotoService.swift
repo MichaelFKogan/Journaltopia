@@ -70,7 +70,7 @@ enum SupabaseReferencePhotoError: LocalizedError, TransientCloudFailure {
         case .syncFailed:
             return "Reference photos could not be synced. Please try again."
         case .temporarilyUnavailable:
-            return "Reference photos could not reach Storytopia cloud. Please try again."
+            return "Reference photos could not reach Journaltopia cloud. Please try again."
         }
     }
 
@@ -442,7 +442,7 @@ enum SupabaseEntryCharacterError: LocalizedError, TransientCloudFailure {
         case .syncFailed:
             return "Character photos could not be synced. Please try again."
         case .temporarilyUnavailable:
-            return "Character photos could not reach Storytopia cloud. Please try again."
+            return "Character photos could not reach Journaltopia cloud. Please try again."
         }
     }
 

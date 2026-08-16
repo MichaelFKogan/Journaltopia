@@ -25,7 +25,7 @@ enum AccountRequiredAction: String, Equatable {
     var title: String {
         switch self {
         case .signIn:
-            return "Sign In to Storytopia"
+            return "Sign In to Journaltopia"
         case .createEntry, .saveEntry, .editEntry:
             return "Sign In to Write"
         case .deleteEntry, .deleteJournal:
@@ -54,7 +54,7 @@ enum AccountRequiredAction: String, Equatable {
         case .editEntry:
             return "The sample stories are shared with everyone, so they can be read but not edited. Sign in to write entries of your own."
         case .deleteEntry:
-            return "The sample stories belong to everyone browsing Storytopia. Sign in to manage entries in your own library."
+            return "The sample stories belong to everyone browsing Journaltopia. Sign in to manage entries in your own library."
         case .deleteJournal:
             return "Sample journals are part of the shared preview. Sign in to create and delete journals of your own."
         case .generateStoryboard:
@@ -66,7 +66,7 @@ enum AccountRequiredAction: String, Equatable {
         case .createJournal:
             return "Journals are saved to your account. Sign in to make one — the sample journals stay browsable without an account."
         case .editJournal, .customizeJournalCover:
-            return "The sample journals are shared with everyone browsing Storytopia. Sign in to create and customize journals of your own."
+            return "The sample journals are shared with everyone browsing Journaltopia. Sign in to create and customize journals of your own."
         case .reorderContent:
             return "Ordering is saved with your account. Sign in to arrange your own journals and entries."
         case .spendCredits:

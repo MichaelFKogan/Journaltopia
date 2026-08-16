@@ -268,7 +268,7 @@ private enum AppleSignInError: LocalizedError {
         case .missingNonce:
             return "Apple sign-in could not be verified. Please try again."
         case .nonceGenerationFailed:
-            return "Storytopia could not prepare a secure Apple sign-in request. Please try again."
+            return "Journaltopia could not prepare a secure Apple sign-in request. Please try again."
         }
     }
 }

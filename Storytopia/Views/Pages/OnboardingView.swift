@@ -160,7 +160,7 @@ private struct OnboardingPage {
     static let allPages: [OnboardingPage] = [
         OnboardingPage(
             title: "Turn your life into story.",
-            message: "Storytopia helps your journals become a living world of scenes, characters, and visual memories.",
+            message: "Journaltopia helps your journals become a living world of scenes, characters, and visual memories.",
             imageName: "storyboard_placeholder_1",
             backdropColor: Color.storyBlush
         ),

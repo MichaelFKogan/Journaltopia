@@ -1,7 +1,7 @@
 -- New accounts start with no credits.
 --
 -- The default of 10 came from 20260802090000, when credits were a free allowance and signing up was
--- the only way to get any. Under Storytopia+ credits arrive with a subscription period, so a signup
+-- the only way to get any. Under Journaltopia+ credits arrive with a subscription period, so a signup
 -- grant of 10 would be three free HD storyboards handed to every new account, and to every account
 -- created after a deletion.
 --
