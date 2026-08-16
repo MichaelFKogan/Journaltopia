@@ -216,6 +216,11 @@ struct StoryboardGenerationGlobalStatus: Identifiable {
     let journalTitle: String?
     let kind: StoryboardGenerationGlobalStatusKind
     let image: UIImage?
+    /// True when this status describes a generation the app picked back up rather than one it has
+    /// been watching all along — a launch or a return to the foreground with work still running on
+    /// the server. The banner says so, because "still generating" reads very differently when you
+    /// did not start it a moment ago.
+    let isRestored: Bool
 
     init(
         id: UUID = UUID(),
@@ -225,7 +230,8 @@ struct StoryboardGenerationGlobalStatus: Identifiable {
         message: String,
         journalTitle: String? = nil,
         kind: StoryboardGenerationGlobalStatusKind,
-        image: UIImage? = nil
+        image: UIImage? = nil,
+        isRestored: Bool = false
     ) {
         self.id = id
         self.entryID = entryID
@@ -235,6 +241,7 @@ struct StoryboardGenerationGlobalStatus: Identifiable {
         self.journalTitle = journalTitle
         self.kind = kind
         self.image = image
+        self.isRestored = isRestored
     }
 }
 

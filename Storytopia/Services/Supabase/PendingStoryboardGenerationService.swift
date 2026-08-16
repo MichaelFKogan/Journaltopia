@@ -514,6 +514,12 @@ final class PendingStoryboardGenerationMonitor: ObservableObject {
         restoredStoryboard = nil
     }
 
+    /// Whether this entry has a generation the server still owes an answer for. Views use it to keep
+    /// a second generation from being fired for the same entry.
+    func hasPendingGeneration(for clientEntryID: UUID) -> Bool {
+        pendingGenerations.contains { $0.clientEntryID == clientEntryID }
+    }
+
     private func startPolling() {
         guard pollTask == nil else {
             return
@@ -598,6 +604,9 @@ final class PendingStoryboardGenerationMonitor: ObservableObject {
     }
 
     private func apply(_ storyboard: GeneratedStoryboard) {
+        // A generation the app watched from the start reads differently from one it picked back up:
+        // only the second finished "while you were away".
+        let wasRestored = status?.isRestored ?? true
         restoredStoryboard = storyboard
 
         withAnimation(.snappy(duration: 0.24)) {
@@ -605,10 +614,13 @@ final class PendingStoryboardGenerationMonitor: ObservableObject {
                 entryID: storyboard.clientEntryID,
                 storyboardID: storyboard.id,
                 title: "Storyboard ready",
-                message: "Finished while you were away. Tap to view.",
+                message: wasRestored
+                    ? "Finished while you were away. Tap to view."
+                    : "Saved to this entry. Tap to view.",
                 journalTitle: journalTitle(for: storyboard.clientEntryID),
                 kind: .completed,
-                image: storyboard.image
+                image: storyboard.image,
+                isRestored: wasRestored
             )
         }
 
@@ -639,7 +651,8 @@ final class PendingStoryboardGenerationMonitor: ObservableObject {
                 title: "Storyboard failed",
                 message: "\(reason) \(creditNote)",
                 journalTitle: status?.journalTitle,
-                kind: .failed
+                kind: .failed,
+                isRestored: status?.isRestored ?? true
             )
         }
     }
@@ -665,7 +678,8 @@ final class PendingStoryboardGenerationMonitor: ObservableObject {
             title: "Generating storyboard",
             message: message,
             journalTitle: journalTitle(for: pendingGeneration.clientEntryID),
-            kind: .running
+            kind: .running,
+            isRestored: isRestored
         )
     }
 
