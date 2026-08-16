@@ -193,11 +193,9 @@ struct SettingsView: View {
 
 private struct SettingsExtraView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
-    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
     @Binding var selectedPage: StoryPage
     @AppStorage("StorytopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
-    @State private var isResettingGenerationCredits = false
     @State private var isOnboardingPreviewPresented = false
 
     private var contentMode: StorytopiaContentMode {
@@ -235,50 +233,6 @@ private struct SettingsExtraView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Preview onboarding")
-            }
-
-            Section("Credits") {
-                Button {
-                    Task {
-                        isResettingGenerationCredits = true
-                        generationCreditStore.errorMessage = nil
-                        do {
-                            try await generationCreditStore.setBalance(25)
-                        } catch {
-                            generationCreditStore.errorMessage = error.localizedDescription
-                        }
-                        isResettingGenerationCredits = false
-                    }
-                } label: {
-                    SettingsRowContent(
-                        systemName: "arrow.counterclockwise.circle",
-                        title: isResettingGenerationCredits ? "Resetting Credits" : "Reset Generation Credits",
-                        subtitle: resetGenerationCreditsSubtitle,
-                        showsChevron: false,
-                        trailingContent: {
-                            if isResettingGenerationCredits {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                CreditBalanceBadge(
-                                    balance: generationCreditStore.balance,
-                                    isRefreshing: generationCreditStore.isRefreshing
-                                )
-                            }
-                        }
-                    )
-                    .padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-                .disabled(authStore.userID == nil || isResettingGenerationCredits)
-                .accessibilityLabel("Reset generation credits to 25")
-
-                if let errorMessage = generationCreditStore.errorMessage {
-                    Text(errorMessage)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.red.opacity(0.82))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
 
             Section("Journal") {
@@ -354,10 +308,6 @@ private struct SettingsExtraView: View {
                 isOnboardingPreviewPresented = false
             }
         }
-    }
-
-    private var resetGenerationCreditsSubtitle: String {
-        authStore.userID == nil ? "Sign in to update your balance" : "Set your balance back to 25"
     }
 
     private var sampleStudioSubtitle: String {
