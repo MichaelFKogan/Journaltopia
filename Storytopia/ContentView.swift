@@ -170,8 +170,7 @@ struct ContentView: View {
             }
 
             if !isOpeningEntryFromEntries {
-                activeDraftID = nil
-                completedEntryOpenedStoryboardImage = nil
+                resetFreshCreateState()
             } else if !isOpeningCompletedEntryFromEntries {
                 completedEntryOpenedStoryboardImage = nil
             }
@@ -284,6 +283,7 @@ struct ContentView: View {
             selectedPage: pageSelection,
             generatedStoryboards: $generatedStoryboards,
             completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
+            isOpeningEntryFromEntries: isOpeningEntryFromEntries,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
             storyboardGenerationStatus: $storyboardGenerationStatus,
             authoringMode: isSampleAuthorModeEnabled && authStore.userID != nil ? .sampleStudio : .user,
@@ -295,11 +295,6 @@ struct ContentView: View {
 
     private func openCreatePageFromHome() {
         resetHomeCardState()
-        activeDraftID = nil
-        journalCreatePresentation = nil
-        isOpeningEntryFromEntries = false
-        isOpeningCompletedEntryFromEntries = false
-        completedEntryOpenedStoryboardImage = nil
         selectPage(.create)
     }
 
@@ -369,6 +364,16 @@ struct ContentView: View {
     private func resetHomeCardState() {
         homeStorySoFarPresentation = nil
         journalCreatePresentation = nil
+        isOpeningEntryFromEntries = false
+        isOpeningCompletedEntryFromEntries = false
+        completedEntryOpenedStoryboardImage = nil
+    }
+
+    private func resetFreshCreateState() {
+        activeDraftID = nil
+        entryText = ""
+        draftStoryTitle = ""
+        draftStoryboardPhotos = Array(repeating: nil, count: 5)
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil

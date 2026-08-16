@@ -109,6 +109,15 @@ struct SupabaseSampleStoryService {
         )
     }
 
+    func loadAuthoringJournals() async throws -> [SampleJournal] {
+        try await loadAuthoringPack().journals
+    }
+
+    func loadAuthoringCharacters() async throws -> [EntryCharacter] {
+        let pack = try await loadAuthoringPack()
+        return EntryCharacterRules.orderedCharacters(uniqueCharacters(from: pack.entries.flatMap(\.characters)))
+    }
+
     func loadActiveSampleEntryIDs(locale: String = Locale.current.language.languageCode?.identifier ?? "en") async throws -> Set<UUID> {
         let localizedPack = try await loadPack(locale: locale)
         let fallbackPack = localizedPack == nil && locale != "en"
@@ -694,6 +703,22 @@ struct SupabaseSampleStoryService {
             print("[Storytopia] Sample entry asset load failed: \(error.localizedDescription)")
             return [:]
         }
+    }
+
+    private func uniqueCharacters(from characters: [EntryCharacter]) -> [EntryCharacter] {
+        var seenIDs: Set<UUID> = []
+        var uniqueCharacters: [EntryCharacter] = []
+
+        for character in characters {
+            guard !character.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  seenIDs.insert(character.id).inserted else {
+                continue
+            }
+
+            uniqueCharacters.append(character)
+        }
+
+        return uniqueCharacters
     }
 
     private func loadStoryboards(

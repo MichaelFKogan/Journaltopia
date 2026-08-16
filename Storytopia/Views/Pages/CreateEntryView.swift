@@ -143,6 +143,55 @@ enum CreateEntryAuthoringMode: Equatable {
     }
 }
 
+private extension SampleJournal {
+    func createEntryPrototypeChapter() -> PrototypeChapter {
+        PrototypeChapter(
+            id: id,
+            title: title,
+            subtitle: subtitle ?? "Sample journal",
+            color: colorHex.flatMap(Color.init(hex:)) ?? Color.storyPurple,
+            symbol: symbol ?? "book.closed.fill",
+            coverImageName: coverImageName,
+            remoteCover: remoteCover,
+            kind: kind == "storyboard" ? .storyboard : .journal,
+            isFavorite: isFavorite,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            entries: entries.map { $0.createEntryPrototypeEntry() }
+        )
+    }
+}
+
+private extension CreateEntryDraft {
+    func createEntryPrototypeEntry() -> PrototypeEntry {
+        let weekdayFormatter = DateFormatter()
+        weekdayFormatter.dateFormat = "EEE"
+
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "d"
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.timeStyle = .short
+
+        let displayDate = datePrecision == .noDate ? createdAt : date
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedLocation = location.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return PrototypeEntry(
+            id: id,
+            weekday: weekdayFormatter.string(from: displayDate).uppercased(),
+            day: dayFormatter.string(from: displayDate),
+            title: trimmedTitle.isEmpty ? "Untitled Entry" : trimmedTitle,
+            body: text,
+            richText: richText,
+            time: timeFormatter.string(from: displayDate),
+            location: trimmedLocation.isEmpty ? nil : trimmedLocation,
+            imageNames: [],
+            createdAt: createdAt
+        )
+    }
+}
+
 @MainActor
 private final class EntrySpeechTranscriber: ObservableObject {
     enum RecordingState: Equatable {
@@ -1704,6 +1753,7 @@ struct CreateEntryView: View {
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var completedEntryOpenedStoryboardImage: UIImage?
+    var isOpeningEntryFromEntries = false
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
     var authoringMode: CreateEntryAuthoringMode = .user
@@ -1744,6 +1794,7 @@ struct CreateEntryView: View {
     @State private var selectedCustomJournalTitle: String?
     @State private var selectedCustomJournalTitles: Set<String> = []
     @State private var addedJournalTitle: String?
+    @State private var sampleAuthorJournals: [PrototypeChapter] = []
     @State private var isShowingAddToJournalPage = false
     @State private var linkedJournalTitle: String?
     @State private var linkedJournalTitles: Set<String> = []
@@ -1783,6 +1834,7 @@ struct CreateEntryView: View {
     @State private var isStoryDetailsTabCollapsed = true
     @State private var isShowingEntryOptionsPage = false
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
+    @State private var didResetForFreshCreatePresentation = false
     @FocusState private var isTitleFocused: Bool
     @State private var editorFocusRequestID = 0
     @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
@@ -2165,6 +2217,7 @@ struct CreateEntryView: View {
                 AddEntryToJournalPage(
                     selectedJournalTitle: $selectedCustomJournalTitle,
                     selectedJournalTitles: $selectedCustomJournalTitles,
+                    authoringMode: authoringMode,
                     onSelect: addEditedEntryToJournal,
                     onSaveSelection: saveEditedEntryJournalSelection
                 )
@@ -2173,7 +2226,10 @@ struct CreateEntryView: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $isShowingJournalDestinationSheet) {
-            AddToJournalSheet(selectedJournalTitle: $selectedCustomJournalTitle) { journalTitle in
+            AddToJournalSheet(
+                selectedJournalTitle: $selectedCustomJournalTitle,
+                authoringMode: authoringMode
+            ) { journalTitle in
                 selectedCustomJournalTitle = journalTitle
                 isShowingJournalDestinationSheet = false
             }
@@ -2381,7 +2437,9 @@ struct CreateEntryView: View {
                 characterEditorSheetContent()
             }
             .onAppear {
-                reusableCharacters = mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
+                reusableCharacters = authoringMode.isSampleStudio
+                    ? mergedReusableCharacters(reusableCharacters)
+                    : mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
                 refreshReusableCharacters()
             }
         )
@@ -2495,6 +2553,7 @@ struct CreateEntryView: View {
             }
         }
         .onAppear {
+            resetForFreshCreateIfNeeded()
             configureDirectJournalEntryIfNeeded()
             if !canShowEntryOptionsPage {
                 isShowingEntryOptionsPage = false
@@ -2502,9 +2561,17 @@ struct CreateEntryView: View {
             loadLinkedJournalTitle(for: activeDraftID)
             loadSavedDraftIfNeeded()
             currentEntryStatus = resolvedCurrentEntryStatus()
+            refreshSampleAuthorJournalsIfNeeded()
         }
         .onChange(of: activeDraftID) { newDraftID in
             handleActiveDraftChange(newDraftID)
+        }
+        .onChange(of: selectedPage) { newPage in
+            if newPage == .create {
+                resetForFreshCreateIfNeeded()
+            } else {
+                didResetForFreshCreatePresentation = false
+            }
         }
         .onChange(of: canShowEntryOptionsPage) { canShowOptions in
             if !canShowOptions {
@@ -2540,6 +2607,25 @@ struct CreateEntryView: View {
         }
     }
 
+    private func resetForFreshCreateIfNeeded() {
+        guard activeDraftID == nil, !isOpeningEntryFromEntries, !existingEntryStartsReadOnly else {
+            didResetForFreshCreatePresentation = false
+            return
+        }
+
+        guard !didResetForFreshCreatePresentation else {
+            return
+        }
+
+        clearEditor()
+        completedEntryOpenedStoryboardImage = nil
+        isOpeningCompletedEntryFromEntries = false
+        isPreviewingCompletedStoryboard = false
+        selectedEntryStoryboardIndex = nil
+        resetCompletedEntryStoryboardDrag()
+        didResetForFreshCreatePresentation = true
+    }
+
     private func handleActiveDraftChange(_ draftID: UUID?) {
         guard selectedPage == .create else {
             return
@@ -2552,9 +2638,15 @@ struct CreateEntryView: View {
 
         guard draftID != nil else {
             clearEditor()
+            completedEntryOpenedStoryboardImage = nil
+            isOpeningCompletedEntryFromEntries = false
+            isPreviewingCompletedStoryboard = false
+            selectedEntryStoryboardIndex = nil
+            didResetForFreshCreatePresentation = activeDraftID == nil && !isOpeningEntryFromEntries && !existingEntryStartsReadOnly
             return
         }
 
+        didResetForFreshCreatePresentation = false
         loadLinkedJournalTitle(for: draftID)
         loadSavedDraftIfNeeded()
         currentEntryStatus = resolvedCurrentEntryStatus()
@@ -5045,7 +5137,31 @@ struct CreateEntryView: View {
 
     private var selectedJournalShelfJournals: [PrototypeChapter] {
         let titles = Set(selectedJournalShelfTitles)
-        return DailyJournalData.allChapters().filter { titles.contains($0.title) }
+        return availableJournalChapters.filter { titles.contains($0.title) }
+    }
+
+    private var availableJournalChapters: [PrototypeChapter] {
+        authoringMode.isSampleStudio ? sampleAuthorJournals : DailyJournalData.allChapters()
+    }
+
+    private func refreshSampleAuthorJournalsIfNeeded() {
+        guard authoringMode.isSampleStudio else {
+            return
+        }
+
+        Task {
+            do {
+                let journals = try await SupabaseSampleStoryService().loadAuthoringJournals()
+                let chapters = journals.map { $0.createEntryPrototypeChapter() }
+                await MainActor.run {
+                    sampleAuthorJournals = chapters
+                }
+            } catch {
+                await MainActor.run {
+                    sampleAuthorJournals = []
+                }
+            }
+        }
     }
 
     private var journalShelfSummary: String {
@@ -7084,7 +7200,7 @@ struct CreateEntryView: View {
             return nil
         }
 
-        return DailyJournalData.allChapters().first {
+        return availableJournalChapters.first {
             $0.title == selectedCustomJournalTitle
         }
     }
@@ -8302,12 +8418,18 @@ struct CreateEntryView: View {
             entryCharacters = EntryCharacterRules.applyingSingleMainCharacter(character, to: entryCharacters)
         }
 
-        CreateEntryDraftStore.updateCharacter(character, excludingDraftID: activeDraftID)
+        if !authoringMode.isSampleStudio {
+            CreateEntryDraftStore.updateCharacter(character, excludingDraftID: activeDraftID)
+        }
         characterEditorSession = nil
         reusableCharactersErrorMessage = nil
 
         Task {
             do {
+                guard !authoringMode.isSampleStudio else {
+                    return
+                }
+
                 try await SupabaseEntryCharacterService().updateCharacter(character)
             } catch {
                 await MainActor.run {
@@ -8344,7 +8466,7 @@ struct CreateEntryView: View {
 
         Task {
             var cloudDeleteFailed = false
-            if authStore.userID != nil {
+            if authStore.userID != nil, !authoringMode.isSampleStudio {
                 do {
                     try await SupabaseEntryCharacterService().deleteCharacter(id: character.id)
                 } catch {
@@ -8364,7 +8486,9 @@ struct CreateEntryView: View {
                 if entryCharacters.contains(where: { $0.id == character.id }) {
                     deleteCharacter(character)
                 }
-                CreateEntryDraftStore.removeCharacter(id: character.id, excludingDraftID: activeDraftID)
+                if !authoringMode.isSampleStudio {
+                    CreateEntryDraftStore.removeCharacter(id: character.id, excludingDraftID: activeDraftID)
+                }
             }
         }
     }
@@ -8372,14 +8496,38 @@ struct CreateEntryView: View {
     private func openReusableCharactersSheet() {
         dismissKeyboard()
         isShowingReusableCharactersSheet = true
-        reusableCharacters = mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
+        reusableCharacters = authoringMode.isSampleStudio
+            ? mergedReusableCharacters(reusableCharacters)
+            : mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
         refreshReusableCharacters()
     }
 
     private func refreshReusableCharacters() {
         let localCharacters = localReusableCharacters()
-        reusableCharacters = mergedReusableCharacters(localCharacters, reusableCharacters)
+        reusableCharacters = authoringMode.isSampleStudio
+            ? mergedReusableCharacters(reusableCharacters)
+            : mergedReusableCharacters(localCharacters, reusableCharacters)
         reusableCharactersErrorMessage = nil
+
+        if authoringMode.isSampleStudio {
+            isLoadingReusableCharacters = true
+            Task {
+                do {
+                    let sampleCharacters = try await SupabaseSampleStoryService().loadAuthoringCharacters()
+                    await MainActor.run {
+                        reusableCharacters = mergedReusableCharacters(sampleCharacters)
+                        isLoadingReusableCharacters = false
+                    }
+                } catch {
+                    await MainActor.run {
+                        reusableCharacters = []
+                        reusableCharactersErrorMessage = "Could not load sample characters."
+                        isLoadingReusableCharacters = false
+                    }
+                }
+            }
+            return
+        }
 
         guard let userID = authStore.userID else {
             isLoadingReusableCharacters = false
@@ -8460,9 +8608,11 @@ struct CreateEntryView: View {
             return updated
         }
 
-        CreateEntryDraftStore.updateLibraryOrder(librarySortOrders)
+        if !authoringMode.isSampleStudio {
+            CreateEntryDraftStore.updateLibraryOrder(librarySortOrders)
+        }
 
-        guard authStore.userID != nil else {
+        guard authStore.userID != nil, !authoringMode.isSampleStudio else {
             return
         }
 
@@ -9915,6 +10065,7 @@ struct AddEntryToJournalPage: View {
     @Binding var selectedJournalTitle: String?
     @Binding var selectedJournalTitles: Set<String>
 
+    let authoringMode: CreateEntryAuthoringMode
     let onSelect: (String) -> Void
     let onSaveSelection: (Set<String>) -> Void
 
@@ -9922,21 +10073,24 @@ struct AddEntryToJournalPage: View {
     @State private var pendingJournalTitles: Set<String> = []
     @State private var isCreateJournalAlertPresented = false
     @State private var newJournalName = ""
+    @State private var sampleJournals: [PrototypeChapter] = []
 
     init(
         selectedJournalTitle: Binding<String?>,
         selectedJournalTitles: Binding<Set<String>>,
+        authoringMode: CreateEntryAuthoringMode = .user,
         onSelect: @escaping (String) -> Void,
         onSaveSelection: @escaping (Set<String>) -> Void
     ) {
         _selectedJournalTitle = selectedJournalTitle
         _selectedJournalTitles = selectedJournalTitles
+        self.authoringMode = authoringMode
         self.onSelect = onSelect
         self.onSaveSelection = onSaveSelection
     }
 
     private var journals: [PrototypeChapter] {
-        DailyJournalData.allChapters()
+        authoringMode.isSampleStudio ? sampleJournals : DailyJournalData.allChapters()
     }
 
     private var trimmedNewJournalName: String {
@@ -10032,6 +10186,7 @@ struct AddEntryToJournalPage: View {
             if let selectedJournalTitle {
                 pendingJournalTitles.insert(selectedJournalTitle)
             }
+            refreshSampleJournalsIfNeeded()
         }
     }
 
@@ -10098,6 +10253,11 @@ struct AddEntryToJournalPage: View {
             return
         }
 
+        if authoringMode.isSampleStudio {
+            createSampleJournalAndAddEntry()
+            return
+        }
+
         let journal = PrototypeChapter(
             title: trimmedNewJournalName,
             subtitle: "Personal journal",
@@ -10117,6 +10277,51 @@ struct AddEntryToJournalPage: View {
         onSelect(journal.title)
         dismiss()
     }
+
+    private func createSampleJournalAndAddEntry() {
+        let title = trimmedNewJournalName
+        Task {
+            do {
+                try await SupabaseSampleStoryService().createSampleJournal(title: title)
+                let journals = try await SupabaseSampleStoryService().loadAuthoringJournals()
+                let chapters = journals.map { $0.createEntryPrototypeChapter() }
+                await MainActor.run {
+                    sampleJournals = chapters
+                    selectedJournalTitle = title
+                    selectedJournalTitles.insert(title)
+                    pendingJournalTitles.insert(title)
+                    newJournalName = ""
+                    onSelect(title)
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    newJournalName = ""
+                }
+            }
+        }
+    }
+
+    private func refreshSampleJournalsIfNeeded() {
+        guard authoringMode.isSampleStudio else {
+            return
+        }
+
+        Task {
+            do {
+                let journals = try await SupabaseSampleStoryService().loadAuthoringJournals()
+                let chapters = journals.map { $0.createEntryPrototypeChapter() }
+                await MainActor.run {
+                    sampleJournals = chapters
+                }
+            } catch {
+                await MainActor.run {
+                    sampleJournals = []
+                }
+            }
+        }
+    }
+
 }
 
 private struct AddEntryJournalNotebookCover: View {
@@ -10214,6 +10419,7 @@ private struct AddEntryJournalNotebookCover: View {
 private struct AddToJournalSheet: View {
     @Binding var selectedJournalTitle: String?
 
+    let authoringMode: CreateEntryAuthoringMode
     let onSelect: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -10221,6 +10427,7 @@ private struct AddToJournalSheet: View {
     @State private var searchText = ""
     @State private var newJournalName = ""
     @State private var selectedSymbol = "book.closed.fill"
+    @State private var sampleJournals: [PrototypeChapter] = []
 
     private let coverSymbols = [
         "book.closed.fill",
@@ -10232,7 +10439,7 @@ private struct AddToJournalSheet: View {
     ]
 
     private var journals: [PrototypeChapter] {
-        DailyJournalData.allChapters()
+        authoringMode.isSampleStudio ? sampleJournals : DailyJournalData.allChapters()
     }
 
     private var filteredJournals: [PrototypeChapter] {
@@ -10267,6 +10474,9 @@ private struct AddToJournalSheet: View {
         }
         .padding(.top, 18)
         .background(Color.homePageBackground)
+        .onAppear {
+            refreshSampleJournalsIfNeeded()
+        }
     }
 
     private var header: some View {
@@ -10497,6 +10707,11 @@ private struct AddToJournalSheet: View {
             return
         }
 
+        if authoringMode.isSampleStudio {
+            createSampleJournal()
+            return
+        }
+
         let journal = PrototypeChapter(
             title: trimmedNewJournalName,
             subtitle: "Personal journal",
@@ -10511,6 +10726,48 @@ private struct AddToJournalSheet: View {
         UserChapterStore.add(journal)
         onSelect(journal.title)
     }
+
+    private func createSampleJournal() {
+        let title = trimmedNewJournalName
+        Task {
+            do {
+                try await SupabaseSampleStoryService().createSampleJournal(title: title)
+                let journals = try await SupabaseSampleStoryService().loadAuthoringJournals()
+                let chapters = journals.map { $0.createEntryPrototypeChapter() }
+                await MainActor.run {
+                    sampleJournals = chapters
+                    selectedJournalTitle = title
+                    newJournalName = ""
+                    onSelect(title)
+                }
+            } catch {
+                await MainActor.run {
+                    newJournalName = ""
+                }
+            }
+        }
+    }
+
+    private func refreshSampleJournalsIfNeeded() {
+        guard authoringMode.isSampleStudio else {
+            return
+        }
+
+        Task {
+            do {
+                let journals = try await SupabaseSampleStoryService().loadAuthoringJournals()
+                let chapters = journals.map { $0.createEntryPrototypeChapter() }
+                await MainActor.run {
+                    sampleJournals = chapters
+                }
+            } catch {
+                await MainActor.run {
+                    sampleJournals = []
+                }
+            }
+        }
+    }
+
 }
 
 private struct PhotoSourceSheet: View {
