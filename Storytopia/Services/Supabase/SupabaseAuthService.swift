@@ -1,6 +1,8 @@
 import AuthenticationServices
 import Combine
+import CryptoKit
 import Foundation
+import Security
 import Supabase
 import UIKit
 
@@ -20,6 +22,7 @@ final class SupabaseAuthStore: ObservableObject {
     private let client: SupabaseClient
     private let skipsSessionRefresh: Bool
     private var authStateTask: Task<Void, Never>?
+    private var currentAppleSignInNonce: String?
 
     var userID: UUID? {
         currentUser?.id
@@ -73,6 +76,66 @@ final class SupabaseAuthStore: ObservableObject {
             }
         } catch {
             status = .signedOut
+            errorMessage = userFacingMessage(for: error)
+        }
+    }
+
+    func prepareSignInWithAppleRequest(_ request: ASAuthorizationAppleIDRequest) {
+        errorMessage = nil
+
+        do {
+            let nonce = try AppleSignInNonce.random()
+            currentAppleSignInNonce = nonce
+            request.requestedScopes = [.fullName, .email]
+            request.nonce = AppleSignInNonce.sha256(nonce)
+        } catch {
+            currentAppleSignInNonce = nil
+            status = .signedOut
+            errorMessage = userFacingMessage(for: error)
+        }
+    }
+
+    func completeSignInWithApple(_ result: Result<ASAuthorization, Error>) async {
+        errorMessage = nil
+
+        do {
+            _ = try StorytopiaSupabaseConfig.projectURL
+            _ = try StorytopiaSupabaseConfig.anonKey
+
+            let authorization = try result.get()
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                throw AppleSignInError.missingCredential
+            }
+
+            guard let identityToken = credential.identityToken,
+                  let idToken = String(data: identityToken, encoding: .utf8) else {
+                throw AppleSignInError.missingIdentityToken
+            }
+
+            guard let nonce = currentAppleSignInNonce else {
+                throw AppleSignInError.missingNonce
+            }
+
+            currentAppleSignInNonce = nil
+            let session = try await client.auth.signInWithIdToken(
+                credentials: OpenIDConnectCredentials(
+                    provider: .apple,
+                    idToken: idToken,
+                    nonce: nonce
+                )
+            )
+            StorytopiaLocalAccountScope.setActiveUserID(session.user.id)
+            currentUser = session.user
+            status = .signedIn
+        } catch {
+            currentAppleSignInNonce = nil
+            status = .signedOut
+
+            if let authorizationError = error as? ASAuthorizationError,
+               authorizationError.code == .canceled {
+                return
+            }
+
             errorMessage = userFacingMessage(for: error)
         }
     }
@@ -168,7 +231,14 @@ final class SupabaseAuthStore: ObservableObject {
     }
 
     static var preview: SupabaseAuthStore {
-        SupabaseAuthStore(
+        preview(status: .signedOut)
+    }
+
+    static func preview(
+        status: AuthStatus,
+        errorMessage: String? = nil
+    ) -> SupabaseAuthStore {
+        let store = SupabaseAuthStore(
             client: SupabaseClient(
                 supabaseURL: URL(string: "https://example.supabase.co")!,
                 supabaseKey: "preview-supabase-anon-key"
@@ -177,6 +247,53 @@ final class SupabaseAuthStore: ObservableObject {
             validatesConfiguration: false,
             skipsSessionRefresh: true
         )
+        store.status = status
+        store.errorMessage = errorMessage
+        return store
+    }
+}
+
+private enum AppleSignInError: LocalizedError {
+    case missingCredential
+    case missingIdentityToken
+    case missingNonce
+    case nonceGenerationFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .missingCredential:
+            return "Apple did not return a usable sign-in credential. Please try again."
+        case .missingIdentityToken:
+            return "Apple did not return an identity token. Please try again."
+        case .missingNonce:
+            return "Apple sign-in could not be verified. Please try again."
+        case .nonceGenerationFailed:
+            return "Storytopia could not prepare a secure Apple sign-in request. Please try again."
+        }
+    }
+}
+
+private enum AppleSignInNonce {
+    private static let length = 32
+    private static let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._".utf8)
+
+    static func random() throws -> String {
+        var randomBytes = [UInt8](repeating: 0, count: length)
+        let result = SecRandomCopyBytes(kSecRandomDefault, randomBytes.count, &randomBytes)
+        guard result == errSecSuccess else {
+            throw AppleSignInError.nonceGenerationFailed
+        }
+
+        let nonceBytes = randomBytes.map { byte in
+            charset[Int(byte) % charset.count]
+        }
+        return String(decoding: nonceBytes, as: UTF8.self)
+    }
+
+    static func sha256(_ value: String) -> String {
+        let inputData = Data(value.utf8)
+        let hashedData = SHA256.hash(data: inputData)
+        return hashedData.map { String(format: "%02x", $0) }.joined()
     }
 }
 

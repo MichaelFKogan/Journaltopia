@@ -4,8 +4,8 @@ struct SettingsView: View {
     @Binding var selectedPage: StoryPage
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var signInGate: SignInGate
 
-    @State private var isSigningIn = false
     @State private var isSigningOut = false
 
     var body: some View {
@@ -98,22 +98,17 @@ struct SettingsView: View {
             EmptyView()
         case .signedOut:
             Button {
-                Task {
-                    isSigningIn = true
-                    await authStore.signInWithGoogle()
-                    isSigningIn = false
-                }
+                signInGate.requireAccount(for: .signIn)
             } label: {
                 SettingsRowContent(
                     systemName: "person.badge.key",
-                    title: isSigningIn ? "Signing In" : "Sign In with Google",
+                    title: "Sign In",
                     subtitle: "Use one account across your devices",
                     showsChevron: false
                 )
                 .padding(.vertical, 4)
             }
             .buttonStyle(.plain)
-            .disabled(isSigningIn)
         case .signedIn:
             Button(role: .destructive) {
                 Task {

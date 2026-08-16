@@ -7,6 +7,7 @@ import SwiftUI
 /// The list is deliberately named after what the user was trying to do rather than after the store
 /// it would have written to: the gate's whole job is to explain the refusal in the user's terms.
 enum AccountRequiredAction: String, Equatable {
+    case signIn
     case createEntry
     case saveEntry
     case editEntry
@@ -23,6 +24,8 @@ enum AccountRequiredAction: String, Equatable {
 
     var title: String {
         switch self {
+        case .signIn:
+            return "Sign In to Storytopia"
         case .createEntry, .saveEntry, .editEntry:
             return "Sign In to Write"
         case .deleteEntry, .deleteJournal:
@@ -42,6 +45,8 @@ enum AccountRequiredAction: String, Equatable {
 
     var message: String {
         switch self {
+        case .signIn:
+            return "Use one account to keep your journals, entries, characters, and generation credits available across devices."
         case .createEntry:
             return "Your entries are saved to your account so they follow you across devices. Sign in to start writing — you can keep browsing the sample stories either way."
         case .saveEntry:
@@ -151,105 +156,23 @@ struct SignInGateSheet: View {
 
     let request: SignInGateRequest
 
-    @State private var isSigningIn = false
-
     var body: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color.storyInk.opacity(0.14))
-                .frame(width: 38, height: 5)
-                .padding(.top, 10)
-
-            VStack(spacing: 16) {
-                Image(systemName: "person.badge.key")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(Color.storyPurple)
-                    .frame(width: 62, height: 62)
-                    .background(Color.storyPurple.opacity(0.12), in: Circle())
-
-                VStack(spacing: 9) {
-                    Text(request.action.title)
-                        .font(.system(size: 22, weight: .bold, design: .serif))
-                        .foregroundStyle(Color.storyInk)
-                        .multilineTextAlignment(.center)
-
-                    Text(request.action.message)
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Color.homeMutedText)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let errorMessage = authStore.errorMessage {
-                    Text(errorMessage)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.red)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(spacing: 10) {
-                    Button(action: signIn) {
-                        HStack(spacing: 8) {
-                            if isSigningIn {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .tint(.white)
-                            }
-
-                            Text(isSigningIn ? "Signing In" : "Sign In with Google")
-                                .font(.system(size: 16, weight: .bold))
-                        }
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isSigningIn)
-
-                    Button {
-                        signInGate.dismiss()
-                    } label: {
-                        Text("Keep Browsing")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(Color.homeAccent)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.top, 4)
-            }
-            .padding(.horizontal, 26)
-            .padding(.top, 26)
-            .padding(.bottom, 18)
-
-            Spacer(minLength: 0)
+        SignInView(
+            presentationMode: .sheet,
+            promptTitle: request.action.title,
+            promptSubtitle: request.action.message
+        ) {
+            signInGate.dismiss()
         }
-        .frame(maxWidth: .infinity)
-        .background(Color.homePageBackground)
-        .presentationDetents([.height(430)])
-        .presentationDragIndicator(.hidden)
-        .preferredColorScheme(.light)
         .onChange(of: authStore.status) { status in
             // The sheet closes on the auth store's word, not on the OAuth call returning: the
-            // session arrives through `authStateChanges`, which can land after `signInWithGoogle()`
+            // session arrives through `authStateChanges`, which can land after the provider call
             // has already come back.
             guard status == .signedIn else {
                 return
             }
 
-            isSigningIn = false
             signInGate.completePendingRequest()
-        }
-    }
-
-    private func signIn() {
-        Task {
-            isSigningIn = true
-            await authStore.signInWithGoogle()
-            isSigningIn = false
         }
     }
 }
