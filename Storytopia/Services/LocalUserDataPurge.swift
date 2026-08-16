@@ -47,9 +47,9 @@ enum LocalUserDataPurge {
     /// feel broken instead of private.
     ///
     /// Anything *not* listed here and prefixed `Storytopia` is treated as account content and
-    /// purged — including onboarding progress such as the sample banner, which a new account is
-    /// supposed to see for itself.
+    /// purged — except install-level walkthrough state, which should not return after sign-out.
     static let devicePreferenceKeys: Set<String> = [
+        "StorytopiaHasCompletedOnboarding",
         "StorytopiaSampleAuthorModeEnabled",
         "StorytopiaSelectedJournalLayout",
         "StorytopiaSelectedJournalDetailEntryLayout",
