@@ -557,10 +557,11 @@ enum JournalEntryStatus: String, Codable, Sendable {
     case archived
 }
 
-enum JournalEntryRepositoryError: LocalizedError {
+enum JournalEntryRepositoryError: LocalizedError, TransientCloudFailure {
     case notAuthenticated
     case emptyTitleAndContent
     case operationFailed
+    case temporarilyUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -570,7 +571,26 @@ enum JournalEntryRepositoryError: LocalizedError {
             return "Add a title or entry text first."
         case .operationFailed:
             return "The entry could not be saved. Please try again."
+        case .temporarilyUnavailable:
+            return "Storytopia cloud could not be reached. Please try again."
         }
+    }
+
+    var isTransientCloudFailure: Bool {
+        self == .temporarilyUnavailable
+    }
+
+    /// Collapsing everything into `.operationFailed` also threw away whether the write was worth
+    /// attempting again, which is exactly what `SupabaseRetry` needs to know. Same shape as
+    /// `GenerationCreditError.mapped`: classify from the concrete error, then fall through.
+    static func mapped(from error: Error, context: String) -> JournalEntryRepositoryError {
+        print("[Storytopia] \(context) failed: \(error.localizedDescription)")
+
+        if let repositoryError = error as? JournalEntryRepositoryError {
+            return repositoryError
+        }
+
+        return SupabaseRetry.isTransient(error) ? .temporarilyUnavailable : .operationFailed
     }
 }
 
@@ -580,10 +600,11 @@ struct JournalEntryMembershipRepair: Sendable {
     let position: Int
 }
 
-enum StoryJournalRepositoryError: LocalizedError {
+enum StoryJournalRepositoryError: LocalizedError, TransientCloudFailure {
     case notAuthenticated
     case operationFailed
     case invalidCover
+    case temporarilyUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -593,7 +614,23 @@ enum StoryJournalRepositoryError: LocalizedError {
             return "The journal could not be saved. Please try again."
         case .invalidCover:
             return "The journal cover could not be prepared for upload."
+        case .temporarilyUnavailable:
+            return "Storytopia cloud could not be reached. Please try again."
         }
+    }
+
+    var isTransientCloudFailure: Bool {
+        self == .temporarilyUnavailable
+    }
+
+    static func mapped(from error: Error, context: String) -> StoryJournalRepositoryError {
+        print("[Storytopia] \(context) failed: \(error.localizedDescription)")
+
+        if let repositoryError = error as? StoryJournalRepositoryError {
+            return repositoryError
+        }
+
+        return SupabaseRetry.isTransient(error) ? .temporarilyUnavailable : .operationFailed
     }
 }
 
@@ -720,40 +757,72 @@ struct SupabaseJournalRepository {
         }
     }
 
+    /// Makes the journal's membership rows match `clientEntryIDs`.
+    ///
+    /// Writes the wanted rows *before* removing the unwanted ones. The previous order — delete
+    /// everything, then insert — is two separate non-transactional requests, so a failure landing
+    /// between them leaves the journal empty; under retry that also meant every attempt re-entered
+    /// the same destructive window. Upsert-then-prune only ever adds before it removes, so a run
+    /// that dies partway leaves a journal that is stale rather than emptied, and the next attempt
+    /// converges on the same end state.
     func replaceJournalEntries(journalID: UUID, clientEntryIDs: [UUID]) async throws {
         let userID = try await authenticatedUserID()
 
+        var seenEntryIDs = Set<UUID>()
+        let uniqueIDs = clientEntryIDs.filter { clientEntryID in
+            seenEntryIDs.insert(clientEntryID).inserted
+        }
+
         do {
+            if !uniqueIDs.isEmpty {
+                let payloads = uniqueIDs.enumerated().map { index, clientEntryID in
+                    JournalEntryMembershipPayload(
+                        userID: userID,
+                        journalID: journalID,
+                        clientEntryID: clientEntryID,
+                        position: index
+                    )
+                }
+
+                // Keyed on the table's (user_id, journal_id, client_entry_id) unique constraint, so
+                // a replay of a request that already landed rewrites the same rows.
+                try await client
+                    .from("journal_entries")
+                    .upsert(payloads, onConflict: "user_id,journal_id,client_entry_id")
+                    .execute()
+            }
+
+            // Read back and delete only the rows that are actually stale, the same shape as
+            // `deleteStoryboards`. A `not.in` filter would save this round trip but puts every
+            // surviving ID in the URL, which a long journal can push past the gateway's limit;
+            // the stale set is normally empty, in which case nothing is deleted at all.
+            let wantedIDs = Set(uniqueIDs)
+            let existingRows: [JournalEntryMembership] = try await client
+                .from("journal_entries")
+                .select()
+                .eq("journal_id", value: journalID)
+                .eq("user_id", value: userID)
+                .execute()
+                .value
+
+            let staleIDs = existingRows
+                .map(\.clientEntryID)
+                .filter { !wantedIDs.contains($0) }
+
+            guard !staleIDs.isEmpty else {
+                return
+            }
+
+            let staleFilterValues: [any PostgrestFilterValue] = staleIDs.map { $0 as any PostgrestFilterValue }
             try await client
                 .from("journal_entries")
                 .delete()
                 .eq("journal_id", value: journalID)
                 .eq("user_id", value: userID)
-                .execute()
-
-            var seenEntryIDs = Set<UUID>()
-            let uniqueIDs = clientEntryIDs.filter { clientEntryID in
-                seenEntryIDs.insert(clientEntryID).inserted
-            }
-            guard !uniqueIDs.isEmpty else {
-                return
-            }
-
-            let payloads = uniqueIDs.enumerated().map { index, clientEntryID in
-                JournalEntryMembershipPayload(
-                    userID: userID,
-                    journalID: journalID,
-                    clientEntryID: clientEntryID,
-                    position: index
-                )
-            }
-
-            try await client
-                .from("journal_entries")
-                .insert(payloads)
+                .in("client_entry_id", values: staleFilterValues)
                 .execute()
         } catch {
-            throw StoryJournalRepositoryError.operationFailed
+            throw StoryJournalRepositoryError.mapped(from: error, context: "Journal membership replace")
         }
     }
 
@@ -1331,8 +1400,7 @@ struct SupabaseEntryRepository {
                 .execute()
                 .value
         } catch {
-            print("[Storytopia] Supabase entry upsert failed: \(error.localizedDescription)")
-            throw JournalEntryRepositoryError.operationFailed
+            throw JournalEntryRepositoryError.mapped(from: error, context: "Supabase entry upsert")
         }
     }
 
@@ -1387,7 +1455,7 @@ struct SupabaseEntryRepository {
                 .execute()
                 .value
         } catch {
-            throw JournalEntryRepositoryError.operationFailed
+            throw JournalEntryRepositoryError.mapped(from: error, context: "Entry thumbnail row update")
         }
     }
 

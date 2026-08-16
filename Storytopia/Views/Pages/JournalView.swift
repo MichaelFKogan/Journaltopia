@@ -17053,7 +17053,7 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private var isEntryReorderingEnabled: Bool {
-        editMode == .active
+        true
     }
 
     var body: some View {

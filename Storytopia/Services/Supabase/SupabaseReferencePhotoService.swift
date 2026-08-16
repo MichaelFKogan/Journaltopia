@@ -58,9 +58,10 @@ private struct ReferencePhotoUpsert: Encodable, Sendable {
     }
 }
 
-enum SupabaseReferencePhotoError: LocalizedError {
+enum SupabaseReferencePhotoError: LocalizedError, TransientCloudFailure {
     case invalidImage
     case syncFailed
+    case temporarilyUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -68,7 +69,23 @@ enum SupabaseReferencePhotoError: LocalizedError {
             return "One of the reference photos could not be prepared for upload."
         case .syncFailed:
             return "Reference photos could not be synced. Please try again."
+        case .temporarilyUnavailable:
+            return "Reference photos could not reach Storytopia cloud. Please try again."
         }
+    }
+
+    var isTransientCloudFailure: Bool {
+        self == .temporarilyUnavailable
+    }
+
+    static func mapped(from error: Error, context: String) -> SupabaseReferencePhotoError {
+        print("[Storytopia] \(context) failed: \(error.localizedDescription)")
+
+        if let photoError = error as? SupabaseReferencePhotoError {
+            return photoError
+        }
+
+        return SupabaseRetry.isTransient(error) ? .temporarilyUnavailable : .syncFailed
     }
 }
 
@@ -201,10 +218,8 @@ struct SupabaseReferencePhotoService {
                     )
                     .execute()
             }
-        } catch let error as SupabaseReferencePhotoError {
-            throw error
         } catch {
-            throw SupabaseReferencePhotoError.syncFailed
+            throw SupabaseReferencePhotoError.mapped(from: error, context: "Reference photo sync")
         }
     }
 
@@ -415,9 +430,10 @@ private struct EntryCharacterUpsert: Encodable, Sendable {
     }
 }
 
-enum SupabaseEntryCharacterError: LocalizedError {
+enum SupabaseEntryCharacterError: LocalizedError, TransientCloudFailure {
     case invalidImage
     case syncFailed
+    case temporarilyUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -425,7 +441,23 @@ enum SupabaseEntryCharacterError: LocalizedError {
             return "One of the character photos could not be prepared for upload."
         case .syncFailed:
             return "Character photos could not be synced. Please try again."
+        case .temporarilyUnavailable:
+            return "Character photos could not reach Storytopia cloud. Please try again."
         }
+    }
+
+    var isTransientCloudFailure: Bool {
+        self == .temporarilyUnavailable
+    }
+
+    static func mapped(from error: Error, context: String) -> SupabaseEntryCharacterError {
+        print("[Storytopia] \(context) failed: \(error.localizedDescription)")
+
+        if let characterError = error as? SupabaseEntryCharacterError {
+            return characterError
+        }
+
+        return SupabaseRetry.isTransient(error) ? .temporarilyUnavailable : .syncFailed
     }
 }
 
@@ -498,10 +530,8 @@ struct SupabaseEntryCharacterService {
                     )
                     .execute()
             }
-        } catch let error as SupabaseEntryCharacterError {
-            throw error
         } catch {
-            throw SupabaseEntryCharacterError.syncFailed
+            throw SupabaseEntryCharacterError.mapped(from: error, context: "Entry character sync")
         }
     }
 

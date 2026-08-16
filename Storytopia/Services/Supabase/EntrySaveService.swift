@@ -11,6 +11,10 @@ enum EntryCloudSaveState: Equatable {
     case photosUploaded
     case failed(String)
     case photoUploadFailed(String)
+    /// The entry never reached the cloud, and retrying did not help. Unlike `.failed`, this one is
+    /// also written to `EntryCloudSyncFailureStore`, so the warning survives the view being torn
+    /// down or the app being relaunched instead of vanishing with the screen that produced it.
+    case notSaved(String)
 
     var message: String? {
         switch self {
@@ -30,6 +34,8 @@ enum EntryCloudSaveState: Equatable {
             return message
         case .photoUploadFailed(let message):
             return message
+        case .notSaved(let message):
+            return message
         }
     }
 
@@ -37,7 +43,7 @@ enum EntryCloudSaveState: Equatable {
         switch self {
         case .saved, .savedLocally, .photosUploaded:
             return true
-        case .idle, .saving, .uploadingPhotos, .failed, .photoUploadFailed:
+        case .idle, .saving, .uploadingPhotos, .failed, .photoUploadFailed, .notSaved:
             return false
         }
     }
@@ -46,10 +52,213 @@ enum EntryCloudSaveState: Equatable {
         switch self {
         case .saved, .savedLocally, .photosUploaded:
             return true
-        case .idle, .saving, .uploadingPhotos, .failed, .photoUploadFailed:
+        case .idle, .saving, .uploadingPhotos, .failed, .photoUploadFailed, .notSaved:
             return false
         }
     }
+
+    /// True when the entry exists only on this device and the UI should keep saying so.
+    var isUnsyncedToCloud: Bool {
+        switch self {
+        case .notSaved:
+            return true
+        case .idle, .saving, .saved, .savedLocally, .uploadingPhotos, .photosUploaded, .failed, .photoUploadFailed:
+            return false
+        }
+    }
+}
+
+/// Remembers which local drafts failed to reach Supabase.
+///
+/// `EntryCloudSaveState` lives on a SwiftUI view and dies with it, so on its own it cannot answer
+/// "is this entry actually backed up?" the next time the entry is opened. This store is the durable
+/// half: written when a save exhausts its retries, cleared the moment the entry lands in the cloud.
+enum EntryCloudSyncFailureStore {
+    private static let storageKey = "StorytopiaEntryCloudSyncFailures"
+
+    static func markNotSaved(clientEntryID: UUID, reason: String) {
+        var failures = reasonsByEntryKey
+        failures[clientEntryID.uuidString] = reason
+        UserDefaults.standard.set(failures, forKey: storageKey)
+    }
+
+    static func clear(clientEntryID: UUID) {
+        var failures = reasonsByEntryKey
+        guard failures.removeValue(forKey: clientEntryID.uuidString) != nil else {
+            return
+        }
+
+        UserDefaults.standard.set(failures, forKey: storageKey)
+    }
+
+    static func reason(for clientEntryID: UUID) -> String? {
+        reasonsByEntryKey[clientEntryID.uuidString]
+    }
+
+    static func isNotSaved(clientEntryID: UUID) -> Bool {
+        reason(for: clientEntryID) != nil
+    }
+
+    static var unsyncedEntryIDs: Set<UUID> {
+        Set(reasonsByEntryKey.keys.compactMap(UUID.init(uuidString:)))
+    }
+
+    static func clearAll() {
+        UserDefaults.standard.removeObject(forKey: storageKey)
+    }
+
+    private static var reasonsByEntryKey: [String: String] {
+        UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+    }
+}
+
+/// Lets an error that has already been mapped to a domain type still report whether the failure
+/// underneath it was transient.
+///
+/// Every Supabase service here collapses the raw error into its own `LocalizedError` before it
+/// reaches a caller, so without this `SupabaseRetry` would only ever see `syncFailed` and could not
+/// tell a dropped connection from a row the server refused.
+protocol TransientCloudFailure {
+    var isTransientCloudFailure: Bool { get }
+}
+
+/// Bounded retry with exponential backoff for Supabase writes.
+///
+/// Only failures a second attempt could plausibly fix are retried: lost connections, timeouts, 5xx
+/// responses, and Postgres connection errors. Auth failures, validation errors, and every other 4xx
+/// are the server saying the request itself is wrong, so they fail on the first attempt — retrying
+/// them just makes the user wait longer for the same answer.
+///
+/// Every write wrapped in this helper must be idempotent, because attempt *n + 1* cannot know
+/// whether attempt *n* reached the server before the connection dropped.
+enum SupabaseRetry {
+    /// Backoff before each retry — one entry per retry, every entry used. A save that never
+    /// succeeds spends ~6s retrying before it gives up.
+    static let backoffSeconds: [Double] = [0.5, 1.5, 4]
+
+    /// The initial attempt plus one per backoff entry. Derived rather than written out so the two
+    /// cannot drift into an unused delay or a retry with no schedule behind it.
+    static let defaultMaxAttempts = backoffSeconds.count + 1
+
+    /// Each delay is jittered ±25% so devices that all lost the same network do not come back in
+    /// lockstep and re-create the stampede that knocked them offline.
+    static let jitterMultiplier: ClosedRange<Double> = 0.75...1.25
+
+    /// Waits out one backoff step. Injectable so tests can assert the schedule without spending the
+    /// ~6s that actually sleeping through it would cost.
+    static func defaultSleep(seconds: Double) async throws {
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    static func withRetry<T>(
+        _ context: String,
+        maxAttempts: Int = defaultMaxAttempts,
+        sleep: (Double) async throws -> Void = defaultSleep(seconds:),
+        operation: () async throws -> T
+    ) async throws -> T {
+        var attempt = 1
+
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                guard attempt < maxAttempts, isTransient(error) else {
+                    if attempt > 1 {
+                        print("[Storytopia] \(context) failed after \(attempt) attempt(s): \(error.localizedDescription)")
+                    }
+                    throw error
+                }
+
+                let delay = backoffSeconds[min(attempt - 1, backoffSeconds.count - 1)]
+                    * Double.random(in: jitterMultiplier)
+                print("[Storytopia] \(context) attempt \(attempt) hit a transient failure, retrying in \(String(format: "%.2f", delay))s: \(error.localizedDescription)")
+
+                // A cancelled sleep means the caller walked away; that is a reason to stop, not to
+                // retry, so the CancellationError is allowed to propagate.
+                try await sleep(delay)
+                attempt += 1
+            }
+        }
+    }
+
+    /// Mirrors `GenerationCreditError.mapped`: inspect the concrete Supabase error types first and
+    /// fall through to "not retryable" rather than guessing.
+    static func isTransient(_ error: Error) -> Bool {
+        if let mappedError = error as? TransientCloudFailure {
+            return mappedError.isTransientCloudFailure
+        }
+
+        if error is CancellationError {
+            return false
+        }
+
+        if let urlError = error as? URLError {
+            return retryableURLErrorCodes.contains(urlError.code)
+        }
+
+        // PostgREST returns `HTTPError` whenever the body is not a Postgrest error payload, which is
+        // how gateway 5xx and Supabase pooler failures arrive.
+        if let httpError = error as? HTTPError {
+            return isServerSide(statusCode: httpError.response.statusCode)
+        }
+
+        if let storageError = error as? StorageError {
+            guard let statusCode = storageError.statusCode.flatMap(Int.init) else {
+                return false
+            }
+            return isServerSide(statusCode: statusCode)
+        }
+
+        if let postgrestError = error as? PostgrestError {
+            return isConnectionFailure(postgrestError)
+        }
+
+        return false
+    }
+
+    private static func isServerSide(statusCode: Int) -> Bool {
+        (500...599).contains(statusCode)
+    }
+
+    /// A `PostgrestError` carries a SQLSTATE rather than an HTTP status. Only the codes that mean
+    /// "the database was unreachable or overloaded" are worth another attempt — a constraint
+    /// violation or an RLS denial will fail identically forever.
+    private static func isConnectionFailure(_ error: PostgrestError) -> Bool {
+        if let code = error.code?.uppercased() {
+            // 08xxx connection exception, 53xxx insufficient resources, 57Pxx server shutdown or
+            // startup, 40001/40P01 serialization failure and deadlock, 57014 statement timeout.
+            if code.hasPrefix("08") || code.hasPrefix("53") || code.hasPrefix("57P")
+                || code == "40001" || code == "40P01" || code == "57014" {
+                return true
+            }
+
+            // PostgREST's own "could not connect to the database" / "schema cache unavailable".
+            if code == "PGRST001" || code == "PGRST002" {
+                return true
+            }
+        }
+
+        let message = error.message.lowercased()
+        return message.contains("connection")
+            || message.contains("timeout")
+            || message.contains("timed out")
+            || message.contains("server closed")
+            || message.contains("too many clients")
+    }
+
+    private static let retryableURLErrorCodes: Set<URLError.Code> = [
+        .timedOut,
+        .cannotConnectToHost,
+        .cannotFindHost,
+        .dnsLookupFailed,
+        .networkConnectionLost,
+        .notConnectedToInternet,
+        .resourceUnavailable,
+        .badServerResponse,
+        .internationalRoamingOff,
+        .callIsActive,
+        .dataNotAllowed
+    ]
 }
 
 struct EntryDraftSavePayload {
@@ -184,9 +393,10 @@ enum SupabaseStoryboardError: LocalizedError {
     }
 }
 
-enum SupabaseEntryThumbnailError: LocalizedError {
+enum SupabaseEntryThumbnailError: LocalizedError, TransientCloudFailure {
     case invalidImage
     case syncFailed
+    case temporarilyUnavailable
     case downloadFailed
 
     var errorDescription: String? {
@@ -195,9 +405,27 @@ enum SupabaseEntryThumbnailError: LocalizedError {
             return "The entry thumbnail could not be prepared for upload."
         case .syncFailed:
             return "Entry thumbnail sync failed. Please try again."
+        case .temporarilyUnavailable:
+            return "Entry thumbnail sync could not reach Storytopia cloud."
         case .downloadFailed:
             return "Could not download this entry thumbnail."
         }
+    }
+
+    var isTransientCloudFailure: Bool {
+        self == .temporarilyUnavailable
+    }
+
+    /// Keeps the "was this worth retrying?" answer alive across the mapping, the way
+    /// `GenerationCreditError.mapped` keeps "was this really an empty balance?" alive.
+    static func mapped(from error: Error, context: String) -> SupabaseEntryThumbnailError {
+        print("[Storytopia] \(context) failed: \(error.localizedDescription)")
+
+        if let thumbnailError = error as? SupabaseEntryThumbnailError {
+            return thumbnailError
+        }
+
+        return SupabaseRetry.isTransient(error) ? .temporarilyUnavailable : .syncFailed
     }
 }
 
@@ -239,10 +467,8 @@ struct SupabaseEntryThumbnailService {
                 storagePath: storagePath,
                 updatedAt: Date()
             )
-        } catch let error as SupabaseEntryThumbnailError {
-            throw error
         } catch {
-            throw SupabaseEntryThumbnailError.syncFailed
+            throw SupabaseEntryThumbnailError.mapped(from: error, context: "entry thumbnail upload")
         }
     }
 
@@ -798,6 +1024,9 @@ struct EntrySaveService {
         status: JournalEntryStatus = .draft,
         syncReferencePhotos: Bool = true
     ) async throws -> EntrySaveResult {
+        // The user's writing is committed to disk before a single byte goes to Supabase. Every exit
+        // below this line — including a total cloud failure after every retry — still leaves a
+        // complete local draft behind, so nothing the user typed can be lost to a bad network.
         guard let localDraftID = persistLocalDraft(payload, status: status) else {
             throw JournalEntryRepositoryError.operationFailed
         }
@@ -825,43 +1054,56 @@ struct EntrySaveService {
 
         var cloudEntry: JournalEntry
         do {
-            cloudEntry = try await repository.upsertEntry(
-                clientEntryID: localDraftID,
-                title: payload.title,
-                content: payload.text,
-                richText: payload.richText,
-                artStyle: payload.artStyle,
-                location: payload.location,
-                entryDate: cloudEntryDate,
-                datePrecision: payload.datePrecision,
-                savesDraft: payload.savesDraft,
-                isPrivate: payload.isPrivate,
-                fontChoiceRawValue: payload.fontChoiceRawValue,
-                textColorIndex: payload.textColorIndex,
-                textSize: payload.textSize,
-                paperStyleRawValue: payload.paperStyleRawValue,
-                paperColorIndex: payload.paperColorIndex,
-                isBold: payload.isBold,
-                isItalic: payload.isItalic,
-                isUnderlined: payload.isUnderlined,
-                isStrikethrough: payload.isStrikethrough,
-                isHighlighted: payload.isHighlighted,
-                textAlignmentRawValue: payload.textAlignmentRawValue,
-                displayOrder: nil,
-                createdAt: payload.createdAt,
-                status: status
-            )
+            // Safe to retry: the write is an upsert keyed on (user_id, client_entry_id), so a
+            // request that actually landed before the connection dropped is simply overwritten
+            // with the same values on the next attempt.
+            cloudEntry = try await SupabaseRetry.withRetry("Supabase entry upsert") {
+                try await repository.upsertEntry(
+                    clientEntryID: localDraftID,
+                    title: payload.title,
+                    content: payload.text,
+                    richText: payload.richText,
+                    artStyle: payload.artStyle,
+                    location: payload.location,
+                    entryDate: cloudEntryDate,
+                    datePrecision: payload.datePrecision,
+                    savesDraft: payload.savesDraft,
+                    isPrivate: payload.isPrivate,
+                    fontChoiceRawValue: payload.fontChoiceRawValue,
+                    textColorIndex: payload.textColorIndex,
+                    textSize: payload.textSize,
+                    paperStyleRawValue: payload.paperStyleRawValue,
+                    paperColorIndex: payload.paperColorIndex,
+                    isBold: payload.isBold,
+                    isItalic: payload.isItalic,
+                    isUnderlined: payload.isUnderlined,
+                    isStrikethrough: payload.isStrikethrough,
+                    isHighlighted: payload.isHighlighted,
+                    textAlignmentRawValue: payload.textAlignmentRawValue,
+                    displayOrder: nil,
+                    createdAt: payload.createdAt,
+                    status: status
+                )
+            }
         } catch {
-            return EntrySaveResult(
+            // Retries are spent. The entry exists only on this device, so say so in a way that
+            // outlives this screen instead of flashing a message that the next state change wipes.
+            return notSavedResult(
                 localDraftID: localDraftID,
-                cloudEntry: nil,
-                state: .failed("Saved locally. Cloud save failed.")
+                reason: "Saved on this device only. Storytopia cloud could not be reached.",
+                error: error
             )
         }
 
+        EntryCloudSyncFailureStore.clear(clientEntryID: localDraftID)
+
         if let thumbnail = CreateEntryDraftStore.load(id: localDraftID)?.thumbnail {
             do {
-                cloudEntry = try await thumbnailService.uploadThumbnail(thumbnail, for: cloudEntry)
+                // Safe to retry: the storage upload is `upsert: true` at a deterministic path and
+                // the row update writes fixed values.
+                cloudEntry = try await SupabaseRetry.withRetry("Entry thumbnail sync") {
+                    try await thumbnailService.uploadThumbnail(thumbnail, for: cloudEntry)
+                }
             } catch {
                 print("[Storytopia] Entry thumbnail sync failed: \(error.localizedDescription)")
             }
@@ -887,8 +1129,14 @@ struct EntrySaveService {
         }
 
         do {
-            try await referencePhotoService.syncReferencePhotos(entry: cloudEntry, photos: payload.photos)
-            try await characterService.syncCharacters(entry: cloudEntry, characters: payload.characters)
+            // Safe to retry: both syncs re-read the cloud state and re-derive the diff, so a partly
+            // applied attempt is finished rather than duplicated by the next one.
+            try await SupabaseRetry.withRetry("Reference photo sync") {
+                try await referencePhotoService.syncReferencePhotos(entry: cloudEntry, photos: payload.photos)
+            }
+            try await SupabaseRetry.withRetry("Entry character sync") {
+                try await characterService.syncCharacters(entry: cloudEntry, characters: payload.characters)
+            }
 
             return EntrySaveResult(
                 localDraftID: localDraftID,
@@ -902,6 +1150,23 @@ struct EntrySaveService {
                 state: .photoUploadFailed("Saved locally. Media sync failed.")
             )
         }
+    }
+
+    /// Records the failure durably and returns the matching state, so "not saved" is one fact with
+    /// one owner rather than a banner string and a store that can drift apart.
+    private func notSavedResult(
+        localDraftID: UUID,
+        reason: String,
+        error: Error
+    ) -> EntrySaveResult {
+        print("[Storytopia] Cloud entry save gave up, entry is local only: \(error.localizedDescription)")
+        EntryCloudSyncFailureStore.markNotSaved(clientEntryID: localDraftID, reason: reason)
+
+        return EntrySaveResult(
+            localDraftID: localDraftID,
+            cloudEntry: nil,
+            state: .notSaved(reason)
+        )
     }
 
     func prepareEntryForGeneration(
@@ -948,6 +1213,8 @@ struct EntrySaveService {
         )
         if case .failed = result.state {
             print("[Storytopia] Supabase status update failed.")
+        } else if case .notSaved = result.state {
+            print("[Storytopia] Supabase status update failed.")
         } else if isSignedIn {
             print("[Storytopia] Supabase status update succeeded.")
         }
@@ -964,39 +1231,43 @@ struct EntrySaveService {
             return nil
         }
 
-        let cloudEntry = try await repository.upsertEntry(
-            clientEntryID: entry.id,
-            title: title,
-            content: entry.text,
-            richText: entry.richText,
-            artStyle: entry.artStyle,
-            location: entry.location,
-            entryDate: entry.datePrecision == .noDate ? nil : entry.date,
-            datePrecision: entry.datePrecision,
-            savesDraft: entry.savesDraft,
-            isPrivate: entry.isPrivate,
-            fontChoiceRawValue: entry.fontChoiceRawValue,
-            textColorIndex: entry.textColorIndex,
-            textSize: entry.textSize,
-            paperStyleRawValue: entry.paperStyleRawValue,
-            paperColorIndex: entry.paperColorIndex,
-            isBold: entry.isBold,
-            isItalic: entry.isItalic,
-            isUnderlined: entry.isUnderlined,
-            isStrikethrough: entry.isStrikethrough,
-            isHighlighted: entry.isHighlighted,
-            textAlignmentRawValue: entry.textAlignmentRawValue,
-            displayOrder: entry.displayOrder,
-            createdAt: entry.createdAt,
-            status: status
-        )
+        let cloudEntry = try await SupabaseRetry.withRetry("Supabase entry rename") {
+            try await repository.upsertEntry(
+                clientEntryID: entry.id,
+                title: title,
+                content: entry.text,
+                richText: entry.richText,
+                artStyle: entry.artStyle,
+                location: entry.location,
+                entryDate: entry.datePrecision == .noDate ? nil : entry.date,
+                datePrecision: entry.datePrecision,
+                savesDraft: entry.savesDraft,
+                isPrivate: entry.isPrivate,
+                fontChoiceRawValue: entry.fontChoiceRawValue,
+                textColorIndex: entry.textColorIndex,
+                textSize: entry.textSize,
+                paperStyleRawValue: entry.paperStyleRawValue,
+                paperColorIndex: entry.paperColorIndex,
+                isBold: entry.isBold,
+                isItalic: entry.isItalic,
+                isUnderlined: entry.isUnderlined,
+                isStrikethrough: entry.isStrikethrough,
+                isHighlighted: entry.isHighlighted,
+                textAlignmentRawValue: entry.textAlignmentRawValue,
+                displayOrder: entry.displayOrder,
+                createdAt: entry.createdAt,
+                status: status
+            )
+        }
 
         guard let thumbnail = entry.thumbnail else {
             return cloudEntry
         }
 
         do {
-            return try await thumbnailService.uploadThumbnail(thumbnail, for: cloudEntry)
+            return try await SupabaseRetry.withRetry("Entry thumbnail sync") {
+                try await thumbnailService.uploadThumbnail(thumbnail, for: cloudEntry)
+            }
         } catch {
             print("[Storytopia] Entry thumbnail sync failed: \(error.localizedDescription)")
             return cloudEntry
@@ -1014,6 +1285,7 @@ struct EntrySaveService {
             }
 
             removeLocalStoryboards(clientEntryID: localDraftID)
+            EntryCloudSyncFailureStore.clear(clientEntryID: localDraftID)
             CreateEntryDraftStore.delete(id: localDraftID)
             return
         }
@@ -1029,6 +1301,7 @@ struct EntrySaveService {
         try await journalRepository.deleteJournalEntryMemberships(clientEntryID: cloudEntry.clientEntryID)
         try await repository.deleteEntry(clientEntryID: cloudEntry.clientEntryID)
         removeLocalStoryboards(clientEntryID: cloudEntry.clientEntryID)
+        EntryCloudSyncFailureStore.clear(clientEntryID: localDraftID)
         CreateEntryDraftStore.delete(id: localDraftID)
     }
 
@@ -1102,10 +1375,14 @@ struct EntrySaveService {
             }
 
             let linkedEntryIDs = StoryEntryStore.clientEntryIDs(for: journalTitle)
-            try await journalRepository.replaceJournalEntries(
-                journalID: journalID,
-                clientEntryIDs: linkedEntryIDs
-            )
+            // Safe to retry: the membership write clears the journal and re-inserts the full list,
+            // so a repeat attempt converges on the same rows rather than duplicating them.
+            try await SupabaseRetry.withRetry("Journal membership sync") {
+                try await journalRepository.replaceJournalEntries(
+                    journalID: journalID,
+                    clientEntryIDs: linkedEntryIDs
+                )
+            }
         }
     }
 }
