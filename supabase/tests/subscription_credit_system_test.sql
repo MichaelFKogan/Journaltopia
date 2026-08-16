@@ -488,24 +488,24 @@ select is(
 
 -- The read model ------------------------------------------------------------------------------------
 select ok(
-    has_table_privilege('authenticated', 'public.storytopia_plus_entitlement', 'select'),
+    has_table_privilege('authenticated', 'public.journaltopia_plus_entitlement', 'select'),
     'the app can read its own entitlement and balance in one place'
 );
 
 select is(
-    (select is_active from public.storytopia_plus_entitlement),
+    (select is_active from public.journaltopia_plus_entitlement),
     true,
     'the read model reports an active subscriber as entitled'
 );
 
 select is(
-    (select generation_credits from public.storytopia_plus_entitlement),
+    (select generation_credits from public.journaltopia_plus_entitlement),
     3,
     'the read model reports the balance from profiles rather than a second copy'
 );
 
 select is(
-    (select product_id from public.storytopia_plus_entitlement),
+    (select product_id from public.journaltopia_plus_entitlement),
     'com.journaltopia.plus.monthly',
     'the read model reports which product entitles the user'
 );
@@ -518,7 +518,7 @@ select set_config(
 );
 
 select is(
-    (select is_active from public.storytopia_plus_entitlement),
+    (select is_active from public.journaltopia_plus_entitlement),
     false,
     'the read model reports an unsubscribed account as not entitled'
 );

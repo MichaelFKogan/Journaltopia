@@ -1,4 +1,4 @@
-// Apple subscription verification and the mapping from Apple's vocabulary to Storytopia's.
+// Apple subscription verification and the mapping from Apple's vocabulary to Journaltopia's.
 //
 // Shared by sync-apple-subscription (a signed-in client reporting its own purchase) and
 // apple-subscription-notifications (Apple reporting a renewal, expiry or revocation with no client
@@ -159,7 +159,7 @@ export type VerifiedSubscription = {
 };
 
 /// Verifies a signed transaction and, optionally, its renewal info, and reduces the two to the row
-/// Storytopia stores.
+/// Journaltopia stores.
 ///
 /// A transaction is tried against both environments because a build can be pointed at either and the
 /// caller does not get to tell us which — sandbox receipts presented as production is a standard
@@ -210,7 +210,7 @@ export async function verifySignedTransaction(
   );
 }
 
-/// Maps Apple's state onto the four statuses Storytopia stores. Only `active` entitles, and it is
+/// Maps Apple's state onto the four statuses Journaltopia stores. Only `active` entitles, and it is
 /// deliberately the narrowest reading: an expiry date in the past, a revocation, or an upgrade that
 /// superseded this transaction all fall out of it.
 export function toVerifiedSubscription(
@@ -223,7 +223,7 @@ export function toVerifiedSubscription(
 
   if (!productID || !originalTransactionID) {
     throw new AppleSubscriptionFailure(
-      "Apple returned a transaction Storytopia could not read.",
+      "Apple returned a transaction Journaltopia could not read.",
       400,
       "unreadable_transaction",
     );

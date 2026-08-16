@@ -15,7 +15,7 @@ import {
 } from "../_shared/storyboard-generation.ts";
 
 export const STORYBOARD_BUCKET = "generated-storyboards";
-export const REFERENCE_BUCKET = "storytopia-media";
+export const REFERENCE_BUCKET = "journaltopia-media";
 
 /// Everything the background work needs, captured before the response goes out. The reference image
 /// bytes are already in memory by then, so the job never depends on staged files still being there.

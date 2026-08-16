@@ -67,7 +67,7 @@ select is(
 );
 
 -- A status Apple would never produce is refused rather than stored, so a bug upstream cannot invent
--- an entitlement state that has_active_storytopia_plus has never been reasoned about.
+-- an entitlement state that has_active_journaltopia_plus has never been reasoned about.
 select throws_like(
     $$select public.sync_apple_subscription(
         'abababab-0000-4000-8000-000000000001',
@@ -112,7 +112,7 @@ select is(
 );
 
 select ok(
-    public.has_active_storytopia_plus('abababab-0000-4000-8000-000000000001'),
+    public.has_active_journaltopia_plus('abababab-0000-4000-8000-000000000001'),
     'the synced subscriber is entitled'
 );
 
@@ -244,7 +244,7 @@ select is(
 );
 
 select ok(
-    not public.has_active_storytopia_plus('abababab-0000-4000-8000-000000000002'),
+    not public.has_active_journaltopia_plus('abababab-0000-4000-8000-000000000002'),
     'the colliding account is not entitled'
 );
 
@@ -260,7 +260,7 @@ select is(
 );
 
 select ok(
-    not public.has_active_storytopia_plus('abababab-0000-4000-8000-000000000001'),
+    not public.has_active_journaltopia_plus('abababab-0000-4000-8000-000000000001'),
     'expiry removes generation entitlement'
 );
 
@@ -309,7 +309,7 @@ select is(
 );
 
 select ok(
-    not public.has_active_storytopia_plus('abababab-0000-4000-8000-000000000001'),
+    not public.has_active_journaltopia_plus('abababab-0000-4000-8000-000000000001'),
     'revocation removes entitlement even while the period would otherwise be current'
 );
 

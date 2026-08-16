@@ -15,7 +15,7 @@ export const OPENAI_TIMEOUT_MS = 300_000;
 
 // Generation inputs are staged in the caller's own media folder by the app, never in a shared or
 // sample bucket, so both flows read references from the same place.
-export const REFERENCE_BUCKET = "storytopia-media";
+export const REFERENCE_BUCKET = "journaltopia-media";
 
 // Mirrors EntryCharacterRules.maxGenerationImageCount and OpenAIImageGenerationQuality.creditCost.
 export const MAX_REFERENCE_IMAGE_COUNT = 5;

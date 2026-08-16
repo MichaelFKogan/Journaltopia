@@ -4,7 +4,7 @@
 //
 // Two kinds of assertion live here, and the difference matters:
 //
-//   the mapping    Apple's vocabulary reduced to Storytopia's four statuses. Pure logic, fully
+//   the mapping    Apple's vocabulary reduced to Journaltopia's four statuses. Pure logic, fully
 //                  tested, and the place a subtle mistake would silently entitle the wrong people.
 //
 //   the rejection  that forged or malformed data is refused. Testable in the true direction only:
@@ -47,7 +47,7 @@ function withAppleConfig(run: () => Promise<void> | void): () => Promise<void> {
     };
 
     Deno.env.set("APPLE_ROOT_CA_G3_BASE64", TEST_ROOT_CA_BASE64);
-    Deno.env.set("APPLE_BUNDLE_ID", "com.storytopia.app");
+    Deno.env.set("APPLE_BUNDLE_ID", "com.michaelkogan.Journaltopia");
     Deno.env.set("APPLE_APP_APPLE_ID", "1234567890");
     Deno.env.set("APPLE_VERIFICATION_ONLINE_CHECKS", "false");
 
@@ -231,7 +231,7 @@ Deno.test("configured roots decode", withAppleConfig(() => {
   const roots = appleRootCertificates();
   assertEquals(roots.length, 1);
   assert(roots[0].length > 100, "a decoded certificate should be a few hundred bytes");
-  assertEquals(appleBundleID(), "com.storytopia.app");
+  assertEquals(appleBundleID(), "com.michaelkogan.Journaltopia");
 }));
 
 Deno.test("environment names map to Apple's enum", () => {
