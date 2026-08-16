@@ -9418,6 +9418,7 @@ private extension CreateEntryDraft {
     func duplicateSavePayload(id duplicateID: UUID) -> EntryDraftSavePayload {
         EntryDraftSavePayload(
             id: duplicateID,
+            createdAt: Date(),
             title: duplicateTitle,
             text: text,
             richText: richText,

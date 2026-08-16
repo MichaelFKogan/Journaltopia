@@ -1134,6 +1134,7 @@ private extension EntryDraftSavePayload {
     func withoutMedia() -> EntryDraftSavePayload {
         EntryDraftSavePayload(
             id: id,
+            createdAt: createdAt,
             title: title,
             text: text,
             richText: richText,

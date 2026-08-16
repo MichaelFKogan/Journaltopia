@@ -567,6 +567,7 @@ private struct LoadedCreateEntryDraftSnapshot: Equatable {
 
 private struct PendingCreateEntryDraftSave {
     let id: UUID?
+    let createdAt: Date?
     let title: String
     let text: String
     let richText: NotebookRichTextDocument?
@@ -2859,6 +2860,7 @@ struct CreateEntryView: View {
                 print("[Storytopia] Marking entry completed.")
                 let completionPayload = EntryDraftSavePayload(
                     id: prepareResult.localDraftID,
+                    createdAt: generationPayload.createdAt,
                     title: generationPayload.title,
                     text: generationPayload.text,
                     richText: generationPayload.richText,
@@ -3743,6 +3745,8 @@ struct CreateEntryView: View {
 
         return PendingCreateEntryDraftSave(
             id: activeDraftID,
+            createdAt: activeDraftID.flatMap { CreateEntryDraftStore.load(id: $0)?.createdAt }
+                ?? loadedDraftSnapshot?.createdAt,
             title: storyTitle,
             text: entryText,
             richText: richText,
@@ -3825,7 +3829,8 @@ struct CreateEntryView: View {
             isStrikethrough: pendingSave.isStrikethrough,
             isHighlighted: pendingSave.isHighlighted,
             textAlignmentRawValue: pendingSave.textAlignmentRawValue,
-            thumbnail: draftThumbnail
+            thumbnail: draftThumbnail,
+            createdAt: pendingSave.createdAt
         ) {
             EntryLocationRecentStore.add(pendingSave.location)
             recentEntryLocations = EntryLocationRecentStore.all
@@ -3842,6 +3847,7 @@ struct CreateEntryView: View {
 
         return EntryDraftSavePayload(
             id: pendingSave.id ?? UUID(),
+            createdAt: pendingSave.createdAt,
             title: pendingSave.title,
             text: pendingSave.text,
             richText: pendingSave.richText,
@@ -6718,9 +6724,13 @@ struct CreateEntryView: View {
         setCloudSaveState((storyboardPhotos.compactMap { $0 }).isEmpty ? .saving : .uploadingPhotos)
 
         let entryID = activeDraftID ?? UUID()
+        let createdAt = activeDraftID.flatMap { CreateEntryDraftStore.load(id: $0)?.createdAt }
+            ?? loadedDraftSnapshot?.createdAt
+            ?? Date()
         Task {
             let payload = EntryDraftSavePayload(
                 id: entryID,
+                createdAt: createdAt,
                 title: storyTitle,
                 text: entryText,
                 richText: currentEntryRichText(),
@@ -6815,6 +6825,7 @@ struct CreateEntryView: View {
         Task {
             let payload = EntryDraftSavePayload(
                 id: entry.id,
+                createdAt: CreateEntryDraftStore.load(id: entry.id)?.createdAt ?? entry.createdAt,
                 title: storyTitle,
                 text: entryText,
                 richText: currentEntryRichText(),

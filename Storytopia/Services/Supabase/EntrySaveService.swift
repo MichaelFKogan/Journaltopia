@@ -54,6 +54,7 @@ enum EntryCloudSaveState: Equatable {
 
 struct EntryDraftSavePayload {
     let id: UUID?
+    let createdAt: Date?
     let title: String
     let text: String
     let richText: NotebookRichTextDocument?
@@ -846,6 +847,8 @@ struct EntrySaveService {
                 isStrikethrough: payload.isStrikethrough,
                 isHighlighted: payload.isHighlighted,
                 textAlignmentRawValue: payload.textAlignmentRawValue,
+                displayOrder: nil,
+                createdAt: payload.createdAt,
                 status: status
             )
         } catch {
@@ -983,6 +986,8 @@ struct EntrySaveService {
             isStrikethrough: entry.isStrikethrough,
             isHighlighted: entry.isHighlighted,
             textAlignmentRawValue: entry.textAlignmentRawValue,
+            displayOrder: entry.displayOrder,
+            createdAt: entry.createdAt,
             status: status
         )
 
@@ -1080,7 +1085,8 @@ struct EntrySaveService {
             isStrikethrough: payload.isStrikethrough,
             isHighlighted: payload.isHighlighted,
             textAlignmentRawValue: payload.textAlignmentRawValue,
-            thumbnail: draftThumbnail
+            thumbnail: draftThumbnail,
+            createdAt: payload.createdAt
         )
     }
 

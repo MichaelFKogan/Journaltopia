@@ -105,6 +105,7 @@ struct JournalEntryPayload: Encodable, Sendable {
     let isHighlighted: Bool?
     let textAlignmentRawValue: String?
     let displayOrder: Int?
+    let createdAt: Date? = nil
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -131,6 +132,7 @@ struct JournalEntryPayload: Encodable, Sendable {
         case isHighlighted = "is_highlighted"
         case textAlignmentRawValue = "text_alignment_raw_value"
         case displayOrder = "display_order"
+        case createdAt = "created_at"
     }
 }
 
@@ -1226,6 +1228,7 @@ struct SupabaseEntryRepository {
         isHighlighted: Bool? = nil,
         textAlignmentRawValue: String? = nil,
         displayOrder: Int? = nil,
+        createdAt: Date? = nil,
         status: JournalEntryStatus = .draft
     ) async throws -> JournalEntry {
         let userID = try await authenticatedUserID()
@@ -1264,7 +1267,8 @@ struct SupabaseEntryRepository {
                         isStrikethrough: isStrikethrough,
                         isHighlighted: isHighlighted,
                         textAlignmentRawValue: textAlignmentRawValue?.trimmedOrNil,
-                        displayOrder: displayOrder
+                        displayOrder: displayOrder,
+                        createdAt: createdAt
                     ),
                     onConflict: "user_id,client_entry_id"
                 )
