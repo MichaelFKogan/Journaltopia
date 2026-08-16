@@ -3439,14 +3439,14 @@ struct CreateEntryView: View {
         switch cloudSaveState {
         case .saving, .uploadingPhotos:
             return true
-        case .idle, .saved, .savedLocally, .photosUploaded, .failed, .photoUploadFailed:
+        case .idle, .saved, .savedLocally, .photosUploaded, .failed, .photoUploadFailed, .notSaved:
             return false
         }
     }
 
     private var hasUnconfirmedCloudSave: Bool {
         switch cloudSaveState {
-        case .failed, .photoUploadFailed:
+        case .failed, .photoUploadFailed, .notSaved:
             return true
         case .idle, .saving, .saved, .savedLocally, .uploadingPhotos, .photosUploaded:
             return false
@@ -4053,6 +4053,12 @@ struct CreateEntryView: View {
         selectedPaperStyleChoice = draft.paperStyleRawValue.flatMap(CreatePaperStyleChoice.init(rawValue:)) ?? .defaultChoice
         selectedPaperColorIndex = min(max(draft.paperColorIndex ?? 0, 0), CreateFormattingPalette.paperColors.count - 1)
         loadedDraftSnapshot = currentDraftSnapshot(id: draft.id)
+
+        // A save that exhausted its retries left a marker behind. Re-raise it so reopening the
+        // entry still says "not in the cloud" instead of looking like a clean, synced draft.
+        if let unsyncedReason = EntryCloudSyncFailureStore.reason(for: draft.id) {
+            setCloudSaveState(.notSaved(unsyncedReason))
+        }
     }
 
     private func currentEntryRichText() -> NotebookRichTextDocument? {
@@ -6558,7 +6564,7 @@ struct CreateEntryView: View {
 
     private var cloudSaveBannerMessage: String? {
         switch cloudSaveState {
-        case .failed, .photoUploadFailed:
+        case .failed, .photoUploadFailed, .notSaved:
             return cloudSaveState.message
         case .idle, .saving, .saved, .savedLocally, .uploadingPhotos, .photosUploaded:
             return nil
@@ -6655,6 +6661,14 @@ struct CreateEntryView: View {
                 .foregroundStyle(Color.storyPurple)
                 .buttonStyle(.plain)
                 .disabled(isToolbarSaveInProgress)
+            } else if case .notSaved = cloudSaveState {
+                Button("Retry") {
+                    retryCloudSave()
+                }
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+                .buttonStyle(.plain)
+                .disabled(isToolbarSaveInProgress)
             } else if case .photoUploadFailed = cloudSaveState {
                 Button("Retry") {
                     retryCloudSave()
@@ -6697,6 +6711,12 @@ struct CreateEntryView: View {
                 .background(Color.storyPurple.opacity(0.1), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         case .failed, .photoUploadFailed:
             Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .frame(width: 30, height: 30)
+                .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        case .notSaved:
+            Image(systemName: "icloud.slash.fill")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Color.red)
                 .frame(width: 30, height: 30)
