@@ -23,6 +23,7 @@ import { runStoryboardGeneration, serviceRoleKey } from "./generation-job.ts";
 
 type GenerateStoryboardRequest = {
   clientEntryID?: string;
+  generationRequestID?: string;
   prompt?: string;
   artStyle?: string;
   quality?: string;
@@ -34,6 +35,7 @@ type PreparedRequest = {
   client: SupabaseClient;
   userID: string;
   clientEntryID: string;
+  generationRequestID: string;
   prompt: string;
   artStyle: string | null;
   quality: string;
@@ -72,9 +74,22 @@ Deno.serve(async (request) => {
     return failureResponse(error, "generate-storyboard");
   }
 
-  const { apiKey, client, userID, clientEntryID, prompt, artStyle, quality, references, referenceImagePaths } =
-    prepared;
+  const {
+    apiKey,
+    client,
+    userID,
+    clientEntryID,
+    generationRequestID,
+    prompt,
+    artStyle,
+    quality,
+    references,
+    referenceImagePaths,
+  } = prepared;
 
+  // A fresh id per attempt, which the reservation keeps only if this attempt is the one that
+  // reserves. A retry of the same request finds the row it already made and this id is discarded,
+  // so the storage path below is always the reserved row's own.
   const storyboardID = crypto.randomUUID();
   const storagePath = `${userID}/${clientEntryID}/${storyboardID}.jpg`;
 
@@ -84,6 +99,7 @@ Deno.serve(async (request) => {
   try {
     reservedRow = await reserveGeneration(client, {
       storyboardID,
+      generationRequestID,
       clientEntryID,
       storagePath,
       artStyle,
@@ -95,20 +111,40 @@ Deno.serve(async (request) => {
     return failureResponse(error, "generate-storyboard");
   }
 
-  // The background job builds its own service-role client. The caller's client stops here: nothing
-  // after the response depends on the caller's session still existing or its token still being
-  // valid.
-  runInBackground(
-    runStoryboardGeneration({
-      apiKey,
-      storyboardID,
-      storagePath,
-      prompt,
-      quality,
-      references,
-      referenceImagePaths,
-    }),
-  );
+  // A retry converges on the reservation it already made, which may be any age and any state. Two
+  // things follow, and both matter more than they look:
+  //
+  //   the row's id and storage path are authoritative, not the ones minted above — the first
+  //   delivery's storyboard is the one that exists, and writing the image anywhere else would
+  //   orphan it;
+  //
+  //   only a row still sitting at 'pending' wants a worker. One that is processing, completed or
+  //   failed has already had its attempt, and starting another would re-run a paid-for generation
+  //   for free. `start_storyboard_generation` would make the duplicate stand down anyway; not
+  //   starting it is the cheaper and clearer half of that guarantee.
+  const isAwaitingWorker = reservedRow.generation_status === "pending";
+
+  if (isAwaitingWorker) {
+    // The background job builds its own service-role client. The caller's client stops here: nothing
+    // after the response depends on the caller's session still existing or its token still being
+    // valid.
+    runInBackground(
+      runStoryboardGeneration({
+        apiKey,
+        storyboardID: reservedRow.id,
+        storagePath: reservedRow.storage_path,
+        prompt,
+        quality,
+        references,
+        referenceImagePaths,
+      }),
+    );
+  } else {
+    console.log(
+      `[generate-storyboard] request ${generationRequestID} already reserved ${reservedRow.id}` +
+        ` (${reservedRow.generation_status}); not starting a second generation.`,
+    );
+  }
 
   // 202: the storyboard is accepted and reserved, not finished. The client stores this id and polls
   // the row; it must not expect an image at `storagePath` yet.
@@ -165,6 +201,13 @@ async function prepareRequest(request: Request): Promise<PreparedRequest> {
   }
 
   const clientEntryID = requireUUID(payload.clientEntryID, "Missing client entry id.");
+  // The identity of this logical generation, minted by the client when the user asked for one and
+  // reused by every retry of it. Required: without it the reservation has no idempotency key and a
+  // repeated delivery would buy a second storyboard.
+  const generationRequestID = requireUUID(
+    payload.generationRequestID,
+    "Missing generation request id.",
+  );
   const prompt = requirePrompt(payload.prompt);
   const artStyle = optionalText(payload.artStyle);
   const quality = requireQuality(payload.quality);
@@ -176,7 +219,18 @@ async function prepareRequest(request: Request): Promise<PreparedRequest> {
   // the staged files can be cleaned up afterwards without racing the generation.
   const references = await downloadReferenceImages(client, referenceImagePaths);
 
-  return { apiKey, client, userID, clientEntryID, prompt, artStyle, quality, references, referenceImagePaths };
+  return {
+    apiKey,
+    client,
+    userID,
+    clientEntryID,
+    generationRequestID,
+    prompt,
+    artStyle,
+    quality,
+    references,
+    referenceImagePaths,
+  };
 }
 
 async function assertEntryExists(
@@ -204,6 +258,7 @@ async function reserveGeneration(
   client: SupabaseClient,
   reservation: {
     storyboardID: string;
+    generationRequestID: string;
     clientEntryID: string;
     storagePath: string;
     artStyle: string | null;
@@ -214,6 +269,7 @@ async function reserveGeneration(
 ): Promise<StoryboardRow> {
   const { data, error } = await client.rpc("reserve_storyboard_generation", {
     storyboard_id: reservation.storyboardID,
+    generation_request_id: reservation.generationRequestID,
     client_entry_id: reservation.clientEntryID,
     storage_path: reservation.storagePath,
     art_style: reservation.artStyle,

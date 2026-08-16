@@ -75,6 +75,8 @@ struct OpenAIImageGenerationService {
     private struct GenerateStoryboardRequest: Encodable {
         let clientEntryID: UUID?
         let sampleEntryID: UUID?
+        /// Absent for Sample Studio, which spends no credits and so has nothing to make idempotent.
+        let generationRequestID: UUID?
         let prompt: String
         let artStyle: String
         let quality: String
@@ -105,8 +107,13 @@ struct OpenAIImageGenerationService {
         let error: String
     }
 
+    /// - Parameter generationRequestID: the identity of this logical generation, minted once when
+    ///   the user asked for it and reused by every retry. The server treats a repeat as the same
+    ///   reservation rather than a second one, which is what keeps a dropped response from costing
+    ///   a second credit.
     func generateStoryboard(
         clientEntryID: UUID,
+        generationRequestID: UUID,
         target: StoryboardGenerationTarget = .userEntry,
         title: String,
         text: String,
@@ -143,6 +150,7 @@ struct OpenAIImageGenerationService {
                 GenerateStoryboardRequest(
                     clientEntryID: target == .userEntry ? clientEntryID : nil,
                     sampleEntryID: target == .sampleStudio ? clientEntryID : nil,
+                    generationRequestID: target == .userEntry ? generationRequestID : nil,
                     prompt: prompt,
                     artStyle: artStyle,
                     quality: quality.rawValue,

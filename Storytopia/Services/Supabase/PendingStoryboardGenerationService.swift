@@ -580,6 +580,16 @@ final class PendingStoryboardGenerationMonitor: ObservableObject {
                 reconciledIDs.insert(pendingGeneration.id)
                 print("[Storytopia] Pending storyboard row no longer exists: \(pendingGeneration.id)")
             }
+
+            // The request id outlives the request on purpose, so that a retry can identify itself.
+            // It is released only once the server has reached an answer this device has seen — at
+            // which point the next tap is a genuinely new generation and is meant to reserve again.
+            switch outcome {
+            case .completed, .failed, .vanished:
+                StoryboardGenerationRequestStore.clearRequest(for: pendingGeneration.clientEntryID)
+            case .waiting:
+                break
+            }
         }
 
         if !reconciledIDs.isEmpty {

@@ -12,6 +12,7 @@ import UIKit
 struct ContentView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
     @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.scenePhase) private var scenePhase
@@ -106,8 +107,15 @@ struct ContentView: View {
             // the sign-out purge has to be handed it before it can clear it.
             LocalUserDataPurge.register(generationCreditStore: generationCreditStore)
 
+            // Started before anything is awaited, and exactly once. Apple delivers whatever happened
+            // while nothing was listening — a purchase approved after the app was killed, a renewal
+            // charged overnight — as soon as this exists.
+            subscriptionStore.attach(creditStore: generationCreditStore)
+            subscriptionStore.startListeningForTransactions()
+
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+            await subscriptionStore.refresh(isSignedIn: authStore.userID != nil)
             reloadScopedLocalState()
 
             // Launch is the first of the two moments a generation can be picked back up. Anything
@@ -149,6 +157,12 @@ struct ContentView: View {
         .onChange(of: authStore.userID) { userID in
             Task {
                 await generationCreditStore.refresh(isSignedIn: userID != nil)
+
+                // Signing out forgets this device's presentation of a subscription and nothing more:
+                // the entitlement belongs to the account, on the server, and is still there for the
+                // next sign-in. Signing in re-reconciles from scratch rather than inheriting whatever
+                // the previous account's state happened to be.
+                await subscriptionStore.refresh(isSignedIn: userID != nil)
             }
             reloadScopedLocalState()
             pendingStoryboardMonitor.resume(isSignedIn: userID != nil)
@@ -734,6 +748,7 @@ struct ContentView_Previews: PreviewProvider {
         ContentView()
             .environmentObject(SupabaseAuthStore.preview)
             .environmentObject(GenerationCreditStore())
+            .environmentObject(SubscriptionStore())
             .environmentObject(PendingStoryboardGenerationMonitor())
             .environmentObject(SignInGate())
     }

@@ -2901,8 +2901,15 @@ struct CreateEntryView: View {
                 }
 
                 print("[Storytopia] Requesting storyboard generation.")
+                // Minted once for this entry and reused until the server reaches a terminal answer,
+                // so a retry after a dropped response reserves nothing new. Read here rather than
+                // above because the entry's id is only settled by the save above.
+                let generationRequestID = StoryboardGenerationRequestStore.requestID(
+                    for: prepareResult.localDraftID
+                )
                 let dispatch = try await OpenAIImageGenerationService().generateStoryboard(
                     clientEntryID: prepareResult.localDraftID,
+                    generationRequestID: generationRequestID,
                     target: authoringMode.isSampleStudio ? .sampleStudio : .userEntry,
                     title: storyTitle,
                     text: entryText,

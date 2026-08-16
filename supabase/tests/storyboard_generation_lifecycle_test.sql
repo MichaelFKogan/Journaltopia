@@ -82,6 +82,7 @@ select set_config(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000001',
+        '70000001-0000-4000-8000-000000000001',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/one.jpg',
         'Anime',
@@ -186,6 +187,7 @@ select is(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000002',
+        '70000002-0000-4000-8000-000000000002',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/two.jpg',
         'Anime',
@@ -278,6 +280,7 @@ select is(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000003',
+        '70000003-0000-4000-8000-000000000003',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/three.jpg',
         'Anime',
@@ -305,6 +308,7 @@ where id = 'cccccccc-0000-4000-8000-000000000003';
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000004',
+        '70000004-0000-4000-8000-000000000004',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/four.jpg',
         'Anime',
@@ -382,6 +386,7 @@ select is(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000005',
+        '70000005-0000-4000-8000-000000000005',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/five.jpg',
         'Anime',
@@ -395,6 +400,7 @@ select lives_ok(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000006',
+        '70000006-0000-4000-8000-000000000006',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/six.jpg',
         'Anime',
@@ -446,7 +452,7 @@ select is(
 select is(
     has_function_privilege(
         'authenticated',
-        'public.reserve_storyboard_generation(uuid,uuid,text,text,text,text,integer)',
+        'public.reserve_storyboard_generation(uuid,uuid,uuid,text,text,text,text,integer)',
         'execute'
     ),
     true,

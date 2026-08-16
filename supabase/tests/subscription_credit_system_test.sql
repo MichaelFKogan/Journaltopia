@@ -294,6 +294,7 @@ select set_config(
 select throws_like(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-0000000000a1',
+        '70000008-0000-4000-8000-000000000008',
         'ffffffff-0000-4000-8000-000000000002',
         'eeee/ffff/one.jpg', 'Anime', 'low', 'an unsubscribed afternoon', 1
     )$$,
@@ -339,6 +340,7 @@ select set_config(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-0000000000b1',
+        '70000009-0000-4000-8000-000000000009',
         'ffffffff-0000-4000-8000-000000000001',
         'eeee/ffff/hd.jpg', 'Anime', 'medium', 'a subscribed afternoon', 2
     )$$,
@@ -380,6 +382,7 @@ select is(
 select throws_like(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-0000000000b2',
+        '70000010-0000-4000-8000-000000000010',
         'ffffffff-0000-4000-8000-000000000001',
         'eeee/ffff/broke.jpg', 'Anime', 'medium', 'a subscribed afternoon', 2
     )$$,

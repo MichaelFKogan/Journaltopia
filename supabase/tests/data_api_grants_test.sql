@@ -347,7 +347,7 @@ select is(
 select ok(
     has_function_privilege(
         'authenticated',
-        'public.reserve_storyboard_generation(uuid,uuid,text,text,text,text,integer)',
+        'public.reserve_storyboard_generation(uuid,uuid,uuid,text,text,text,text,integer)',
         'execute'
     ),
     'reserving a generation is still the one credit operation a client may perform'

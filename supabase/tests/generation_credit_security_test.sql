@@ -94,7 +94,7 @@ select is(
 select is(
     has_function_privilege(
         'authenticated',
-        'public.reserve_storyboard_generation(uuid,uuid,text,text,text,text,integer)',
+        'public.reserve_storyboard_generation(uuid,uuid,uuid,text,text,text,text,integer)',
         'execute'
     ),
     true,
@@ -167,6 +167,7 @@ select set_config(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'dddddddd-0000-4000-8000-000000000001',
+        '70000007-0000-4000-8000-000000000007',
         'bbbbbbbb-0000-4000-8000-000000000002',
         'aaaa/bbbb/locked.jpg',
         'Anime',
