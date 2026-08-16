@@ -8,7 +8,7 @@ struct HomeView: View {
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
-    var isSampleAuthorMode = false
+    var contentMode: StorytopiaContentMode = .user
     var openCreatePage: () -> Void = {}
     var openEntriesPage: () -> Void = {}
     var openJournalsPage: () -> Void = {}
@@ -63,20 +63,16 @@ struct HomeView: View {
         .preferredColorScheme(.light)
     }
 
+    private var isSampleAuthorMode: Bool {
+        contentMode.isSampleAuthoring
+    }
+
     private var showsSampleHomeContent: Bool {
-        isSampleAuthorMode || authStore.userID == nil
+        contentMode.showsSampleContent
     }
 
     private var homeStoryboardLoadID: String {
-        if isSampleAuthorMode {
-            return "sample-author"
-        }
-
-        if let userID = authStore.userID {
-            return "user-\(userID.uuidString)"
-        }
-
-        return "signed-out-samples"
+        contentMode.loadIdentity(userID: authStore.userID)
     }
 
     private var header: some View {
@@ -217,6 +213,13 @@ struct HomeView: View {
 
     @MainActor
     private func loadHomeStoryboards() async {
+        // Nothing to load against yet: a session still resolving would pick a source and then have
+        // to swap it, and a build with no Supabase credentials has neither source to pick.
+        guard contentMode.isResolved, contentMode.unavailableMessage == nil else {
+            isLoadingHomeStoryboards = contentMode == .loading
+            return
+        }
+
         if showsSampleHomeContent {
             await loadSampleHomeStoryboards()
             return
@@ -257,6 +260,9 @@ struct HomeView: View {
                 pack = try await service.loadAuthoringPack()
             } else {
                 pack = try await service.loadActivePack()
+                // Signed-out browsing shares one in-memory copy of the pack across screens, so
+                // Journals and the entry views can read it without any of them writing to disk.
+                SampleContentStore.replace(with: pack)
             }
             generatedStoryboards = pack.storyboardsByEntryID.values
                 .flatMap { $0 }

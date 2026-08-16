@@ -9,7 +9,7 @@ struct ProfileView: View {
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     var embedsInNavigationStack = true
-    var isSampleAuthorMode = false
+    var contentMode: StorytopiaContentMode = .user
 
     @State private var selectedStoryboardIndex: Int?
     @State private var isProfileComicReaderPresented = false
@@ -281,7 +281,7 @@ struct ProfileView: View {
 
                 Spacer()
 
-                if !generatedStoryboards.isEmpty && !isLoadingProfileStoryboards {
+                if allowsStoryboardSelection && !generatedStoryboards.isEmpty && !isLoadingProfileStoryboards {
                     Button {
                         withAnimation(.snappy(duration: 0.24)) {
                             if isSelecting {
@@ -363,20 +363,23 @@ struct ProfileView: View {
         generatedStoryboards.filter { selectedStoryboardIDs.contains($0.id) }
     }
 
+    private var isSampleAuthorMode: Bool {
+        contentMode.isSampleAuthoring
+    }
+
     private var showsSampleProfileContent: Bool {
-        isSampleAuthorMode || authStore.userID == nil
+        contentMode.showsSampleContent
+    }
+
+    /// Selection exists to delete and share, and sample storyboards are neither the visitor's to
+    /// delete nor theirs to manage. Offering "Select" over them only ever led to a bar whose delete
+    /// button could not be pressed.
+    private var allowsStoryboardSelection: Bool {
+        !showsSampleProfileContent
     }
 
     private var profileLoadModeID: String {
-        if isSampleAuthorMode {
-            return "sample-author"
-        }
-
-        if let userID = authStore.userID {
-            return "user-\(userID.uuidString)"
-        }
-
-        return "signed-out-samples"
+        contentMode.loadIdentity(userID: authStore.userID)
     }
 
     private var areAllStoryboardsSelected: Bool {
@@ -582,6 +585,20 @@ struct ProfileView: View {
 
     @MainActor
     private func loadProfileStoryboards(forceReload: Bool = false) async {
+        if let unavailableMessage = contentMode.unavailableMessage {
+            generatedStoryboards = []
+            isLoadingProfileStoryboards = false
+            profileStoryboardErrorMessage = unavailableMessage
+            return
+        }
+
+        // Still resolving. Hold the placeholder grid rather than committing to samples and then
+        // swapping them out for the account's storyboards a moment later.
+        guard contentMode.isResolved else {
+            isLoadingProfileStoryboards = true
+            return
+        }
+
         if showsSampleProfileContent {
             await loadSampleProfileStoryboards()
             return
@@ -715,6 +732,7 @@ struct ProfileView: View {
                 pack = try await service.loadAuthoringPack()
             } else {
                 pack = try await service.loadActivePack()
+                SampleContentStore.replace(with: pack)
             }
             generatedStoryboards = pack.storyboardsByEntryID.values
                 .flatMap { $0 }

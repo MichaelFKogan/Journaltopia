@@ -3,6 +3,7 @@ import SwiftUI
 struct GenerationCreditsView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+    @EnvironmentObject private var signInGate: SignInGate
 
     @State private var selectedPack = CreditPack.featured
     @State private var isPurchaseUnavailableAlertPresented = false
@@ -59,15 +60,29 @@ struct GenerationCreditsView: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(alignment: .lastTextBaseline, spacing: 10) {
-                Text(balanceText)
-                    .font(.system(size: 42, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.storyInk)
-                    .monospacedDigit()
+            if authStore.status == .signedOut {
+                Button {
+                    signInGate.requireAccount(for: .spendCredits)
+                } label: {
+                    Text("Sign In to Use Credits")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 46)
+                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(alignment: .lastTextBaseline, spacing: 10) {
+                    Text(balanceText)
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.storyInk)
+                        .monospacedDigit()
 
-                Text("credits")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(Color.storyInk.opacity(0.58))
+                    Text("credits")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+                }
             }
 
             if let errorMessage = generationCreditStore.errorMessage {
@@ -136,6 +151,10 @@ struct GenerationCreditsView: View {
             }
 
             Button {
+                guard signInGate.requireAccount(for: .spendCredits) else {
+                    return
+                }
+
                 isPurchaseUnavailableAlertPresented = true
             } label: {
                 Text(purchaseButtonTitle)

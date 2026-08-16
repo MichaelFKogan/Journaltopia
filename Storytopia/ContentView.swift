@@ -13,6 +13,7 @@ struct ContentView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @EnvironmentObject private var pendingStoryboardMonitor: PendingStoryboardGenerationMonitor
+    @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedPage: StoryPage = .home
@@ -83,6 +84,11 @@ struct ContentView: View {
                 }
             }
         }
+        // Mounted at the root so any screen, sheet or pushed destination can raise it without
+        // owning a presentation of its own.
+        .sheet(item: signInGateRequest) { request in
+            SignInGateSheet(request: request)
+        }
         .task {
             // The credit balance is account state that lives on an object rather than on disk, so
             // the sign-out purge has to be handed it before it can clear it.
@@ -96,6 +102,18 @@ struct ContentView: View {
             // still running on the server from a previous session resumes being watched here.
             pendingStoryboardMonitor.attach(creditStore: generationCreditStore)
             pendingStoryboardMonitor.resume(isSignedIn: authStore.userID != nil)
+        }
+        .onAppear {
+            signInGate.update(mode: contentMode)
+        }
+        .onChange(of: contentMode) { mode in
+            signInGate.update(mode: mode)
+
+            // Signed-out browsing reads the sample pack from memory. Anything held from a previous
+            // mode is another account's or another pack's, so it goes rather than being reused.
+            if !mode.showsSampleContent || mode.isSampleAuthoring {
+                SampleContentStore.clear()
+            }
         }
         .onChange(of: scenePhase) { phase in
             guard phase == .active else {
@@ -132,6 +150,27 @@ struct ContentView: View {
             }
             reloadScopedLocalState()
         }
+    }
+
+    /// Derived once, here, and threaded down. Screens no longer each re-derive "am I signed out?"
+    /// from `authStore.userID`, which is what used to make a still-loading session and a
+    /// misconfigured build both look exactly like a signed-out visitor.
+    private var contentMode: StorytopiaContentMode {
+        StorytopiaContentMode(
+            status: authStore.status,
+            isSampleAuthorModeEnabled: isSampleAuthorModeEnabled
+        )
+    }
+
+    private var signInGateRequest: Binding<SignInGateRequest?> {
+        Binding(
+            get: { signInGate.pendingRequest },
+            set: { request in
+                if request == nil {
+                    signInGate.dismiss()
+                }
+            }
+        )
     }
 
     private var isCreatePagePresented: Binding<Bool> {
@@ -196,7 +235,7 @@ struct ContentView: View {
             HomeView(
                 selectedPage: pageSelection,
                 generatedStoryboards: $generatedStoryboards,
-                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil,
+                contentMode: contentMode,
                 openCreatePage: openCreatePageFromHome,
                 openEntriesPage: openEntriesPageFromHome,
                 openJournalsPage: openJournalsPage,
@@ -205,7 +244,7 @@ struct ContentView: View {
                 .transition(.identity)
                 .zIndex(0)
         case .today:
-            DaybookView(selectedPage: pageSelection)
+            DaybookView(selectedPage: pageSelection, contentMode: contentMode)
                 .transition(.identity)
                 .zIndex(0)
         case .entries:
@@ -216,7 +255,7 @@ struct ContentView: View {
                 completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
                 isOpeningEntryFromEntries: $isOpeningEntryFromEntries,
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
-                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
+                contentMode: contentMode
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -231,7 +270,7 @@ struct ContentView: View {
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
                 generatedStoryboards: $generatedStoryboards,
                 storyboardGenerationStatus: $storyboardGenerationStatus,
-                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
+                contentMode: contentMode
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -239,7 +278,7 @@ struct ContentView: View {
             ProfileView(
                 selectedPage: pageSelection,
                 generatedStoryboards: $generatedStoryboards,
-                isSampleAuthorMode: isSampleAuthorModeEnabled && authStore.userID != nil
+                contentMode: contentMode
             )
             .transition(.identity)
             .zIndex(0)
@@ -290,7 +329,7 @@ struct ContentView: View {
             isOpeningEntryFromEntries: isOpeningEntryFromEntries,
             isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
             storyboardGenerationStatus: $storyboardGenerationStatus,
-            authoringMode: isSampleAuthorModeEnabled && authStore.userID != nil ? .sampleStudio : .user,
+            contentMode: contentMode,
             dismissCreate: {
                 dismissCreatePage()
             }
@@ -384,6 +423,12 @@ struct ContentView: View {
     }
 
     private func reloadScopedLocalState() {
+        // A session that has not resolved yet is not a signed-out one. Clearing here would throw
+        // away the previous scope's state on every launch, before anyone has said it is wrong.
+        guard contentMode.isResolved else {
+            return
+        }
+
         guard authStore.userID != nil else {
             isDraftSaved = false
             generatedStoryboards = []
@@ -648,5 +693,6 @@ struct ContentView_Previews: PreviewProvider {
             .environmentObject(SupabaseAuthStore.preview)
             .environmentObject(GenerationCreditStore())
             .environmentObject(PendingStoryboardGenerationMonitor())
+            .environmentObject(SignInGate())
     }
 }
