@@ -7,6 +7,7 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { StoryboardFailure, type ReferenceImage } from "../_shared/storyboard-generation.ts";
 import {
+  REFERENCE_BUCKET,
   runStoryboardGeneration,
   safeGenerationErrorMessage,
   STORYBOARD_BUCKET,
@@ -15,6 +16,7 @@ import {
 
 type RpcCall = { name: string; params: Record<string, unknown> };
 type UploadCall = { bucket: string; storagePath: string; byteLength: number };
+type RemoveCall = { bucket: string; paths: string[] };
 
 type FakeClientOptions = {
   rpcResults?: Record<string, { data?: unknown; error?: { message: string } }>;
@@ -22,7 +24,7 @@ type FakeClientOptions = {
 
 function fakeClient(options: FakeClientOptions = {}) {
   const rpcCalls: RpcCall[] = [];
-  const removedPaths: string[][] = [];
+  const removals: RemoveCall[] = [];
 
   const client = {
     rpc(name: string, params: Record<string, unknown>) {
@@ -31,10 +33,10 @@ function fakeClient(options: FakeClientOptions = {}) {
       return Promise.resolve({ data: result.data ?? null, error: result.error ?? null });
     },
     storage: {
-      from(_bucket: string) {
+      from(bucket: string) {
         return {
           remove(paths: string[]) {
-            removedPaths.push(paths);
+            removals.push({ bucket, paths });
             return Promise.resolve({ data: null, error: null });
           },
         };
@@ -42,14 +44,13 @@ function fakeClient(options: FakeClientOptions = {}) {
     },
   };
 
-  return { client: client as unknown as SupabaseClient, rpcCalls, removedPaths };
+  return { client: client as unknown as SupabaseClient, rpcCalls, removals };
 }
 
-function makeJob(client: SupabaseClient, overrides: Partial<StoryboardGenerationJob> = {}): StoryboardGenerationJob {
+function makeJob(overrides: Partial<StoryboardGenerationJob> = {}): StoryboardGenerationJob {
   const references: ReferenceImage[] = [{ fileName: "1-main.jpg", blob: new Blob([new Uint8Array([1, 2])]) }];
 
   return {
-    client,
     apiKey: "test-key",
     storyboardID: "11111111-1111-4111-8111-111111111111",
     storagePath: "user/entry/storyboard.jpg",
@@ -61,7 +62,7 @@ function makeJob(client: SupabaseClient, overrides: Partial<StoryboardGeneration
   };
 }
 
-function stubDependencies(options: {
+function stubDependencies(client: SupabaseClient, options: {
   generate?: () => Promise<Uint8Array>;
   uploads?: UploadCall[];
 } = {}) {
@@ -72,6 +73,8 @@ function stubDependencies(options: {
     uploads,
     generateCalls,
     dependencies: {
+      // The job builds a service-role client of its own in production; the test hands it one.
+      createServiceClient: () => client,
       generateImage: (input: { prompt: string; quality: string; references: ReferenceImage[] }) => {
         generateCalls.push({
           prompt: input.prompt,
@@ -94,14 +97,16 @@ function stubDependencies(options: {
 }
 
 Deno.test("a claimed job generates, uploads, and completes the row", async () => {
-  const { client, rpcCalls, removedPaths } = fakeClient({
+  const { client, rpcCalls, removals } = fakeClient({
     rpcResults: {
       start_storyboard_generation: { data: true },
-      complete_storyboard_generation: { data: { id: "row", generation_status: "completed" } },
+      complete_storyboard_generation: {
+        data: [{ completion_status: "completed", resulting_status: "completed" }],
+      },
     },
   });
-  const { dependencies, uploads, generateCalls } = stubDependencies();
-  const job = makeJob(client);
+  const { dependencies, uploads, generateCalls } = stubDependencies(client);
+  const job = makeJob();
 
   const result = await runStoryboardGeneration(job, dependencies);
 
@@ -121,23 +126,117 @@ Deno.test("a claimed job generates, uploads, and completes the row", async () =>
     storage_path: job.storagePath,
     panel_layout: null,
   });
-  // Staged reference images are the job's to clean up, since the client is long gone by now.
-  assertEquals(removedPaths, [job.referenceImagePaths]);
+  // Staged reference images are the job's to clean up, since the client is long gone by now — and
+  // the finished artwork is left exactly where it was uploaded.
+  assertEquals(removals, [{ bucket: REFERENCE_BUCKET, paths: job.referenceImagePaths }]);
+});
+
+Deno.test("a retried job that finds its own work done keeps the image", async () => {
+  const { client, removals } = fakeClient({
+    rpcResults: {
+      start_storyboard_generation: { data: true },
+      complete_storyboard_generation: {
+        data: [{ completion_status: "already_completed", resulting_status: "completed" }],
+      },
+    },
+  });
+  const { dependencies } = stubDependencies(client);
+
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
+
+  assertEquals(result.status, "completed");
+  assertEquals(removals.map((removal) => removal.bucket), [REFERENCE_BUCKET]);
+});
+
+Deno.test("losing the race to the sweeper discards the image it just uploaded", async () => {
+  // The row is terminal-failed and refunded, so nothing will ever point at this object again.
+  const { client, removals } = fakeClient({
+    rpcResults: {
+      start_storyboard_generation: { data: true },
+      complete_storyboard_generation: {
+        data: [{ completion_status: "already_failed", resulting_status: "failed" }],
+      },
+    },
+  });
+  const { dependencies } = stubDependencies(client);
+  const job = makeJob();
+
+  const result = await runStoryboardGeneration(job, dependencies);
+
+  assertEquals(result, { status: "skipped", reason: "already-failed" });
+  assertEquals(removals, [
+    { bucket: STORYBOARD_BUCKET, paths: [job.storagePath] },
+    { bucket: REFERENCE_BUCKET, paths: job.referenceImagePaths },
+  ]);
+});
+
+Deno.test("a completion error leaves the uploaded image alone", async () => {
+  // The row may still be completable, so deleting the object here could destroy a storyboard the
+  // user paid for. Only the database saying already_failed licenses that.
+  const { client, removals } = fakeClient({
+    rpcResults: {
+      start_storyboard_generation: { data: true },
+      complete_storyboard_generation: { error: { message: "connection reset" } },
+      fail_storyboard_generation: {
+        data: [{ id: "row", generation_status: "failed", refunded_credits: 1 }],
+      },
+    },
+  });
+  const { dependencies } = stubDependencies(client);
+
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
+
+  assertEquals(result.status, "failed");
+  assertEquals(removals.map((removal) => removal.bucket), [REFERENCE_BUCKET]);
+});
+
+Deno.test("a completion answer this build cannot read is treated as a failed write", async () => {
+  const { client, removals } = fakeClient({
+    rpcResults: {
+      start_storyboard_generation: { data: true },
+      complete_storyboard_generation: { data: [{ completion_status: "something_new" }] },
+      fail_storyboard_generation: {
+        data: [{ id: "row", generation_status: "failed", refunded_credits: 1 }],
+      },
+    },
+  });
+  const { dependencies } = stubDependencies(client);
+
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
+
+  assertEquals(result.status, "failed");
+  assertEquals(removals.map((removal) => removal.bucket), [REFERENCE_BUCKET]);
 });
 
 Deno.test("an unclaimed job does no work and spends nothing", async () => {
-  const { client, rpcCalls, removedPaths } = fakeClient({
+  const { client, rpcCalls, removals } = fakeClient({
     rpcResults: { start_storyboard_generation: { data: false } },
   });
-  const { dependencies, uploads, generateCalls } = stubDependencies();
+  const { dependencies, uploads, generateCalls } = stubDependencies(client);
 
-  const result = await runStoryboardGeneration(makeJob(client), dependencies);
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
 
   assertEquals(result, { status: "skipped", reason: "already-claimed" });
   assertEquals(generateCalls.length, 0);
   assertEquals(uploads.length, 0);
   assertEquals(rpcCalls.map((call) => call.name), ["start_storyboard_generation"]);
-  assertEquals(removedPaths.length, 1);
+  assertEquals(removals.length, 1);
+});
+
+Deno.test("a job with no server credentials writes nothing at all", async () => {
+  const { client, rpcCalls } = fakeClient();
+  const { dependencies, generateCalls } = stubDependencies(client);
+  dependencies.createServiceClient = () => {
+    throw new StoryboardFailure("Storyboard generation is not configured.", 500);
+  };
+
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
+
+  // Nothing can be recorded without a client, so the row is left for the sweeper rather than
+  // half-settled.
+  assertEquals(result, { status: "skipped", reason: "no-service-client" });
+  assertEquals(rpcCalls.length, 0);
+  assertEquals(generateCalls.length, 0);
 });
 
 Deno.test("a generation failure fails the row and reports the refund the database made", async () => {
@@ -149,11 +248,11 @@ Deno.test("a generation failure fails the row and reports the refund the databas
       },
     },
   });
-  const { dependencies } = stubDependencies({
+  const { dependencies } = stubDependencies(client, {
     generate: () => Promise.reject(new StoryboardFailure("OpenAI is rate limiting requests.", 429)),
   });
 
-  const result = await runStoryboardGeneration(makeJob(client), dependencies);
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
 
   assertEquals(result, {
     status: "failed",
@@ -178,11 +277,11 @@ Deno.test("a row the database already settled reports no second refund", async (
       },
     },
   });
-  const { dependencies } = stubDependencies({
+  const { dependencies } = stubDependencies(client, {
     generate: () => Promise.reject(new StoryboardFailure("OpenAI did not return a storyboard image.", 502)),
   });
 
-  const result = await runStoryboardGeneration(makeJob(client), dependencies);
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
 
   assertEquals(result, {
     status: "failed",
@@ -198,11 +297,11 @@ Deno.test("a failing transition that cannot be written is left to the sweeper", 
       fail_storyboard_generation: { error: { message: "connection reset" } },
     },
   });
-  const { dependencies } = stubDependencies({
+  const { dependencies } = stubDependencies(client, {
     generate: () => Promise.reject(new StoryboardFailure("The storyboard request timed out.", 504)),
   });
 
-  const result = await runStoryboardGeneration(makeJob(client), dependencies);
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
 
   // No refund is claimed and no status is invented: the row stays non-terminal on purpose.
   assertEquals(result, {
@@ -221,11 +320,11 @@ Deno.test("an upload failure fails the generation rather than completing it", as
       },
     },
   });
-  const { dependencies } = stubDependencies();
+  const { dependencies } = stubDependencies(client);
   dependencies.uploadImage = () =>
     Promise.reject(new StoryboardFailure("The generated storyboard could not be saved.", 500));
 
-  const result = await runStoryboardGeneration(makeJob(client), dependencies);
+  const result = await runStoryboardGeneration(makeJob(), dependencies);
 
   assertEquals(result.status, "failed");
   assertEquals(rpcCalls.map((call) => call.name), [

@@ -19,7 +19,7 @@ import {
   StoryboardFailure,
   type ReferenceImage,
 } from "../_shared/storyboard-generation.ts";
-import { runStoryboardGeneration } from "./generation-job.ts";
+import { runStoryboardGeneration, serviceRoleKey } from "./generation-job.ts";
 
 type GenerateStoryboardRequest = {
   clientEntryID?: string;
@@ -95,9 +95,11 @@ Deno.serve(async (request) => {
     return failureResponse(error, "generate-storyboard");
   }
 
+  // The background job builds its own service-role client. The caller's client stops here: nothing
+  // after the response depends on the caller's session still existing or its token still being
+  // valid.
   runInBackground(
     runStoryboardGeneration({
-      client,
       apiKey,
       storyboardID,
       storagePath,
@@ -147,6 +149,12 @@ function runInBackground(work: Promise<unknown>): void {
 
 async function prepareRequest(request: Request): Promise<PreparedRequest> {
   const apiKey = openAIKey();
+
+  // Checked here, before a credit is spent, because the background job cannot report its own
+  // misconfiguration: without server credentials it can neither fail the row nor refund it, and the
+  // generation would sit pending until the sweeper picked it up.
+  serviceRoleKey();
+
   const { client, userID } = await authenticateCaller(request);
 
   let payload: GenerateStoryboardRequest;

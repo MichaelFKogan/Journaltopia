@@ -22,7 +22,7 @@ create or replace function public.reserve_storyboard_generation(
 returns public.entry_storyboards
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
     caller uuid := auth.uid();
@@ -81,24 +81,25 @@ $$;
 
 -- Claims a pending row for one background worker. The status predicate is the claim: the first
 -- execution to run this owns the job, and any later one sees false and stands down.
+--
+-- From here down the lifecycle functions are server-owned and carry no session identity. They are
+-- reachable only by service_role and by the scheduler, and they take the job's owner from the row
+-- that reserve_storyboard_generation already wrote under the caller's own authenticated session.
+-- There is no user id parameter on purpose: a caller-supplied owner would be a caller-supplied
+-- authorization decision.
 create or replace function public.start_storyboard_generation(storyboard_id uuid)
 returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
     claimed boolean;
 begin
-    if auth.uid() is null then
-        raise exception 'not_authenticated';
-    end if;
-
     update public.entry_storyboards
     set generation_status = 'processing',
         processing_started_at = now()
     where entry_storyboards.id = start_storyboard_generation.storyboard_id
-      and entry_storyboards.user_id = auth.uid()
       and entry_storyboards.generation_status = 'pending'
     returning true into claimed;
 
@@ -108,27 +109,34 @@ $$;
 
 -- Records the finished artwork and promotes it in one transaction, so a storyboard can never be
 -- visible as completed without also being its entry's primary page.
+--
+-- The outcome comes back as data rather than as an exception, because the worker has to act on it:
+-- losing the race to the sweeper means the image it just uploaded has to be cleaned up, and that
+-- decision is too important to make by reading an error string.
+--
+--   completed          this call moved the row to completed
+--   already_completed  a previous execution of the same job already did
+--   already_failed     the row is terminal-failed and can never complete; its image is now orphaned
 create or replace function public.complete_storyboard_generation(
     storyboard_id uuid,
     storage_path text default null,
     panel_layout text default null
 )
-returns public.entry_storyboards
+returns table (
+    completion_status text,
+    resulting_status text,
+    resulting_storage_path text
+)
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
     storyboard public.entry_storyboards%rowtype;
 begin
-    if auth.uid() is null then
-        raise exception 'not_authenticated';
-    end if;
-
     select * into storyboard
     from public.entry_storyboards
     where entry_storyboards.id = complete_storyboard_generation.storyboard_id
-      and entry_storyboards.user_id = auth.uid()
     for update;
 
     if not found then
@@ -137,13 +145,18 @@ begin
 
     -- A retried background task finds its own work already done and takes the row as the answer.
     if storyboard.generation_status = 'completed' then
-        return storyboard;
+        return query
+        select 'already_completed'::text, storyboard.generation_status, storyboard.storage_path;
+        return;
     end if;
 
     -- The sweeper already failed and refunded this job. Completing it now would hand the user a
-    -- storyboard they were refunded for, so the row stays failed and the image is left orphaned.
+    -- storyboard they were refunded for, so the row stays failed and the caller is told plainly
+    -- that this generation is over.
     if storyboard.generation_status = 'failed' then
-        raise exception 'storyboard_already_failed';
+        return query
+        select 'already_failed'::text, storyboard.generation_status, storyboard.storage_path;
+        return;
     end if;
 
     update public.entry_storyboards
@@ -169,7 +182,8 @@ begin
     where entry_storyboards.id = storyboard.id
     returning * into storyboard;
 
-    return storyboard;
+    return query
+    select 'completed'::text, storyboard.generation_status, storyboard.storage_path;
 end;
 $$;
 
@@ -187,7 +201,7 @@ returns table (
 )
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
     storyboard public.entry_storyboards%rowtype;
@@ -249,8 +263,9 @@ begin
 end;
 $$;
 
--- The worker-facing wrapper. Ownership is checked here so the shared transition can stay usable by
--- the sweeper, which runs with no authenticated user at all.
+-- The worker-facing entry point. It is a separate function from the shared transition purely so the
+-- grantable surface and the implementation are not the same object: this name is reachable by
+-- service_role, the one below is reachable by nobody.
 create or replace function public.fail_storyboard_generation(
     storyboard_id uuid,
     generation_error text
@@ -262,22 +277,9 @@ returns table (
 )
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 begin
-    if auth.uid() is null then
-        raise exception 'not_authenticated';
-    end if;
-
-    if not exists (
-        select 1
-        from public.entry_storyboards
-        where entry_storyboards.id = fail_storyboard_generation.storyboard_id
-          and entry_storyboards.user_id = auth.uid()
-    ) then
-        raise exception 'storyboard_not_found';
-    end if;
-
     return query
     select *
     from public.finish_failed_storyboard_generation(
@@ -305,7 +307,7 @@ create or replace function public.sweep_stale_storyboard_generations(
 returns integer
 language plpgsql
 security definer
-set search_path = public
+set search_path = ''
 as $$
 declare
     stale record;
@@ -347,21 +349,42 @@ begin
 end;
 $$;
 
--- Only the caller-facing wrappers are reachable by a signed-in client. The shared transition and
--- the sweeper are server-side only: a client that could call them could fail and refund its own
--- generations at will.
+-- Reserving is the one lifecycle operation a signed-in client is allowed to perform: it is the
+-- authenticated act of spending your own credits to create your own job. Everything after it is
+-- server-owned.
+--
+-- The rest are revoked from PUBLIC — which is where anon and authenticated inherit function execute
+-- from — and then granted explicitly to service_role, so no privilege here arrives by inheritance.
+-- Leaving `fail` reachable by clients would have been an outright credit exploit: the image lands in
+-- storage, readable under the caller's own folder, a moment before the row is settled, so a client
+-- that could fail its own row could take the artwork and the refund together.
+revoke all on function public.start_storyboard_generation(uuid) from public, anon, authenticated;
+revoke all on function public.complete_storyboard_generation(uuid, text, text) from public, anon, authenticated;
+revoke all on function public.fail_storyboard_generation(uuid, text) from public, anon, authenticated;
 revoke all on function public.finish_failed_storyboard_generation(uuid, text) from public, anon, authenticated;
 revoke all on function public.sweep_stale_storyboard_generations(interval, interval, integer) from public, anon, authenticated;
 
 grant execute on function public.reserve_storyboard_generation(uuid, uuid, text, text, text, text, integer) to authenticated;
-grant execute on function public.start_storyboard_generation(uuid) to authenticated;
-grant execute on function public.complete_storyboard_generation(uuid, text, text) to authenticated;
-grant execute on function public.fail_storyboard_generation(uuid, text) to authenticated;
 
--- Credit bookkeeping and lifecycle timestamps are written by these functions and by nothing else.
--- Without this, a client could insert a pending row claiming a large reservation, wait for the
--- sweeper, and be "refunded" credits it never spent. Every column the app actually writes today —
--- the storyboard's own metadata and its primary flag — stays writable.
+grant execute on function public.start_storyboard_generation(uuid) to service_role;
+grant execute on function public.complete_storyboard_generation(uuid, text, text) to service_role;
+grant execute on function public.fail_storyboard_generation(uuid, text) to service_role;
+
+-- finish_failed_storyboard_generation and the sweeper stay ungranted: the two callers that need
+-- them — the fail entry point above and the scheduled job — are security definer functions owned by
+-- the same role, so neither reaches them through a grant.
+
+-- Generation state, credit bookkeeping, and lifecycle timestamps are written by the functions above
+-- and by nothing else. Without this, a client could insert a pending row claiming a large
+-- reservation, wait for the sweeper, and be "refunded" credits it never spent — or move a live row's
+-- status by hand. Every column the app actually writes — the storyboard's own metadata and its
+-- primary flag — stays writable.
+--
+-- generation_status is deliberately absent from both lists. The app's storyboard-duplication upsert
+-- used to send it; it no longer does, and the column default ('completed') covers the row it
+-- inserts. Note that INSERT ... ON CONFLICT DO UPDATE is privilege-checked across its whole SET list
+-- whether or not a conflict happens, so the update list has to cover every column that upsert
+-- sends. RLS still pins user_id to the caller, so the wider list grants nothing extra.
 revoke insert, update on public.entry_storyboards from authenticated;
 
 grant insert (
@@ -375,13 +398,9 @@ grant insert (
     generation_quality,
     panel_layout,
     prompt,
-    is_primary,
-    generation_status
+    is_primary
 ) on public.entry_storyboards to authenticated;
 
--- The update list has to cover every column the app's upserts write, because
--- INSERT ... ON CONFLICT DO UPDATE is privilege-checked on its whole SET list whether or not a
--- conflict happens. RLS still pins user_id to the caller, so the wider list grants nothing extra.
 grant update (
     id,
     user_id,
@@ -393,22 +412,20 @@ grant update (
     generation_quality,
     panel_layout,
     prompt,
-    is_primary,
-    generation_status
+    is_primary
 ) on public.entry_storyboards to authenticated;
 
--- Every five minutes is far more often than the thresholds require, and each run is one index scan
--- over the handful of unfinished rows.
+-- The sweeper is not an optimisation. Once generation is fire-and-poll, a worker that dies takes the
+-- refund with it unless something scheduled resolves the row, and no client is allowed to. So this
+-- is a hard requirement: if pg_cron cannot be installed, the migration fails here rather than
+-- quietly deploying a system with no recovery path.
+--
+-- Every five minutes is far more often than the thresholds need, and each run is one index scan over
+-- the handful of unfinished rows.
+create extension if not exists pg_cron;
+
 do $$
 begin
-    begin
-        create extension if not exists pg_cron;
-    exception
-        when others then
-            raise notice 'pg_cron is unavailable here; schedule sweep_stale_storyboard_generations() by other means.';
-            return;
-    end;
-
     if exists (select 1 from cron.job where jobname = 'sweep-stale-storyboard-generations') then
         perform cron.unschedule('sweep-stale-storyboard-generations');
     end if;
@@ -418,4 +435,110 @@ begin
         '*/5 * * * *',
         $cron$select public.sweep_stale_storyboard_generations();$cron$
     );
+end $$;
+
+-- What "the sweeper is scheduled" actually means, written down so it can be checked rather than
+-- assumed. One row per condition, each with why it passed or failed:
+--
+--   supabase db query --linked "select * from public.verify_storyboard_sweeper();"
+--   supabase db query --local  "select * from public.verify_storyboard_sweeper();"
+--
+-- and, for a pipeline gate that exits non-zero instead of printing:
+--
+--   supabase db query --linked "select public.assert_storyboard_sweeper_scheduled();"
+create or replace function public.verify_storyboard_sweeper()
+returns table (check_name text, passed boolean, detail text)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    expected_schedule constant text := '*/5 * * * *';
+    expected_command constant text := 'sweep_stale_storyboard_generations';
+    job record;
+begin
+    if to_regclass('cron.job') is null then
+        return query select
+            'pg_cron_installed'::text,
+            false,
+            'pg_cron is not installed: stale generations will never be failed or refunded.'::text;
+        return;
+    end if;
+
+    return query select 'pg_cron_installed'::text, true, 'pg_cron is installed.'::text;
+
+    select * into job
+    from cron.job
+    where cron.job.jobname = 'sweep-stale-storyboard-generations';
+
+    if not found then
+        return query select
+            'sweeper_job_exists'::text,
+            false,
+            'No cron job named sweep-stale-storyboard-generations.'::text;
+        return;
+    end if;
+
+    return query select
+        'sweeper_job_exists'::text,
+        true,
+        format('cron job %s owned by %s', job.jobid, job.username);
+
+    return query select
+        'sweeper_job_active'::text,
+        coalesce(job.active, false),
+        format('active = %s', coalesce(job.active, false));
+
+    return query select
+        'sweeper_schedule'::text,
+        job.schedule = expected_schedule,
+        format('schedule is %L, expected %L', job.schedule, expected_schedule);
+
+    return query select
+        'sweeper_command'::text,
+        position(expected_command in coalesce(job.command, '')) > 0,
+        format('command is %L', coalesce(job.command, ''));
+
+    return query select
+        'sweeper_executable'::text,
+        has_function_privilege(
+            job.username,
+            'public.sweep_stale_storyboard_generations(interval,interval,integer)',
+            'execute'
+        ),
+        format('%L may execute the sweeper', job.username);
+end;
+$$;
+
+-- The same checks as a hard assertion, for deployment pipelines and for this migration itself.
+create or replace function public.assert_storyboard_sweeper_scheduled()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    failures text;
+begin
+    select string_agg(format('%s (%s)', check_name, detail), '; ' order by check_name)
+    into failures
+    from public.verify_storyboard_sweeper()
+    where not passed;
+
+    if failures is not null then
+        raise exception 'storyboard_sweeper_not_scheduled: %', failures;
+    end if;
+end;
+$$;
+
+revoke all on function public.verify_storyboard_sweeper() from public, anon, authenticated;
+revoke all on function public.assert_storyboard_sweeper_scheduled() from public, anon, authenticated;
+
+grant execute on function public.verify_storyboard_sweeper() to service_role;
+grant execute on function public.assert_storyboard_sweeper_scheduled() to service_role;
+
+-- Fail the migration if scheduling did not actually take effect.
+do $$
+begin
+    perform public.assert_storyboard_sweeper_scheduled();
 end $$;

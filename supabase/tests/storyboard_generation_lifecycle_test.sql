@@ -10,7 +10,7 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 
-select plan(39);
+select plan(67);
 
 -- Fixtures -------------------------------------------------------------------------------------
 -- The profile (and its 10 starting credits) is created by the on_auth_user_created trigger.
@@ -107,13 +107,16 @@ select isnt(
 );
 
 -- Completing -----------------------------------------------------------------------------------
-select lives_ok(
-    $$select public.complete_storyboard_generation(
+-- The outcome comes back as data, because the worker has to act on it: only 'already_failed'
+-- licenses it to delete the image it just uploaded.
+select is(
+    (select completion_status from public.complete_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000001',
         'aaaa/bbbb/one.jpg',
         null
-    )$$,
-    'a claimed job can be completed'
+    )),
+    'completed',
+    'completing a claimed job reports completed'
 );
 
 select is(
@@ -140,13 +143,14 @@ select is(
     'the previous primary is demoted in the same transaction'
 );
 
-select lives_ok(
-    $$select public.complete_storyboard_generation(
+select is(
+    (select completion_status from public.complete_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000001',
         'aaaa/bbbb/one.jpg',
         null
-    )$$,
-    'a retried background task can complete the same job again'
+    )),
+    'already_completed',
+    'a retried background task is told the work was already done'
 );
 
 select is(
@@ -229,14 +233,22 @@ select is(
     'a repeated failure does not refund a second time'
 );
 
-select throws_ok(
-    $$select public.complete_storyboard_generation(
+-- The late-success race, from the database's side: the worker's image is already uploaded, the row
+-- is already failed and refunded, and the worker is told so plainly enough to clean up after itself.
+select is(
+    (select completion_status from public.complete_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000002',
         'aaaa/bbbb/two.jpg',
         null
-    )$$,
-    'storyboard_already_failed',
-    'a refunded generation cannot be completed afterwards'
+    )),
+    'already_failed',
+    'a refunded generation reports already_failed instead of completing'
+);
+
+select is(
+    (select generation_status from public.entry_storyboards where id = 'cccccccc-0000-4000-8000-000000000002'),
+    'failed',
+    'losing the race leaves the row failed'
 );
 
 -- Sweeping stale jobs --------------------------------------------------------------------------
@@ -339,6 +351,246 @@ select is(
     8,
     'rewinding a completed generation cannot mint credits'
 );
+
+-- Working with no session at all ---------------------------------------------------------------
+-- The background worker runs as service_role, long after the request that created the job. These
+-- two rows are reserved while the user's claims are still set, then settled with no auth.uid() at
+-- all, which is what the worker's calls look like.
+select lives_ok(
+    $$select public.reserve_storyboard_generation(
+        'cccccccc-0000-4000-8000-000000000005',
+        'bbbbbbbb-0000-4000-8000-000000000001',
+        'aaaa/bbbb/five.jpg',
+        'Anime',
+        'low',
+        'a quiet afternoon',
+        1
+    )$$,
+    'a fifth generation is reserved by the signed-in owner'
+);
+
+select lives_ok(
+    $$select public.reserve_storyboard_generation(
+        'cccccccc-0000-4000-8000-000000000006',
+        'bbbbbbbb-0000-4000-8000-000000000001',
+        'aaaa/bbbb/six.jpg',
+        'Anime',
+        'low',
+        'a quiet afternoon',
+        1
+    )$$,
+    'a sixth generation is reserved by the signed-in owner'
+);
+
+-- Claims with no subject: auth.uid() is null from here, exactly as it is for service_role.
+select set_config('request.jwt.claims', '{"role":"service_role"}', true);
+
+select is(
+    public.start_storyboard_generation('cccccccc-0000-4000-8000-000000000005'),
+    true,
+    'claiming a job needs no user session'
+);
+
+select is(
+    (select completion_status from public.complete_storyboard_generation(
+        'cccccccc-0000-4000-8000-000000000005',
+        'aaaa/bbbb/five.jpg',
+        null
+    )),
+    'completed',
+    'completing a job needs no user session'
+);
+
+select is(
+    (select refunded_credits from public.fail_storyboard_generation(
+        'cccccccc-0000-4000-8000-000000000006',
+        'OpenAI is unavailable.'
+    )),
+    1,
+    'failing a job needs no user session and still refunds the row owner'
+);
+
+select is(
+    (select generation_credits from public.profiles where id = 'aaaaaaaa-0000-4000-8000-000000000001'),
+    7,
+    'the refund lands on the owner recorded in the row, not on the caller'
+);
+
+-- Who may call what ------------------------------------------------------------------------------
+-- Executed as catalog assertions rather than by impersonating the roles: this is the same privilege
+-- Postgres itself consults at call time, and pgTAP's own bookkeeping cannot be written as
+-- `authenticated` mid-transaction.
+select is(
+    has_function_privilege(
+        'authenticated',
+        'public.reserve_storyboard_generation(uuid,uuid,text,text,text,text,integer)',
+        'execute'
+    ),
+    true,
+    'a signed-in client may reserve its own generation'
+);
+
+select is(
+    has_function_privilege('authenticated', 'public.start_storyboard_generation(uuid)', 'execute'),
+    false,
+    'a signed-in client may not claim a job'
+);
+
+select is(
+    has_function_privilege('authenticated', 'public.complete_storyboard_generation(uuid,text,text)', 'execute'),
+    false,
+    'a signed-in client may not complete a job'
+);
+
+-- The one that would otherwise be an outright exploit: the image is readable in the caller's own
+-- storage folder a moment before the row is settled, so a client that could fail its own row could
+-- keep the artwork and take the refund.
+select is(
+    has_function_privilege('authenticated', 'public.fail_storyboard_generation(uuid,text)', 'execute'),
+    false,
+    'a signed-in client may not fail a job or trigger its refund'
+);
+
+select is(
+    has_function_privilege('authenticated', 'public.finish_failed_storyboard_generation(uuid,text)', 'execute'),
+    false,
+    'a signed-in client may not reach the shared failing transition'
+);
+
+select is(
+    has_function_privilege(
+        'authenticated',
+        'public.sweep_stale_storyboard_generations(interval,interval,integer)',
+        'execute'
+    ),
+    false,
+    'a signed-in client may not run the sweeper'
+);
+
+select is(
+    has_function_privilege('anon', 'public.fail_storyboard_generation(uuid,text)', 'execute'),
+    false,
+    'an anonymous caller may not fail a job either'
+);
+
+select is(
+    has_function_privilege('service_role', 'public.start_storyboard_generation(uuid)', 'execute'),
+    true,
+    'the background worker may claim a job'
+);
+
+select is(
+    has_function_privilege('service_role', 'public.complete_storyboard_generation(uuid,text,text)', 'execute'),
+    true,
+    'the background worker may complete a job'
+);
+
+select is(
+    has_function_privilege('service_role', 'public.fail_storyboard_generation(uuid,text)', 'execute'),
+    true,
+    'the background worker may fail a job'
+);
+
+select is(
+    has_function_privilege('service_role', 'public.finish_failed_storyboard_generation(uuid,text)', 'execute'),
+    false,
+    'even the worker reaches the shared transition only through the entry point'
+);
+
+-- Lifecycle and credit columns are server-owned; storyboard metadata stays the client's to write.
+select is(
+    has_column_privilege('authenticated', 'public.entry_storyboards', 'generation_status', 'update'),
+    false,
+    'a signed-in client may not move a generation between states'
+);
+
+select is(
+    has_column_privilege('authenticated', 'public.entry_storyboards', 'generation_status', 'insert'),
+    false,
+    'a signed-in client may not choose the state a storyboard is born in'
+);
+
+select is(
+    has_column_privilege('authenticated', 'public.entry_storyboards', 'reserved_credits', 'insert'),
+    false,
+    'a signed-in client may not claim a reservation it never paid'
+);
+
+select is(
+    has_column_privilege('authenticated', 'public.entry_storyboards', 'refunded_credits', 'update'),
+    false,
+    'a signed-in client may not rewrite what it was refunded'
+);
+
+select is(
+    has_column_privilege('authenticated', 'public.entry_storyboards', 'completed_at', 'update'),
+    false,
+    'a signed-in client may not erase the record that a generation finished'
+);
+
+select is(
+    has_column_privilege('authenticated', 'public.entry_storyboards', 'is_primary', 'update'),
+    true,
+    'choosing the primary storyboard is still the client its own'
+);
+
+select is(
+    has_column_privilege('authenticated', 'public.entry_storyboards', 'storage_path', 'insert'),
+    true,
+    'storyboard duplication can still write its own metadata'
+);
+
+-- The sweeper is scheduled ------------------------------------------------------------------------
+select case
+    when to_regclass('cron.job') is null
+        then skip('pg_cron is not installed in this database', 1)
+    else is(
+        (select count(*)::int from public.verify_storyboard_sweeper() where not passed),
+        0,
+        'every sweeper schedule check passes'
+    )
+end;
+
+-- Remove the job and prove the verification notices. The transaction rolls back either way, and the
+-- job is rescheduled below regardless.
+do $$
+begin
+    if to_regclass('cron.job') is not null
+       and exists (select 1 from cron.job where jobname = 'sweep-stale-storyboard-generations')
+    then
+        perform cron.unschedule('sweep-stale-storyboard-generations');
+    end if;
+end $$;
+
+select case
+    when to_regclass('cron.job') is null
+        then skip('pg_cron is not installed in this database', 1)
+    else ok(
+        exists (select 1 from public.verify_storyboard_sweeper() where not passed),
+        'verification fails when the sweeper job is missing'
+    )
+end;
+
+select case
+    when to_regclass('cron.job') is null
+        then skip('pg_cron is not installed in this database', 1)
+    else throws_ok(
+        'select public.assert_storyboard_sweeper_scheduled()',
+        'P0001',
+        'the deployment assertion refuses to pass without a scheduled sweeper'
+    )
+end;
+
+do $$
+begin
+    if to_regclass('cron.job') is not null then
+        perform cron.schedule(
+            'sweep-stale-storyboard-generations',
+            '*/5 * * * *',
+            $cron$select public.sweep_stale_storyboard_generations();$cron$
+        );
+    end if;
+end $$;
 
 select * from finish();
 

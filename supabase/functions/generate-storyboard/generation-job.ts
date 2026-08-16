@@ -6,7 +6,7 @@
 // and hands it to one of the two terminal transitions. Both transitions are database functions that
 // re-check the row under a lock, so a duplicated execution of this job cannot double-complete or
 // double-refund anything.
-import { type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   requestStoryboardImage,
   StoryboardFailure,
@@ -19,8 +19,11 @@ export const REFERENCE_BUCKET = "storytopia-media";
 
 /// Everything the background work needs, captured before the response goes out. The reference image
 /// bytes are already in memory by then, so the job never depends on staged files still being there.
+///
+/// There is no caller client and no user id here. The job runs on the row, and the row already
+/// records who owns it — a user id passed in from the request would be an authorization decision
+/// travelling as a parameter.
 export type StoryboardGenerationJob = {
-  client: SupabaseClient;
   apiKey: string;
   storyboardID: string;
   storagePath: string;
@@ -35,22 +38,57 @@ export type StoryboardGenerationJobResult =
   | { status: "failed"; message: string; refundedCredits: number | null }
   | { status: "skipped"; reason: string };
 
-/// Injected so the job can be tested without OpenAI or Storage.
+/// Injected so the job can be tested without OpenAI, Storage, or a database.
 export type StoryboardGenerationJobDependencies = {
+  createServiceClient: () => SupabaseClient;
   generateImage: typeof requestStoryboardImage;
   uploadImage: typeof uploadGeneratedImage;
 };
 
 const defaultDependencies: StoryboardGenerationJobDependencies = {
+  createServiceClient: serviceRoleClient,
   generateImage: requestStoryboardImage,
   uploadImage: uploadGeneratedImage,
 };
+
+/// The service-role key is scoped to this file: the request handler authenticates, validates, and
+/// reserves as the caller under RLS, and only the work that happens after the response — which has
+/// no session behind it and must outlive the caller's token — runs with server authority.
+export function serviceRoleKey(): string {
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!key) {
+    throw new StoryboardFailure("Storyboard generation is not configured.", 500);
+  }
+
+  return key;
+}
+
+function serviceRoleClient(): SupabaseClient {
+  const projectURL = Deno.env.get("SUPABASE_URL");
+  if (!projectURL) {
+    throw new StoryboardFailure("Storyboard generation is not configured.", 500);
+  }
+
+  return createClient(projectURL, serviceRoleKey(), {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
 
 export async function runStoryboardGeneration(
   job: StoryboardGenerationJob,
   dependencies: StoryboardGenerationJobDependencies = defaultDependencies,
 ): Promise<StoryboardGenerationJobResult> {
-  const { client, storyboardID } = job;
+  const { storyboardID } = job;
+
+  let client: SupabaseClient;
+  try {
+    client = dependencies.createServiceClient();
+  } catch (error) {
+    // Nothing can be written without a client, not even a failure. The row stays pending and the
+    // sweeper refunds it; the request path checks for this key up front so it should never happen.
+    console.error(`[generate-storyboard] no service client for ${storyboardID}:`, error);
+    return { status: "skipped", reason: "no-service-client" };
+  }
 
   // Claiming is the guard against a second execution of the same job: only the run that moves the
   // row out of 'pending' owns it, and it is the only one that may spend the OpenAI call.
@@ -64,7 +102,7 @@ export async function runStoryboardGeneration(
 
   if (!claimed) {
     console.log(`[generate-storyboard] ${storyboardID} was already claimed or finished; standing down.`);
-    await removeReferenceImages(job);
+    await removeReferenceImages(client, job);
     return { status: "skipped", reason: "already-claimed" };
   }
 
@@ -77,9 +115,18 @@ export async function runStoryboardGeneration(
     });
 
     await dependencies.uploadImage(client, STORYBOARD_BUCKET, job.storagePath, imageBytes);
-    await completeGeneration(client, storyboardID, job.storagePath);
+    const completion = await completeGeneration(client, storyboardID, job.storagePath);
 
-    console.log(`[generate-storyboard] ${storyboardID} completed.`);
+    // Losing the race to the sweeper is the one case where the image just uploaded can never be
+    // reached: the row is terminal-failed, the user has been refunded, and nothing will ever point
+    // at this object again. It is removed here, where the outcome is known for certain.
+    if (completion === "already_failed") {
+      console.log(`[generate-storyboard] ${storyboardID} was already failed; discarding the uploaded image.`);
+      await removeGeneratedImage(client, job.storagePath);
+      return { status: "skipped", reason: "already-failed" };
+    }
+
+    console.log(`[generate-storyboard] ${storyboardID} ${completion}.`);
     return { status: "completed" };
   } catch (error) {
     console.error(`[generate-storyboard] ${storyboardID} failed:`, error);
@@ -87,7 +134,7 @@ export async function runStoryboardGeneration(
     const refundedCredits = await failGeneration(client, storyboardID, message);
     return { status: "failed", message, refundedCredits };
   } finally {
-    await removeReferenceImages(job);
+    await removeReferenceImages(client, job);
   }
 }
 
@@ -115,14 +162,19 @@ async function claimGeneration(client: SupabaseClient, storyboardID: string): Pr
   return data === true;
 }
 
+export type StoryboardCompletionStatus = "completed" | "already_completed" | "already_failed";
+
+/// The completion outcome arrives as data, so the caller can tell "this generation is over" from
+/// "this write did not land". A database or network error is the second kind and throws: the row
+/// may still be completable, and nothing may be cleaned up on a guess.
 async function completeGeneration(
   client: SupabaseClient,
   storyboardID: string,
   storagePath: string,
-): Promise<void> {
+): Promise<StoryboardCompletionStatus> {
   // The panel layout is whatever the model chose; the current implementation never recorded one, so
   // null is passed and the RPC leaves the stored value alone.
-  const { error } = await client.rpc("complete_storyboard_generation", {
+  const { data, error } = await client.rpc("complete_storyboard_generation", {
     storyboard_id: storyboardID,
     storage_path: storagePath,
     panel_layout: null,
@@ -130,6 +182,32 @@ async function completeGeneration(
 
   if (error) {
     throw new StoryboardFailure("The finished storyboard could not be recorded.", 500);
+  }
+
+  const rows = Array.isArray(data) ? data : [data];
+  const completionStatus = rows[0]?.completion_status;
+
+  if (
+    completionStatus !== "completed" &&
+    completionStatus !== "already_completed" &&
+    completionStatus !== "already_failed"
+  ) {
+    // An answer this function cannot read is not an answer. Treated as a failed write, which leaves
+    // the row and the uploaded image alone.
+    throw new StoryboardFailure("The finished storyboard could not be recorded.", 500);
+  }
+
+  return completionStatus;
+}
+
+/// Compensating cleanup for the one case where an uploaded image provably has no future: the row is
+/// already failed and refunded. Never called for transient or unknown errors, because those leave a
+/// row that may still complete.
+async function removeGeneratedImage(client: SupabaseClient, storagePath: string): Promise<void> {
+  const { error } = await client.storage.from(STORYBOARD_BUCKET).remove([storagePath]);
+
+  if (error) {
+    console.error("[generate-storyboard] orphaned storyboard image cleanup skipped:", error.message);
   }
 }
 
@@ -161,12 +239,15 @@ async function failGeneration(
 /// Generation inputs are a staging copy of images the entry already owns. The bytes were read before
 /// the response went out, so removing them now cannot affect this job — and doing it here means the
 /// files are cleaned up even when the client that uploaded them is long gone.
-async function removeReferenceImages(job: StoryboardGenerationJob): Promise<void> {
+async function removeReferenceImages(
+  client: SupabaseClient,
+  job: StoryboardGenerationJob,
+): Promise<void> {
   if (job.referenceImagePaths.length === 0) {
     return;
   }
 
-  const { error } = await job.client.storage
+  const { error } = await client.storage
     .from(REFERENCE_BUCKET)
     .remove(job.referenceImagePaths);
 
