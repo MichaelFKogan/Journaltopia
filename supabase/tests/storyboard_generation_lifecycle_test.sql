@@ -13,7 +13,8 @@ begin;
 select plan(67);
 
 -- Fixtures -------------------------------------------------------------------------------------
--- The profile (and its 10 starting credits) is created by the on_auth_user_created trigger.
+-- The profile is created by the on_auth_user_created trigger, and since 20260817092000 it starts
+-- with no credits.
 insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
 values (
     '00000000-0000-0000-0000-000000000000',
@@ -24,6 +25,28 @@ values (
     'x',
     now(),
     now()
+);
+
+-- The ten credits this file's arithmetic is written against. Set here rather than inherited from a
+-- column default, so the lifecycle assertions stay readable as the balance moves 10 -> 9 -> 7 -> …
+update public.profiles
+set generation_credits = 10
+where id = 'aaaaaaaa-0000-4000-8000-000000000001';
+
+-- Reserving requires an active Storytopia+ subscription as of 20260817094000. This file is about
+-- what happens *after* a reservation succeeds, so the entitlement is set up once here and the
+-- entitlement rules themselves are tested in subscription_credit_system_test.sql.
+insert into public.subscriptions (
+    user_id, product_id, original_transaction_id, status,
+    current_period_start, current_period_end
+)
+values (
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'com.storytopia.plus.monthly',
+    'lifecycle-original-transaction',
+    'active',
+    now() - interval '2 days',
+    now() + interval '28 days'
 );
 
 insert into public.entries (user_id, client_entry_id, title, content)

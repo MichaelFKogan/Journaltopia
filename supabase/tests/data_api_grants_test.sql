@@ -15,7 +15,7 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 
-select plan(45);
+select plan(47);
 
 -- Users' own content ------------------------------------------------------------------------------
 -- Four policies each, so four privileges each. Checked as a set, since a partial grant here shows up
@@ -276,7 +276,23 @@ select is(
 )
 from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
-where n.nspname = 'public' and c.relkind = 'r';
+where n.nspname = 'public'
+  and c.relkind = 'r'
+  -- credit_ledger is the one exception, and it is asserted on its own terms below: history is
+  -- append-only for everyone, the server included.
+  and c.relname <> 'credit_ledger';
+
+select is(
+    has_table_privilege('service_role', 'public.credit_ledger', 'update')
+        or has_table_privilege('service_role', 'public.credit_ledger', 'delete'),
+    false,
+    'not even the server may rewrite or delete credit history through the Data API'
+);
+
+select ok(
+    has_table_privilege('service_role', 'public.credit_ledger', 'insert'),
+    'the server may append to credit history'
+);
 
 -- Every table is still row-protected -------------------------------------------------------------
 -- Grants are only half the gate. If a future migration adds a table and grants it without enabling

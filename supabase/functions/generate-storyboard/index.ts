@@ -228,6 +228,13 @@ async function reserveGeneration(
 
   const message = error?.message ?? "";
 
+  // Kept distinct from the credit failure below, because they lead somewhere different: this one to
+  // Storytopia+, that one to buying more credits. The reservation raises them separately for the
+  // same reason.
+  if (message.includes("subscription_required")) {
+    throw new StoryboardFailure("Storyboard generation requires Storytopia+.", 403);
+  }
+
   if (message.includes("insufficient_generation_credits")) {
     throw new StoryboardFailure("You do not have enough credits to generate this storyboard.", 402);
   }

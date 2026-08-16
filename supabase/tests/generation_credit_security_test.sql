@@ -42,6 +42,25 @@ values (
     'The credits stayed where they were put.'
 );
 
+-- Profiles start at zero since 20260817092000, and reserving needs an active subscription since
+-- 20260817094000. Both are arranged here so the assertions below stay about privileges.
+update public.profiles
+set generation_credits = 10
+where id = 'aaaaaaaa-0000-4000-8000-000000000002';
+
+insert into public.subscriptions (
+    user_id, product_id, original_transaction_id, status,
+    current_period_start, current_period_end
+)
+values (
+    'aaaaaaaa-0000-4000-8000-000000000002',
+    'com.storytopia.plus.monthly',
+    'credit-security-original-transaction',
+    'active',
+    now() - interval '1 day',
+    now() + interval '29 days'
+);
+
 -- The legacy refund RPC is gone -----------------------------------------------------------------
 -- It took a caller-supplied amount, added it to the caller's balance, and was reachable by any
 -- signed-in client through PostgREST. Nothing about it was salvageable: there was no reservation to
