@@ -571,12 +571,15 @@ select case
     )
 end;
 
+-- Matched on the tag rather than the whole message: `storyboard_sweeper_not_scheduled:` is the
+-- stable contract a deployment gate can rely on, while the detail after it enumerates whichever
+-- checks failed and is expected to read differently from one broken environment to the next.
 select case
     when to_regclass('cron.job') is null
         then skip('pg_cron is not installed in this database', 1)
-    else throws_ok(
+    else throws_like(
         'select public.assert_storyboard_sweeper_scheduled()',
-        'P0001',
+        'storyboard_sweeper_not_scheduled:%',
         'the deployment assertion refuses to pass without a scheduled sweeper'
     )
 end;
