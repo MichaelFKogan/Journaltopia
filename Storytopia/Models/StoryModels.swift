@@ -514,6 +514,21 @@ enum StorytopiaLocalAccountScope {
     }
 }
 
+/// How a local draft write relates the copy on disk to the copy in Supabase.
+///
+/// Local autosave and the explicit cloud save both write through `CreateEntryDraftStore`, and only
+/// the caller knows which one it is. Carrying that answer with the write is what lets a later cloud
+/// download tell "this is a stale cache, refresh it" from "this is newer than anything the server
+/// has, leave it alone".
+enum CreateEntryDraftCloudSyncState {
+    /// Leave whatever the draft already recorded. The default, so existing writes keep their meaning.
+    case unchanged
+    /// The local copy is ahead of Supabase — an autosave the user has not committed yet.
+    case uncommitted
+    /// Supabase has confirmed this exact content.
+    case synchronized
+}
+
 enum CreateEntryDraftStore {
     private static let metadataFileName = "draft.json"
     private static let thumbnailFileName = "thumbnail.jpg"
@@ -609,7 +624,8 @@ enum CreateEntryDraftStore {
         isHighlighted: Bool = false,
         textAlignmentRawValue: String = "leading",
         thumbnail: UIImage? = nil,
-        createdAt: Date? = nil
+        createdAt: Date? = nil,
+        cloudSyncState: CreateEntryDraftCloudSyncState = .unchanged
     ) -> UUID? {
         save(
             id: id,
@@ -637,7 +653,8 @@ enum CreateEntryDraftStore {
             isHighlighted: isHighlighted,
             textAlignmentRawValue: textAlignmentRawValue,
             thumbnail: thumbnail,
-            createdAt: createdAt
+            createdAt: createdAt,
+            cloudSyncState: cloudSyncState
         )
     }
 
@@ -668,11 +685,18 @@ enum CreateEntryDraftStore {
         isHighlighted: Bool = false,
         textAlignmentRawValue: String = "leading",
         thumbnail: UIImage? = nil,
-        createdAt: Date? = nil
+        createdAt: Date? = nil,
+        cloudSyncState: CreateEntryDraftCloudSyncState = .unchanged
     ) -> UUID? {
         let draftID = id ?? UUID()
         let draftDirectory = directory(for: draftID)
         let existingDraft = id.flatMap { loadDraft(at: directory(for: $0), includeMedia: true) }
+        // Read before the directory goes away: `.unchanged` has to carry the previous answer
+        // forward, and the file it lives in is about to be rewritten from scratch.
+        let hasUncommittedLocalEdits = resolvedUncommittedFlag(
+            cloudSyncState,
+            previousValue: id.map { storedUncommittedFlag(for: $0) } ?? false
+        )
 
         try? FileManager.default.removeItem(at: draftDirectory)
 
@@ -765,7 +789,8 @@ enum CreateEntryDraftStore {
                 textAlignmentRawValue: textAlignmentRawValue,
                 createdAt: createdAt ?? existingDraft?.createdAt ?? now,
                 updatedAt: now,
-                displayOrder: existingDraft?.displayOrder ?? defaultDisplayOrder(for: now)
+                displayOrder: existingDraft?.displayOrder ?? defaultDisplayOrder(for: now),
+                hasUncommittedLocalEdits: hasUncommittedLocalEdits
             )
             let metadataData = try JSONEncoder().encode(metadata)
             try metadataData.write(
@@ -781,6 +806,158 @@ enum CreateEntryDraftStore {
 
     static func delete(id: UUID) {
         try? FileManager.default.removeItem(at: directory(for: id))
+    }
+
+    /// True when a draft directory exists for this id, without paying to decode its media.
+    static func exists(id: UUID) -> Bool {
+        FileManager.default.fileExists(
+            atPath: directory(for: id).appendingPathComponent(metadataFileName).path
+        )
+    }
+
+    /// The draft's creation date, read straight from its metadata. Callers that only need this one
+    /// field should not pay to decode every reference photo and character image to get it.
+    static func createdAt(id: UUID) -> Date? {
+        let metadataURL = directory(for: id).appendingPathComponent(metadataFileName)
+        guard
+            let data = try? Data(contentsOf: metadataURL),
+            let metadata = try? JSONDecoder().decode(CreateEntryDraftMetadata.self, from: data)
+        else {
+            return nil
+        }
+
+        return metadata.createdAt
+    }
+
+    /// True when the copy on disk holds edits Supabase has not confirmed.
+    ///
+    /// This is the fact that protects a locally autosaved entry from being overwritten by an older
+    /// cloud snapshot when it is opened again.
+    static func hasUncommittedLocalEdits(id: UUID) -> Bool {
+        storedUncommittedFlag(for: id)
+    }
+
+    /// Records that Supabase now holds this draft's content. Called the moment a cloud save is
+    /// confirmed, which is what re-opens the draft to being refreshed from the cloud.
+    static func markCloudSynchronized(id: UUID) {
+        setUncommittedFlag(false, for: id)
+    }
+
+    /// Rewrites the text-and-formatting half of a draft in place, leaving reference photos,
+    /// characters, and the thumbnail exactly as they are, and marks the result uncommitted.
+    ///
+    /// Local autosave uses this so a pause in typing costs one small JSON write rather than
+    /// re-encoding every attached image. Returns `false` when there is no draft on disk yet, which
+    /// is the caller's signal to fall back to a full `save`.
+    @discardableResult
+    static func autosaveEditorState(
+        id: UUID,
+        title: String,
+        text: String,
+        richText: NotebookRichTextDocument?,
+        artStyle: String,
+        location: String,
+        date: Date,
+        datePrecision: EntryDatePrecision,
+        savesDraft: Bool,
+        isPrivate: Bool,
+        fontChoiceRawValue: String?,
+        textColorIndex: Int?,
+        textSize: Double?,
+        paperStyleRawValue: String?,
+        paperColorIndex: Int?,
+        isBold: Bool,
+        isItalic: Bool,
+        isUnderlined: Bool,
+        isStrikethrough: Bool,
+        isHighlighted: Bool,
+        textAlignmentRawValue: String
+    ) -> Bool {
+        mutateMetadata(for: id) { metadata in
+            metadata.title = title
+            metadata.text = text
+            metadata.richText = richText
+            metadata.artStyle = artStyle
+            metadata.location = location
+            metadata.date = date
+            metadata.datePrecision = datePrecision
+            metadata.savesDraft = savesDraft
+            metadata.isPrivate = isPrivate
+            metadata.fontChoiceRawValue = fontChoiceRawValue
+            metadata.textColorIndex = textColorIndex
+            metadata.textSize = textSize
+            metadata.paperStyleRawValue = paperStyleRawValue
+            metadata.paperColorIndex = paperColorIndex
+            metadata.isBold = isBold
+            metadata.isItalic = isItalic
+            metadata.isUnderlined = isUnderlined
+            metadata.isStrikethrough = isStrikethrough
+            metadata.isHighlighted = isHighlighted
+            metadata.textAlignmentRawValue = textAlignmentRawValue
+            metadata.updatedAt = Date()
+            metadata.hasUncommittedLocalEdits = true
+        }
+    }
+
+    private static func storedUncommittedFlag(for id: UUID) -> Bool {
+        let metadataURL = directory(for: id).appendingPathComponent(metadataFileName)
+        guard
+            let data = try? Data(contentsOf: metadataURL),
+            let metadata = try? JSONDecoder().decode(CreateEntryDraftMetadata.self, from: data)
+        else {
+            return false
+        }
+
+        return metadata.hasUncommittedLocalEdits ?? false
+    }
+
+    private static func setUncommittedFlag(_ hasUncommittedLocalEdits: Bool, for id: UUID) {
+        _ = mutateMetadata(for: id) { metadata in
+            metadata.hasUncommittedLocalEdits = hasUncommittedLocalEdits
+        }
+    }
+
+    private static func resolvedUncommittedFlag(
+        _ cloudSyncState: CreateEntryDraftCloudSyncState,
+        previousValue: Bool
+    ) -> Bool {
+        switch cloudSyncState {
+        case .unchanged:
+            return previousValue
+        case .uncommitted:
+            return true
+        case .synchronized:
+            return false
+        }
+    }
+
+    /// Applies `transform` to one draft's metadata file without disturbing its media, the way
+    /// `updateStatus` and `saveOrder` already do. Returns `false` when the draft does not exist.
+    @discardableResult
+    private static func mutateMetadata(
+        for id: UUID,
+        _ transform: (inout CreateEntryDraftMetadata) -> Void
+    ) -> Bool {
+        let metadataURL = directory(for: id).appendingPathComponent(metadataFileName)
+        guard
+            let data = try? Data(contentsOf: metadataURL),
+            var metadata = try? JSONDecoder().decode(CreateEntryDraftMetadata.self, from: data)
+        else {
+            return false
+        }
+
+        transform(&metadata)
+
+        guard let metadataData = try? JSONEncoder().encode(metadata) else {
+            return false
+        }
+
+        do {
+            try metadataData.write(to: metadataURL, options: [.atomic])
+            return true
+        } catch {
+            return false
+        }
     }
 
     static func removeCharacter(id characterID: UUID, excludingDraftID: UUID? = nil) {
@@ -1182,6 +1359,10 @@ private struct CreateEntryDraftMetadata: Codable {
     var createdAt: Date?
     var updatedAt: Date?
     var displayOrder: Int?
+    /// Set by local autosave, cleared once Supabase confirms the entry. Absent on drafts written
+    /// before this existed, which read as "not ahead of the cloud" — the safe default, because
+    /// those drafts only ever reached disk through a cloud save in the first place.
+    var hasUncommittedLocalEdits: Bool?
 
     func normalizedPhotoMetadata() -> [CreateEntryDraftPhotoMetadata] {
         if let referencePhotos {

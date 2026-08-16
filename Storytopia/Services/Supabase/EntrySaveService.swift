@@ -1040,6 +1040,10 @@ struct EntrySaveService {
         let cloudEntryDate = payload.datePrecision == .noDate ? nil : payload.date
 
         guard isSignedIn else {
+            // Nothing to be out of step with: a signed-out save has no cloud row that could later
+            // be downloaded over this draft, so leaving it flagged as uncommitted would only make
+            // the editor keep insisting there are unsaved changes.
+            CreateEntryDraftStore.markCloudSynchronized(id: localDraftID)
             return EntrySaveResult(
                 localDraftID: localDraftID,
                 cloudEntry: nil,
@@ -1096,6 +1100,9 @@ struct EntrySaveService {
         }
 
         EntryCloudSyncFailureStore.clear(clientEntryID: localDraftID)
+        // The entry row landed, so the local copy is no longer ahead of Supabase. Media sync below
+        // can still fail, but the writing the user would hate to lose is committed.
+        CreateEntryDraftStore.markCloudSynchronized(id: localDraftID)
 
         if let thumbnail = CreateEntryDraftStore.load(id: localDraftID)?.thumbnail {
             do {
@@ -1286,6 +1293,7 @@ struct EntrySaveService {
 
             removeLocalStoryboards(clientEntryID: localDraftID)
             EntryCloudSyncFailureStore.clear(clientEntryID: localDraftID)
+            UnfinishedCreateSessionStore.clearIfMatches(draftID: localDraftID)
             CreateEntryDraftStore.delete(id: localDraftID)
             return
         }
@@ -1302,6 +1310,7 @@ struct EntrySaveService {
         try await repository.deleteEntry(clientEntryID: cloudEntry.clientEntryID)
         removeLocalStoryboards(clientEntryID: cloudEntry.clientEntryID)
         EntryCloudSyncFailureStore.clear(clientEntryID: localDraftID)
+        UnfinishedCreateSessionStore.clearIfMatches(draftID: localDraftID)
         CreateEntryDraftStore.delete(id: localDraftID)
     }
 
