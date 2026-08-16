@@ -13,7 +13,8 @@ begin;
 select plan(67);
 
 -- Fixtures -------------------------------------------------------------------------------------
--- The profile (and its 10 starting credits) is created by the on_auth_user_created trigger.
+-- The profile is created by the on_auth_user_created trigger, and since 20260817092000 it starts
+-- with no credits.
 insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
 values (
     '00000000-0000-0000-0000-000000000000',
@@ -24,6 +25,28 @@ values (
     'x',
     now(),
     now()
+);
+
+-- The ten credits this file's arithmetic is written against. Set here rather than inherited from a
+-- column default, so the lifecycle assertions stay readable as the balance moves 10 -> 9 -> 7 -> …
+update public.profiles
+set generation_credits = 10
+where id = 'aaaaaaaa-0000-4000-8000-000000000001';
+
+-- Reserving requires an active Journaltopia+ subscription as of 20260817094000. This file is about
+-- what happens *after* a reservation succeeds, so the entitlement is set up once here and the
+-- entitlement rules themselves are tested in subscription_credit_system_test.sql.
+insert into public.subscriptions (
+    user_id, product_id, original_transaction_id, status,
+    current_period_start, current_period_end
+)
+values (
+    'aaaaaaaa-0000-4000-8000-000000000001',
+    'com.journaltopia.plus.monthly',
+    'lifecycle-original-transaction',
+    'active',
+    now() - interval '2 days',
+    now() + interval '28 days'
 );
 
 insert into public.entries (user_id, client_entry_id, title, content)
@@ -59,6 +82,7 @@ select set_config(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000001',
+        '70000001-0000-4000-8000-000000000001',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/one.jpg',
         'Anime',
@@ -163,6 +187,7 @@ select is(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000002',
+        '70000002-0000-4000-8000-000000000002',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/two.jpg',
         'Anime',
@@ -255,6 +280,7 @@ select is(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000003',
+        '70000003-0000-4000-8000-000000000003',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/three.jpg',
         'Anime',
@@ -282,6 +308,7 @@ where id = 'cccccccc-0000-4000-8000-000000000003';
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000004',
+        '70000004-0000-4000-8000-000000000004',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/four.jpg',
         'Anime',
@@ -359,6 +386,7 @@ select is(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000005',
+        '70000005-0000-4000-8000-000000000005',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/five.jpg',
         'Anime',
@@ -372,6 +400,7 @@ select lives_ok(
 select lives_ok(
     $$select public.reserve_storyboard_generation(
         'cccccccc-0000-4000-8000-000000000006',
+        '70000006-0000-4000-8000-000000000006',
         'bbbbbbbb-0000-4000-8000-000000000001',
         'aaaa/bbbb/six.jpg',
         'Anime',
@@ -423,7 +452,7 @@ select is(
 select is(
     has_function_privilege(
         'authenticated',
-        'public.reserve_storyboard_generation(uuid,uuid,text,text,text,text,integer)',
+        'public.reserve_storyboard_generation(uuid,uuid,uuid,text,text,text,text,integer)',
         'execute'
     ),
     true,

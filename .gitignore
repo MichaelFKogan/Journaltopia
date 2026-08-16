@@ -37,5 +37,13 @@ Config/Supabase.xcconfig
 # Supabase CLI local state
 supabase/.temp/
 
+# Edge Function secrets. The OpenAI key and the Apple verification configuration live here locally
+# and in `supabase secrets set` when deployed. supabase/functions/.env.example documents the names
+# and is committed; anything holding actual values is not.
+.env
+.env.local
+supabase/functions/.env
+supabase/functions/.env.local
+
 # Xcode project recovery backups
 *.deleted-target-backup

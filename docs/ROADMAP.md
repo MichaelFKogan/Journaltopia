@@ -1,4 +1,4 @@
-# Storytopia — Path to Launch
+# Journaltopia — Path to Launch
 
 Ordered so that each phase unblocks the next. Phases 0–4 are release-blocking. Phases 5–7 are polish and can slip.
 
@@ -9,8 +9,8 @@ Companion file: [CURSOR_PROMPTS.md](CURSOR_PROMPTS.md) — copy-paste prompts fo
 ## Where things live
 
 ```
-Storytopia/
-├── StorytopiaApp.swift              App entry, URL handling for auth callback
+Journaltopia/
+├── JournaltopiaApp.swift              App entry, URL handling for auth callback
 ├── ContentView.swift                Tab shell, sample-author-mode wiring (:31, :168)
 ├── Models/
 │   └── StoryModels.swift            Drafts, storyboards, characters, credits enums
@@ -122,7 +122,7 @@ Order of work:
 
 1. **Define the signed-out state.** `authStore.status == .signedOut` already exists (`SupabaseAuthService.swift`). Every tab needs a defined signed-out appearance — right now `HomeView.swift:67` and `ProfileView.swift:367` fall back to sample content, which is a good default. Audit Create and Journals for the same.
 2. **Build the First Sign-In view.** Sign out and work through the app cold; that's the only way to find what's broken.
-3. **Sign Out must clear the app.** Journals, entries, drafts, cached storyboards, credit balance. `signOut()` clears `StorytopiaLocalAccountScope` and the user, but local stores (`CreateEntryDraftStore`, `GeneratedStoryboardStore`, `SupabaseStorageImageCache`) are not purged — the next user sees the last user's content. **This is a privacy bug, not a polish item.**
+3. **Sign Out must clear the app.** Journals, entries, drafts, cached storyboards, credit balance. `signOut()` clears `JournaltopiaLocalAccountScope` and the user, but local stores (`CreateEntryDraftStore`, `GeneratedStoryboardStore`, `SupabaseStorageImageCache`) are not purged — the next user sees the last user's content. **This is a privacy bug, not a polish item.**
 4. **Onboarding swipe flow.** A `TabView(.page)` with 3–4 pages, gated on an `@AppStorage` flag. Do it last in this phase; it's the easiest piece and it needs the rest to exist first.
 5. **Add Apple Sign In.** Google-only is an App Store review risk when you offer any third-party sign-in.
 

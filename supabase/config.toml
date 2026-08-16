@@ -2,7 +2,7 @@
 # https://supabase.com/docs/guides/local-development/cli/config
 # A string used to distinguish different Supabase projects on the same host. Defaults to the
 # working directory name when running `supabase init`.
-project_id = "Storytopia"
+project_id = "Journaltopia"
 
 [api]
 enabled = true
@@ -381,6 +381,14 @@ policy = "per_worker"
 inspector_port = 8083
 # The Deno major version to use.
 deno_version = 2
+
+# App Store Server Notifications are posted by Apple, which has no Supabase session and cannot be
+# given one. The platform's JWT check has to be off or every notification is rejected before the
+# function runs. The endpoint is not unauthenticated as a result: it authenticates the caller by
+# verifying Apple's signature over the notification, against Apple's certificate chain, and does
+# nothing at all with a payload that fails that check.
+[functions.apple-subscription-notifications]
+verify_jwt = false
 
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"

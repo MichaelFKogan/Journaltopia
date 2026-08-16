@@ -1,5 +1,5 @@
 const UNSPLASH_API_URL = "https://api.unsplash.com";
-const UTM_SOURCE = Deno.env.get("UNSPLASH_UTM_SOURCE") ?? "storytopia";
+const UTM_SOURCE = Deno.env.get("UNSPLASH_UTM_SOURCE") ?? "journaltopia";
 
 type CoverRequest = {
   action?: "search" | "track_download";

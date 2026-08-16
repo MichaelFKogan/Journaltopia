@@ -1,4 +1,4 @@
-# Cursor Prompts — Storytopia
+# Cursor Prompts — Journaltopia
 
 Copy one prompt at a time. They're ordered to match [ROADMAP.md](ROADMAP.md).
 
@@ -18,8 +18,8 @@ Copy one prompt at a time. They're ordered to match [ROADMAP.md](ROADMAP.md).
 I need to move OpenAI image generation off the iOS client and into a Supabase Edge Function, because the API key currently ships inside the app bundle and is extractable.
 
 Current state:
-- The key is read from Info.plist in Storytopia/Models/StoryModels.swift, enum OpenAITestConfig (~line 377), injected via Config/Supabase.xcconfig.
-- Storytopia/Services/OpenAIImageGenerationService.swift makes the OpenAI calls directly, taking apiKey as a parameter.
+- The key is read from Info.plist in Journaltopia/Models/StoryModels.swift, enum OpenAITestConfig (~line 377), injected via Config/Supabase.xcconfig.
+- Journaltopia/Services/OpenAIImageGenerationService.swift makes the OpenAI calls directly, taking apiKey as a parameter.
 - Generation starts at CreateEntryView.swift, startStoryboardGeneration() (~line 2561).
 - The existing Edge Function supabase/functions/unsplash-cover/index.ts shows the project's conventions — follow them.
 
@@ -58,7 +58,7 @@ Show me the polling service as a standalone file first before wiring it into the
 ### 0.3 — Delete dead code
 
 ```
-Delete Storytopia/Services/OpenAIImageGenerationServiceOld.swift and remove it from the Xcode project. Confirm nothing references it first.
+Delete Journaltopia/Services/OpenAIImageGenerationServiceOld.swift and remove it from the Xcode project. Confirm nothing references it first.
 ```
 
 ---
@@ -70,7 +70,7 @@ Delete Storytopia/Services/OpenAIImageGenerationServiceOld.swift and remove it f
 ```
 Bug: if I open an existing entry from Entries, then tap the Create tab, the Create page still shows the previously opened entry instead of a blank one. It happens with pre-made/sample entries too.
 
-Relevant code in Storytopia/Views/Pages/CreateEntryView.swift:
+Relevant code in Journaltopia/Views/Pages/CreateEntryView.swift:
 - resolvedCurrentEntryStatus() ~line 2550
 - clearEditor() ~line 3832
 - the draft-loading path around loadSavedDraftIfNeeded() ~line 2545
@@ -84,7 +84,7 @@ Trace how activeDraftID is set and when it's cleared. The Create tab entered fre
 ```
 Three bugs with one likely root cause: Sample Author Mode is not being threaded through data queries.
 
-1. My Characters shows "Mike" (my real account's character library) while in Sample Author Mode. Character library code is in Storytopia/Services/Supabase/SupabaseReferencePhotoService.swift; the UI is ReusableCharactersSheet in CreateEntryView.swift ~line 11873.
+1. My Characters shows "Mike" (my real account's character library) while in Sample Author Mode. Character library code is in Journaltopia/Services/Supabase/SupabaseReferencePhotoService.swift; the UI is ReusableCharactersSheet in CreateEntryView.swift ~line 11873.
 2. The Add To Journal sheet lists all of mfkogan's real journals in Sample Author Mode. AddToJournalSheet is at CreateEntryView.swift ~line 10173.
 3. Sample content lives in SupabaseSampleStoryService.swift; the mode flag is isSampleAuthorModeEnabled in ContentView.swift line 31, passed down at lines 168-261.
 
@@ -96,7 +96,7 @@ Find every query that should be mode-aware and isn't. Prefer threading the exist
 ```
 Bug: in Sample Author Mode, the Sample Stories journal shows a checkmark on the purple color swatch in the Journal Covers page even though its cover is actually a storyboard image.
 
-The cover picker is in Storytopia/Views/Pages/JournalView.swift — look for JournalCustomizationSheet (~line 2974) and JournalPageBackgroundSheet (~line 2444).
+The cover picker is in Journaltopia/Views/Pages/JournalView.swift — look for JournalCustomizationSheet (~line 2974) and JournalPageBackgroundSheet (~line 2444).
 
 Cover source (color / image / storyboard) should be a single enum with one selected case, so the color grid shows no checkmark when an image cover is active. Find where color selection and image selection are tracked as independent state and unify them.
 ```
@@ -110,7 +110,7 @@ Cover source (color / image / storyboard) should be a single enum with one selec
 ```
 Saves to Supabase currently fail permanently on a transient network error.
 
-In Storytopia/Services/Supabase/EntrySaveService.swift, add bounded retry with exponential backoff (3 attempts, ~0.5s/1.5s/4s + jitter) around the network writes.
+In Journaltopia/Services/Supabase/EntrySaveService.swift, add bounded retry with exponential backoff (3 attempts, ~0.5s/1.5s/4s + jitter) around the network writes.
 
 Requirements:
 - Retry ONLY transient failures: URLError network conditions, timeouts, HTTP 5xx, and PostgrestError connection failures.
@@ -127,7 +127,7 @@ GenerationCreditService.swift has a good example of the project's error-mapping 
 ```
 I want to stop relying on users remembering to press Save.
 
-In Storytopia/Views/Pages/CreateEntryView.swift:
+In Journaltopia/Views/Pages/CreateEntryView.swift:
 1. Autosave the local draft on a debounce (about 2 seconds after typing stops, plus on backgrounding and on view disappear). CreateEntryDraftStore.save already exists in StoryModels.swift ~line 527 — use it.
 2. Keep the explicit Save button, but repurpose it to commit to Supabase, and show a clear state: "Saved", "Saving…", "Saved locally — will sync".
 3. Make the button visible above the mic button whenever there are uncommitted cloud changes, instead of hiding it.
@@ -144,7 +144,7 @@ Do not change the generation flow — startStoryboardGeneration() already force-
 ```
 Signing out does not clear locally cached content, so the next person to sign in on the same device can see the previous user's journals and storyboards.
 
-signOut() is in Storytopia/Services/Supabase/SupabaseAuthService.swift. It clears StorytopiaLocalAccountScope and currentUser but nothing else.
+signOut() is in Journaltopia/Services/Supabase/SupabaseAuthService.swift. It clears JournaltopiaLocalAccountScope and currentUser but nothing else.
 
 Add a single purge routine, called on sign out, that clears:
 - CreateEntryDraftStore (StoryModels.swift ~line 527)
@@ -162,7 +162,7 @@ Put the purge in one place that owns the full list, so a future cache can't be f
 ```
 I need every screen to have a defined signed-out state. Right now some fall back to sample content and others I haven't checked.
 
-Storytopia/Services/Supabase/SupabaseAuthService.swift exposes status: .loading / .signedOut / .signedIn / .misconfigured.
+Journaltopia/Services/Supabase/SupabaseAuthService.swift exposes status: .loading / .signedOut / .signedIn / .misconfigured.
 HomeView.swift line 67 and ProfileView.swift line 367 already fall back to sample content when signed out — that's the pattern I want.
 
 Audit ContentView.swift, HomeView.swift, JournalView.swift, ProfileView.swift, CreateEntryView.swift, SettingsView.swift and report — as a table, before changing code — what each currently renders when status == .signedOut, and what's broken or empty.
@@ -173,9 +173,9 @@ Then: browsing sample content signed out should work everywhere, and any action 
 ### 3.3 — First sign-in / sign-in wall view
 
 ```
-Build the sign-in screen for Storytopia.
+Build the sign-in screen for Journaltopia.
 
-- New file: Storytopia/Views/Pages/SignInView.swift
+- New file: Journaltopia/Views/Pages/SignInView.swift
 - Use SupabaseAuthStore from Services/Supabase/SupabaseAuthService.swift (signInWithGoogle already exists).
 - Add Sign in with Apple alongside Google — required by App Store review when other third-party sign-in is offered. Wire it through Supabase's signInWithIdToken.
 - It must work in two modes: full-screen (first launch after onboarding) and a sheet (presented when a signed-out user taps a gated action).
@@ -190,10 +190,10 @@ Show me the view in isolation with a preview first. I'll wire the presentation l
 ```
 Build a first-launch onboarding flow.
 
-- New file: Storytopia/Views/Pages/OnboardingView.swift
-- 4 swipeable pages using TabView with .tabViewStyle(.page): what Storytopia is, write your entry, add your characters, get your storyboard.
+- New file: Journaltopia/Views/Pages/OnboardingView.swift
+- 4 swipeable pages using TabView with .tabViewStyle(.page): what Journaltopia is, write your entry, add your characters, get your storyboard.
 - Page dots, a Skip control, and a "Get Started" button on the last page.
-- Gate it on @AppStorage("StorytopiaHasCompletedOnboarding"). Present from ContentView.swift as a fullScreenCover when false.
+- Gate it on @AppStorage("JournaltopiaHasCompletedOnboarding"). Present from ContentView.swift as a fullScreenCover when false.
 - No account required to get through it — it ends by dropping the user into the app browsing sample content, NOT at a sign-in wall.
 - Use existing assets from Assets.xcassets (Art Style/ and Storyboard Placeholder/ have usable imagery). Don't add new asset requirements.
 ```
@@ -207,7 +207,7 @@ Build a first-launch onboarding flow.
 ```
 Add a monthly refresh of free generation credits, 25 per month.
 
-Existing state: supabase/migrations/20260802090000_add_generation_credits.sql adds profiles.generation_credits (default 10) plus spend_generation_credit; 20260815170000 adds refund_generation_credit. Client-side: Storytopia/Services/Supabase/GenerationCreditService.swift.
+Existing state: supabase/migrations/20260802090000_add_generation_credits.sql adds profiles.generation_credits (default 10) plus spend_generation_credit; 20260815170000 adds refund_generation_credit. Client-side: Journaltopia/Services/Supabase/GenerationCreditService.swift.
 
 Write a new migration that:
 1. Adds profiles.credits_reset_at timestamptz.
@@ -221,10 +221,10 @@ Then add grantMonthlyCredits() to GenerationCreditService and call it from Gener
 ```
 Add in-app purchase of generation credits.
 
-1. New file Storytopia/Services/StoreKitService.swift using StoreKit 2: load consumable products, purchase, and listen for Transaction.updates.
+1. New file Journaltopia/Services/StoreKitService.swift using StoreKit 2: load consumable products, purchase, and listen for Transaction.updates.
 2. Credits must be granted SERVER-side only. On a successful purchase, send the signed transaction JWS to a new Edge Function supabase/functions/verify-credit-purchase/index.ts that validates it with Apple, checks the transaction id hasn't already been redeemed (store redeemed ids in a new table), and increments profiles.generation_credits. Never grant credits from the client.
 3. Handle interrupted purchases: unfinished transactions must be re-verified on launch, and only finish() after the server confirms.
-4. Surface the purchase UI in Storytopia/Views/Pages/GenerationCreditsView.swift, and present it when generation is blocked by an insufficient balance.
+4. Surface the purchase UI in Journaltopia/Views/Pages/GenerationCreditsView.swift, and present it when generation is blocked by an insufficient balance.
 
 Start with the Edge Function and the migration. I'll set up the App Store Connect products separately.
 ```
@@ -238,7 +238,7 @@ Start with the Edge Function and the migration. I'll set up the App Store Connec
 ```
 In the Media tab, tapping an image opens a full-screen viewer. If the tapped tile has a purple count badge (an entry with multiple storyboards) the viewer only scrolls that entry's images, but I want the option to scroll all media in the journal.
 
-Code is in Storytopia/Views/Pages/JournalView.swift — the media viewer around line 16434, storyboardsForMedia() ~line 16567, and the tab handling ~lines 15363-15420.
+Code is in Journaltopia/Views/Pages/JournalView.swift — the media viewer around line 16434, storyboardsForMedia() ~line 16567, and the tab handling ~lines 15363-15420.
 
 Add a toggle in the viewer ("This entry" / "All media") that switches the scroll scope without closing the viewer, keeping the currently-shown image in place across the switch. Default to the current per-entry behavior.
 ```
@@ -248,7 +248,7 @@ Add a toggle in the viewer ("This entry" / "All media") that switches the scroll
 ```
 Bug: in Journal Detail, tapping the Media tab makes the sheet glitch downward before settling.
 
-Storytopia/Views/Pages/JournalView.swift lines 15363-15420 handle section changes ("Pages" / "Media") with several onChange handlers that react to selectedSection.
+Journaltopia/Views/Pages/JournalView.swift lines 15363-15420 handle section changes ("Pages" / "Media") with several onChange handlers that react to selectedSection.
 
 Likely cause: a detent or content-height change is applied mid-transition, or state is mutated during a view update. Diagnose it before fixing — tell me which handler causes the jump. Fix it so switching tabs doesn't move the sheet.
 ```
@@ -256,7 +256,7 @@ Likely cause: a detent or content-height change is applied mid-transition, or st
 ### 5.3 — Grab-bag UI fixes
 
 ```
-Four small fixes in Storytopia/Views/Pages/CreateEntryView.swift. Do them one at a time and show me each diff.
+Four small fixes in Journaltopia/Views/Pages/CreateEntryView.swift. Do them one at a time and show me each diff.
 
 1. The "Reference Photos" and "Characters" section labels overlay the content behind them and become unreadable. Add a background plate or shadow consistent with the app's existing style (check Extensions/Extensions.swift for existing modifiers before writing a new one).
 
@@ -270,7 +270,7 @@ Four small fixes in Storytopia/Views/Pages/CreateEntryView.swift. Do them one at
 ### 5.4 — Deletion resilience
 
 ```
-Storytopia/Services/Supabase/EntrySaveService.swift, deleteEntry() at ~line 1001, runs six sequential awaits (thumbnail, reference photos, characters, storyboards, memberships, entry row). If any one throws, the rest never run and the account is left with orphaned storage objects and rows.
+Journaltopia/Services/Supabase/EntrySaveService.swift, deleteEntry() at ~line 1001, runs six sequential awaits (thumbnail, reference photos, characters, storyboards, memberships, entry row). If any one throws, the rest never run and the account is left with orphaned storage objects and rows.
 
 Rewrite it so every sub-deletion is attempted regardless of earlier failures, collecting errors and throwing an aggregate at the end. The entry row deletion should still be last. Keep the existing 404-tolerance pattern from deleteStoryboards (~line 434), which correctly treats already-missing storage objects as success.
 ```
@@ -278,7 +278,7 @@ Rewrite it so every sub-deletion is attempted regardless of earlier failures, co
 ### 5.5 — Split the giant view files
 
 ```
-Storytopia/Views/Pages/JournalView.swift is 766KB and CreateEntryView.swift is 487KB. Both are too large to work in.
+Journaltopia/Views/Pages/JournalView.swift is 766KB and CreateEntryView.swift is 487KB. Both are too large to work in.
 
 Do JournalView.swift first, mechanically and with no behavior changes:
 1. List every top-level type in the file with its line range, and propose a grouping into 5-8 files under Views/Pages/Journal/.
@@ -295,9 +295,9 @@ Build and confirm no behavior change after each group.
 ### 6.1 — Make art styles a real type
 
 ```
-Art styles are currently a bare array of strings: Storytopia/Views/Pages/CreateEntryView.swift line 1696, `let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Pop Art"]`, with defaultArtStyle at line 1695. The string is passed through to the generation prompt and stored as art_style in Supabase.
+Art styles are currently a bare array of strings: Journaltopia/Views/Pages/CreateEntryView.swift line 1696, `let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Pop Art"]`, with defaultArtStyle at line 1695. The string is passed through to the generation prompt and stored as art_style in Supabase.
 
-Refactor to an ArtStyle enum in Storytopia/Models/StoryModels.swift with, per case: rawValue (must equal the existing string exactly, so stored rows keep working), displayName, thumbnailAssetName, inlineThumbnailAssetName, and promptFragment — the text appended to the generation prompt.
+Refactor to an ArtStyle enum in Journaltopia/Models/StoryModels.swift with, per case: rawValue (must equal the existing string exactly, so stored rows keep working), displayName, thumbnailAssetName, inlineThumbnailAssetName, and promptFragment — the text appended to the generation prompt.
 
 Requirements:
 - Existing art_style values in Supabase must continue to resolve. Anything unrecognized falls back to Anime, matching current behavior (see StoryModels.swift line 1007 and EntrySaveService.swift line 611).
@@ -325,7 +325,7 @@ Character appearance is currently taken entirely from the reference photo, so us
 
 Add an optional free-text "Appearance notes" field to characters:
 1. New migration adding appearance_notes text to entry_characters (nullable). Existing rows must be unaffected.
-2. Thread it through Storytopia/Services/Supabase/SupabaseReferencePhotoService.swift (character load/save) and the EntryCharacter model in StoryModels.swift ~line 308.
+2. Thread it through Journaltopia/Services/Supabase/SupabaseReferencePhotoService.swift (character load/save) and the EntryCharacter model in StoryModels.swift ~line 308.
 3. Add the field to CharacterEditorSheet in CreateEntryView.swift ~line 12034 — a multiline text field with placeholder "e.g. wearing a red raincoat and yellow boots", with a character limit.
 4. Append it to the generation prompt for that character, phrased so it overrides the reference photo's clothing while preserving facial likeness.
 
@@ -357,7 +357,7 @@ Surfaces that need it:
 - Journal > Tap To Open — comic reader with a vertical scroll option
 - Profile > Tap To Open — horizontal scroll
 
-Build ONE reusable reader view (new file Storytopia/Views/Components/ComicReaderView.swift) that takes an ordered array of storyboards, a starting index, and an axis, rather than three separate implementations. It needs: pinch-to-zoom per page, a page indicator, and a reading-direction preference persisted in @AppStorage.
+Build ONE reusable reader view (new file Journaltopia/Views/Components/ComicReaderView.swift) that takes an ordered array of storyboards, a starting index, and an axis, rather than three separate implementations. It needs: pinch-to-zoom per page, a page indicator, and a reading-direction preference persisted in @AppStorage.
 
 Show me the component with a preview first, then we'll wire it into each surface one at a time.
 ```
@@ -367,7 +367,7 @@ Show me the component with a preview first, then we'll wire it into each surface
 ```
 Add the user's most recent completed storyboard to the top of the home page as a large card that opens the entry.
 
-Storytopia/Views/Pages/HomeView.swift is the view. SupabaseStoryboardService.loadPrimaryCompletedStoryboards() in EntrySaveService.swift (~line 493) already fetches primary completed storyboards ordered by created_at desc — use it rather than writing a new query.
+Journaltopia/Views/Pages/HomeView.swift is the view. SupabaseStoryboardService.loadPrimaryCompletedStoryboards() in EntrySaveService.swift (~line 493) already fetches primary completed storyboards ordered by created_at desc — use it rather than writing a new query.
 
 Signed out or with no storyboards, fall back to the existing home content — HomeView.swift line 67 shows the sample-content pattern.
 ```
