@@ -23,18 +23,20 @@ struct SignInView: View {
     /// Which half of the same two buttons the copy is describing. Apple and Google make no
     /// distinction between signing up and signing in — the first tap creates the account — but a
     /// visitor without one still needs to see somewhere that says so.
-    @State private var isCreatingAccount = false
+    @State private var isCreatingAccount: Bool
 
     init(
         presentationMode: PresentationMode,
         promptTitle: String? = nil,
         promptSubtitle: String? = nil,
+        startsCreatingAccount: Bool = false,
         onContinueBrowsing: (() -> Void)? = nil
     ) {
         self.presentationMode = presentationMode
         self.promptTitle = promptTitle
         self.promptSubtitle = promptSubtitle
         self.onContinueBrowsing = onContinueBrowsing
+        _isCreatingAccount = State(initialValue: startsCreatingAccount)
     }
 
     var body: some View {
@@ -158,7 +160,7 @@ struct SignInView: View {
                 isCreatingAccount.toggle()
             }
         } label: {
-            Text(isCreatingAccount ? "Already have an account? Sign In" : "Create an Account")
+            Text(isCreatingAccount ? "Already have an account? Sign In" : "Don't have an account? Sign Up")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(Color.storyPurple)
                 .frame(maxWidth: .infinity)

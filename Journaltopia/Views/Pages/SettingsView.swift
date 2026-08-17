@@ -71,7 +71,7 @@ struct SettingsView: View {
                 SettingsNavigationRow(
                     systemName: "ellipsis.circle",
                     title: "Extra",
-                    subtitle: "Onboarding and create tools",
+                    subtitle: "Account, plans, credits, and create tools",
                     accessibilityLabel: "Open extra settings"
                 ) {
                     SettingsExtraView()
@@ -491,6 +491,60 @@ private struct SettingsExtraView: View {
 
     var body: some View {
         List {
+            Section("Pages") {
+                SettingsNavigationRow(
+                    systemName: "person.crop.circle.badge.plus",
+                    title: "Create An Account",
+                    subtitle: "Open the sign-up screen",
+                    accessibilityLabel: "Open create an account"
+                ) {
+                    SignInView(
+                        presentationMode: .fullScreen,
+                        startsCreatingAccount: true
+                    )
+                    .navigationTitle("Create An Account")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.visible, for: .navigationBar)
+                    .enableInteractivePopGesture()
+                }
+
+                SettingsNavigationRow(
+                    systemName: "crown.fill",
+                    title: "Journaltopia+",
+                    subtitle: "Compare Free and Journaltopia Plus",
+                    accessibilityLabel: "Open Journaltopia Plus"
+                ) {
+                    JournaltopiaPlusPaywallView(presentation: .page)
+                        .enableInteractivePopGesture()
+                }
+
+                SettingsNavigationRow(
+                    systemName: "sparkle.magnifyingglass",
+                    title: "Buy AI Credits",
+                    subtitle: "Open the credit top-up screen",
+                    accessibilityLabel: "Open buy AI credits"
+                ) {
+                    BuyCreditsView(
+                        promptTitle: "Buy AI Credits",
+                        promptSubtitle: "Add credits for storyboard generation"
+                    )
+                    .navigationTitle("Buy AI Credits")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.visible, for: .navigationBar)
+                    .enableInteractivePopGesture()
+                }
+
+                SettingsNavigationRow(
+                    systemName: "sparkle",
+                    title: "AI Credits",
+                    subtitle: "Balance, plan, and credit packs",
+                    accessibilityLabel: "Open AI credits"
+                ) {
+                    GenerationCreditsView()
+                        .enableInteractivePopGesture()
+                }
+            }
+
             Section("Onboarding") {
                 Button {
                     isOnboardingPreviewPresented = true

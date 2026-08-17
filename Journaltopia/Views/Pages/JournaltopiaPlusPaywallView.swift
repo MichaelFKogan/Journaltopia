@@ -1,7 +1,7 @@
 import StoreKit
 import SwiftUI
 
-/// The Journaltopia+ paywall.
+/// The Journaltopia+ plan picker.
 ///
 /// Presented as a sheet by ``EntitlementGate``, and pushed as a page from Settings and the credits
 /// screen. The two differ only in whether there is a close button.
@@ -25,6 +25,8 @@ struct JournaltopiaPlusPaywallView: View {
     var promptTitle: String?
     var promptSubtitle: String?
     var onDismiss: (() -> Void)?
+    var onFreePlan: (() -> Void)?
+    var onPlanActivated: (() -> Void)?
 
     @State private var restoreOutcome: SubscriptionRestoreOutcome?
 
@@ -38,36 +40,38 @@ struct JournaltopiaPlusPaywallView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(spacing: 18) {
                 header
-                benefits
-                creditCosts
-                reassurance
+                planCards
                 purchaseSection
+                reassurance
             }
-            .padding(.horizontal, 20)
-            .padding(.top, presentation == .sheet ? 8 : 18)
-            .padding(.bottom, 28)
+            .padding(.horizontal, 24)
+            .padding(.top, presentation == .sheet ? 36 : 18)
+            .padding(.bottom, 30)
         }
-        .background(Color.homePageBackground)
-        .navigationTitle(presentation == .page ? "Journaltopia+" : "")
+        .background(WatercolorPaperPageBackground())
+        .navigationTitle(presentation == .page ? "Choose Your Plan" : "")
         .navigationBarTitleDisplayMode(.inline)
         .preferredColorScheme(.light)
-        .overlay(alignment: .topTrailing) {
+        .toolbar(.visible, for: .navigationBar)
+        .toolbarBackground(Color.homePageBackground, for: .navigationBar)
+        .overlay(alignment: .topLeading) {
             if presentation == .sheet {
                 Button {
                     onDismiss?()
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.storyInk.opacity(0.55))
-                        .frame(width: 34, height: 34)
-                        .background(Color.white.opacity(0.9), in: Circle())
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(Color.storyInk)
+                        .frame(width: 44, height: 44)
+                        .background(Color.white.opacity(0.82), in: Circle())
                         .contentShape(Circle())
+                        .shadow(color: Color.storyInk.opacity(0.08), radius: 9, y: 4)
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 10)
-                .padding(.trailing, 16)
+                .padding(.top, 18)
+                .padding(.leading, 22)
                 .accessibilityLabel("Close")
             }
         }
@@ -76,184 +80,208 @@ struct JournaltopiaPlusPaywallView: View {
             // keeps the first one it resolves.
             await subscriptionStore.refresh(isSignedIn: isSignedIn)
         }
+        .onChange(of: subscriptionStore.state) { state in
+            guard state.isSubscribed else {
+                return
+            }
+
+            onPlanActivated?()
+        }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 26, weight: .bold))
-                .foregroundStyle(Color.storyPurple)
-                .frame(width: 54, height: 54)
-                .background(Color.storyPurple.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            Text(promptTitle ?? "Journaltopia+")
-                .font(.system(size: 26, weight: .bold, design: .serif))
+        VStack(spacing: 8) {
+            Text(promptTitle ?? "Choose your plan")
+                .font(.system(size: 30, weight: .bold, design: .serif))
                 .foregroundStyle(Color.storyInk)
-                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
 
-            Text(promptSubtitle ?? "Turn your entries into AI graphic novel pages, with 25 AI credits every month.")
-                .font(.system(size: 15, weight: .medium))
+            Text(promptSubtitle ?? "Start for free. Upgrade anytime\nwhen you're ready.")
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Color.homeMutedText)
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.top, presentation == .sheet ? 18 : 0)
+        .frame(maxWidth: .infinity)
+        .padding(.top, presentation == .sheet ? 46 : 0)
     }
 
-    private var benefits: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            benefitRow(
-                icon: "wand.and.stars",
-                title: "AI storyboard generation",
-                detail: "The whole reason Journaltopia+ exists."
-            )
-            Divider().padding(.leading, 46)
-            benefitRow(
-                icon: "sparkle",
-                title: "25 AI credits every month",
-                detail: "Monthly credits reset each billing period."
-            )
-            Divider().padding(.leading, 46)
-            benefitRow(
-                icon: "square.stack.3d.up",
-                title: "Standard and HD pages",
-                detail: "Choose the quality that suits the memory."
-            )
+    private var planCards: some View {
+        VStack(spacing: 14) {
+            freePlanCard
+            plusPlanCard
         }
-        .padding(.vertical, 4)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.62), lineWidth: 1)
-        )
     }
 
-    private func benefitRow(icon: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.homeAccent)
-                .frame(width: 34, height: 34)
-                .background(Color.homeAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    private var freePlanCard: some View {
+        planCard(isHighlighted: false) {
+            VStack(alignment: .leading, spacing: 12) {
+                planHeader(
+                    title: "Free",
+                    subtitle: "Write your journal",
+                    price: "$0",
+                    caption: nil,
+                    badge: nil
+                )
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.storyInk)
+                VStack(alignment: .leading, spacing: 12) {
+                    featureRow("Write journal entries", isIncluded: true)
+                    featureRow("Organize with journals", isIncluded: true)
+                    featureRow("Add characters & reference photos", isIncluded: true)
+                    featureRow("Generate storyboard images", isIncluded: false)
+                    featureRow("Use AI credits", isIncluded: false)
+                }
 
-                Text(detail)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.homeMutedText)
-                    .fixedSize(horizontal: false, vertical: true)
+                planImage(name: "1-1", height: 94)
             }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture {
+            onFreePlan?()
+        }
+    }
+
+    private var plusPlanCard: some View {
+        Button {
+            startPurchase()
+        } label: {
+            planCard(isHighlighted: true) {
+                VStack(alignment: .leading, spacing: 12) {
+                    planHeader(
+                        title: "Journaltopia Plus",
+                        subtitle: "Generate storyboards",
+                        price: plusPriceTitle,
+                        caption: plusPriceCaption,
+                        badge: "Most Popular"
+                    )
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        featureRow("Everything in Free", isIncluded: true)
+                        featureRow("Generate storyboard images\n(25 credits/month)", isIncluded: true)
+                        featureRow("HD storyboard quality", isIncluded: true)
+                        featureRow("Use credits for Standard or HD", isIncluded: true)
+                        featureRow("Priority generation", isIncluded: true)
+                    }
+
+                    planImage(name: "2-2", height: 118)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isPurchasing || subscriptionStore.product == nil || subscriptionStore.state.isSubscribed)
+        .opacity(subscriptionStore.product == nil || subscriptionStore.state.isSubscribed ? 0.72 : 1)
+        .accessibilityLabel(primaryButtonTitle)
+    }
+
+    private func planCard<Content: View>(
+        isHighlighted: Bool,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.76), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isHighlighted ? Color.storyPurple : Color.storyBorder.opacity(0.78), lineWidth: isHighlighted ? 1.7 : 1)
+            )
+    }
+
+    private func planHeader(
+        title: String,
+        subtitle: String,
+        price: String,
+        caption: String?,
+        badge: String?
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 25, weight: .bold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+
+                    if let badge {
+                        Text(badge)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .frame(height: 24)
+                            .background(Color.storyPurple.opacity(0.76), in: Capsule())
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+
+                Text(subtitle)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(price)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
+
+                if let caption {
+                    Text(caption)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.storyPurple)
+                }
+            }
+        }
+    }
+
+    private func featureRow(_ text: String, isIncluded: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: isIncluded ? "checkmark" : "xmark")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(isIncluded ? Color.storyPurple : Color.storyGray.opacity(0.66))
+                .frame(width: 16, height: 18)
+
+            Text(text)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isIncluded ? Color.storyInk : Color.homeMutedText)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
     }
 
-    private var creditCosts: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("What a page costs")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Color.storyInk)
-
-            HStack(spacing: 10) {
-                costChip(
-                    title: OpenAIImageGenerationQuality.standard.title,
-                    cost: OpenAIImageGenerationQuality.standard.creditCost
-                )
-                costChip(
-                    title: OpenAIImageGenerationQuality.highDefinition.title,
-                    cost: OpenAIImageGenerationQuality.highDefinition.creditCost
-                )
-            }
-        }
-    }
-
-    private func costChip(title: String, cost: Int) -> some View {
-        HStack(spacing: 7) {
-            Text(title)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(Color.storyInk)
-
-            Text(cost == 1 ? "1 credit" : "\(cost) credits")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.storyPurple)
-        }
-        .padding(.horizontal, 13)
-        .frame(height: 40)
-        .frame(maxWidth: .infinity)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.62), lineWidth: 1)
-        )
-    }
-
-    /// The two promises worth making explicitly, because both are things people reasonably fear
-    /// about a subscription attached to their own writing.
-    private var reassurance: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            reassuranceRow("Writing, journals, characters and photos stay free — always.")
-            reassuranceRow("Pages you have already generated stay yours to read, even if you cancel.")
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.storyPurple.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func reassuranceRow(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.storyPurple.opacity(0.85))
-
-            Text(text)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.storyInk.opacity(0.78))
-                .fixedSize(horizontal: false, vertical: true)
-        }
+    private func planImage(name: String, height: CGFloat) -> some View {
+        Image(name)
+            .resizable()
+            .scaledToFill()
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color.white.opacity(0.74), lineWidth: 1)
+            )
     }
 
     private var purchaseSection: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             if subscriptionStore.state.isSubscribed {
                 activeBanner
-            } else {
-                Button {
-                    startPurchase()
-                } label: {
-                    HStack(spacing: 8) {
-                        if isPurchasing {
-                            ProgressView().tint(.white)
-                        }
+            } else if isPurchasing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .tint(Color.storyPurple)
 
-                        Text(primaryButtonTitle)
-                            .font(.system(size: 16, weight: .bold))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.storyPurple.opacity(0.95), Color.storyPurple],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    )
+                    Text("Starting Journaltopia Plus...")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
                 }
-                .buttonStyle(.plain)
-                .disabled(isPurchasing || subscriptionStore.product == nil)
-                .opacity(subscriptionStore.product == nil ? 0.55 : 1)
-                .accessibilityLabel(primaryButtonTitle)
-
-                Text(priceCaption)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.homeMutedText)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity)
             }
 
             if subscriptionStore.purchasePhase == .awaitingApproval {
@@ -269,6 +297,16 @@ struct JournaltopiaPlusPaywallView: View {
 
             RestorePurchasesButton(outcome: $restoreOutcome)
         }
+    }
+
+    /// The promise worth making explicitly, because it is a thing people reasonably fear about a
+    /// subscription attached to their own writing.
+    private var reassurance: some View {
+        Text("Cancel anytime. No commitment.")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(Color.homeMutedText)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
     }
 
     private var activeBanner: some View {
@@ -308,19 +346,22 @@ struct JournaltopiaPlusPaywallView: View {
 
     private var primaryButtonTitle: String {
         if isPurchasing {
-            return "Starting…"
+            return "Starting Journaltopia Plus"
         }
 
-        return subscriptionStore.product == nil ? "Loading Journaltopia+…" : "Start Journaltopia+"
+        return subscriptionStore.product == nil ? "Loading Journaltopia Plus" : "Start Journaltopia Plus"
     }
 
-    /// Never invents a price. An unresolved product says so instead of showing a number.
-    private var priceCaption: String {
+    private var plusPriceTitle: String {
         guard let price = subscriptionStore.localizedPrice else {
-            return "Fetching the current price from the App Store…"
+            return "Loading"
         }
 
-        return "\(price) per month. Cancel anytime in Settings."
+        return price
+    }
+
+    private var plusPriceCaption: String? {
+        subscriptionStore.localizedPrice == nil ? nil : "/month"
     }
 
     private func startPurchase() {
@@ -331,6 +372,9 @@ struct JournaltopiaPlusPaywallView: View {
         Task {
             await subscriptionStore.purchaseJournaltopiaPlus(isSignedIn: isSignedIn)
             await generationCreditStore.refresh(isSignedIn: isSignedIn)
+            if subscriptionStore.state.isSubscribed {
+                onPlanActivated?()
+            }
         }
     }
 }

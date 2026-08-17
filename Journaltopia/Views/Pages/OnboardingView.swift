@@ -4,6 +4,7 @@ struct OnboardingView: View {
     let onComplete: () -> Void
 
     @State private var selectedPage = 0
+    @State private var isChoosePlanPresented = false
 
     private let pages = OnboardingPage.allPages
     private var lastPageIndex: Int {
@@ -21,7 +22,7 @@ struct OnboardingView: View {
                         OnboardingPageView(
                             page: pages[index],
                             isLastPage: index == lastPageIndex,
-                            onComplete: finish
+                            onComplete: showChoosePlan
                         )
                             .tag(index)
                     }
@@ -37,6 +38,20 @@ struct OnboardingView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(isPresented: $isChoosePlanPresented) {
+            JournaltopiaPlusPaywallView(
+                presentation: .sheet,
+                onDismiss: { isChoosePlanPresented = false },
+                onFreePlan: {
+                    isChoosePlanPresented = false
+                    finish()
+                },
+                onPlanActivated: {
+                    isChoosePlanPresented = false
+                    finish()
+                }
+            )
+        }
     }
 
     private var topBar: some View {
@@ -72,6 +87,10 @@ struct OnboardingView: View {
 
     private func finish() {
         onComplete()
+    }
+
+    private func showChoosePlan() {
+        isChoosePlanPresented = true
     }
 }
 
