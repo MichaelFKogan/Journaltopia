@@ -63,7 +63,6 @@ enum LocalUserDataPurge {
         "JournaltopiaEntryThumbnailRendererVersion",
         // Unprefixed, so the sweep would miss them anyway. Listed so this stays the complete
         // statement of what a sign-out is allowed to leave behind.
-        "daybookComicReaderGestureHintSeen",
         "journalStoryboardComicReaderGestureHintSeen"
     ]
 

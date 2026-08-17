@@ -217,12 +217,6 @@ struct JournalEntryPayload: Encodable, Sendable {
     }
 }
 
-struct JournalEntryUpdate: Encodable, Sendable {
-    let title: String?
-    let content: String?
-    let status: String?
-}
-
 private struct JournalEntryDisplayOrderUpdate: Encodable, Sendable {
     let displayOrder: Int
 
@@ -1014,22 +1008,6 @@ struct SupabaseEntryRepository {
         self.client = client
     }
 
-    func getEntries() async throws -> [JournalEntry] {
-        let userID = try await authenticatedUserID()
-
-        do {
-            return try await client
-                .from("entries")
-                .select()
-                .eq("user_id", value: userID)
-                .order("created_at", ascending: false)
-                .execute()
-                .value
-        } catch {
-            throw JournalEntryRepositoryError.operationFailed
-        }
-    }
-
     func getEntrySummaries() async throws -> [JournalEntry] {
         let userID = try await authenticatedUserID()
 
@@ -1336,85 +1314,6 @@ struct SupabaseEntryRepository {
         }
     }
 
-    func createEntry(title: String, content: String) async throws -> JournalEntry {
-        let userID = try await authenticatedUserID()
-        let cleanTitle = title.trimmedOrNil
-        let cleanContent = content.trimmedOrNil
-
-        guard cleanTitle != nil || cleanContent != nil else {
-            throw JournalEntryRepositoryError.emptyTitleAndContent
-        }
-
-        do {
-            return try await client
-                .from("entries")
-                .insert(
-                    JournalEntryPayload(
-                        userID: userID,
-                        clientEntryID: UUID(),
-                        title: cleanTitle,
-                        content: cleanContent,
-                        status: "draft",
-                        richText: nil,
-                        artStyle: nil,
-                        location: nil,
-                        entryDate: nil,
-                        datePrecision: nil,
-                        savesDraft: nil,
-                        isPrivate: nil,
-                        fontChoiceRawValue: nil,
-                        textColorIndex: nil,
-                        textSize: nil,
-                        paperStyleRawValue: nil,
-                        paperColorIndex: nil,
-                        isBold: nil,
-                        isItalic: nil,
-                        isUnderlined: nil,
-                        isStrikethrough: nil,
-                        isHighlighted: nil,
-                        textAlignmentRawValue: nil,
-                        displayOrder: nil
-                    )
-                )
-                .select()
-                .single()
-                .execute()
-                .value
-        } catch {
-            throw JournalEntryRepositoryError.operationFailed
-        }
-    }
-
-    func updateEntry(id: UUID, title: String, content: String, status: JournalEntryStatus = .draft) async throws -> JournalEntry {
-        let userID = try await authenticatedUserID()
-        let cleanTitle = title.trimmedOrNil
-        let cleanContent = content.trimmedOrNil
-
-        guard cleanTitle != nil || cleanContent != nil else {
-            throw JournalEntryRepositoryError.emptyTitleAndContent
-        }
-
-        do {
-            return try await client
-                .from("entries")
-                .update(
-                    JournalEntryUpdate(
-                        title: cleanTitle,
-                        content: cleanContent,
-                        status: status.rawValue
-                    )
-                )
-                .eq("id", value: id)
-                .eq("user_id", value: userID)
-                .select()
-                .single()
-                .execute()
-                .value
-        } catch {
-            throw JournalEntryRepositoryError.operationFailed
-        }
-    }
-
     func upsertEntry(
         clientEntryID: UUID,
         title: String,
@@ -1554,21 +1453,6 @@ struct SupabaseEntryRepository {
                 .from("entries")
                 .delete()
                 .eq("client_entry_id", value: clientEntryID)
-                .eq("user_id", value: userID)
-                .execute()
-        } catch {
-            throw JournalEntryRepositoryError.operationFailed
-        }
-    }
-
-    func deleteEntry(id: UUID) async throws {
-        let userID = try await authenticatedUserID()
-
-        do {
-            try await client
-                .from("entries")
-                .delete()
-                .eq("id", value: id)
                 .eq("user_id", value: userID)
                 .execute()
         } catch {

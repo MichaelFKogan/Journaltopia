@@ -342,10 +342,6 @@ struct ContentView: View {
             )
                 .transition(.identity)
                 .zIndex(0)
-        case .today:
-            DaybookView(selectedPage: pageSelection, contentMode: contentMode)
-                .transition(.identity)
-                .zIndex(0)
         case .entries:
             EntriesView(
                 selectedPage: pageSelection,
@@ -383,7 +379,7 @@ struct ContentView: View {
             .zIndex(0)
         case .settings:
             NavigationStack {
-                SettingsView(selectedPage: pageSelection)
+                SettingsView()
             }
                 .transition(.identity)
                 .zIndex(0)

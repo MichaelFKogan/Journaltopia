@@ -9,7 +9,6 @@ struct SettingsView: View {
         case sheet
     }
 
-    @Binding var selectedPage: StoryPage
     var presentation: Presentation = .page
 
     @EnvironmentObject private var authStore: SupabaseAuthStore
@@ -72,13 +71,11 @@ struct SettingsView: View {
                 SettingsNavigationRow(
                     systemName: "ellipsis.circle",
                     title: "Extra",
-                    subtitle: "Tests, daily journal, and create tools",
+                    subtitle: "Onboarding and create tools",
                     accessibilityLabel: "Open extra settings"
                 ) {
-                    SettingsExtraView(
-                        selectedPage: $selectedPage
-                    )
-                    .enableInteractivePopGesture()
+                    SettingsExtraView()
+                        .enableInteractivePopGesture()
                 }
             }
         }
@@ -489,31 +486,11 @@ struct SettingsView: View {
 private struct SettingsExtraView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
 
-    @Binding var selectedPage: StoryPage
     @AppStorage("JournaltopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @State private var isOnboardingPreviewPresented = false
 
-    private var contentMode: JournaltopiaContentMode {
-        JournaltopiaContentMode(
-            status: authStore.status,
-            isSampleAuthorModeEnabled: isSampleAuthorModeEnabled
-        )
-    }
-
     var body: some View {
         List {
-            Section("Tests") {
-                SettingsNavigationRow(
-                    systemName: "lock.cloud",
-                    title: "Cloud Journal Test",
-                    subtitle: "Test Supabase sign-in and private entries",
-                    accessibilityLabel: "Open cloud journal test"
-                ) {
-                    SupabaseJournalTestView()
-                        .enableInteractivePopGesture()
-                }
-            }
-
             Section("Onboarding") {
                 Button {
                     isOnboardingPreviewPresented = true
@@ -530,23 +507,6 @@ private struct SettingsExtraView: View {
                 .accessibilityLabel("Preview onboarding")
             }
 
-            Section("Journal") {
-                SettingsNavigationRow(
-                    systemName: "calendar",
-                    title: "Daily",
-                    subtitle: "Open your daily journal",
-                    accessibilityLabel: "Open daily journal"
-                ) {
-                    DaybookView(
-                        selectedPage: $selectedPage,
-                        embedsInNavigationStack: false,
-                        showsBottomNavigation: false,
-                        contentMode: contentMode
-                    )
-                    .enableInteractivePopGesture()
-                }
-            }
-
             Section("Create") {
                 Toggle(isOn: $isSampleAuthorModeEnabled) {
                     SettingsRowContent(
@@ -559,36 +519,6 @@ private struct SettingsExtraView: View {
                     .padding(.vertical, 4)
                 }
                 .disabled(authStore.userID == nil)
-
-                SettingsNavigationRow(
-                    systemName: "wand.and.stars",
-                    title: "Sample Studio",
-                    subtitle: sampleStudioSubtitle,
-                    accessibilityLabel: "Open sample studio"
-                ) {
-                    SampleStudioView()
-                        .enableInteractivePopGesture()
-                }
-
-                SettingsNavigationRow(
-                    systemName: "square.and.pencil",
-                    title: "Create Visual Test",
-                    subtitle: "Preview Create with Cloud Journal styling",
-                    accessibilityLabel: "Open create visual test"
-                ) {
-                    CreateVisualTestView()
-                        .enableInteractivePopGesture()
-                }
-
-                SettingsNavigationRow(
-                    systemName: "text.cursor",
-                    title: "Stock Text Editor",
-                    subtitle: "Compare Create/Write typing with Apple TextEditor",
-                    accessibilityLabel: "Open stock text editor test"
-                ) {
-                    StockTextEditorTestView()
-                        .enableInteractivePopGesture()
-                }
             }
         }
         .listStyle(.insetGrouped)
@@ -605,334 +535,12 @@ private struct SettingsExtraView: View {
         }
     }
 
-    private var sampleStudioSubtitle: String {
-        authStore.userID == nil ? "Sign in as a sample admin to author demo stories" : "Author public first-run sample stories"
-    }
-
     private var sampleAuthorModeSubtitle: String {
         if authStore.userID == nil {
             return "Sign in first, then edit the public sample experience"
         }
 
         return isSampleAuthorModeEnabled ? "Entries opens sample content and saves edits to sample tables" : "Temporarily edit the signed-out sample experience"
-    }
-}
-
-private struct SampleStudioView: View {
-    @EnvironmentObject private var authStore: SupabaseAuthStore
-
-    @State private var samplePack: SampleStoryPack?
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var selectedPage: StoryPage = .entries
-    @State private var entryText = ""
-    @State private var storyTitle = ""
-    @State private var storyboardPhotos: [CreateEntryReferencePhoto?] = Array(repeating: nil, count: 5)
-    @State private var isDraftSaved = false
-    @State private var activeDraftID: UUID?
-    @State private var generatedStoryboards: [GeneratedStoryboard] = []
-    @State private var completedEntryOpenedStoryboardImage: UIImage?
-    @State private var isOpeningCompletedEntryFromEntries = false
-    @State private var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
-    @State private var scratchDraftID: UUID?
-
-    var body: some View {
-        content
-            .navigationTitle("Sample Studio")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar(.visible, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        openNewSampleEntry()
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .disabled(authStore.userID == nil || isLoading)
-                    .accessibilityLabel("Create sample entry")
-                }
-            }
-            .background(Color.homePageBackground)
-            .preferredColorScheme(.light)
-            .navigationDestination(isPresented: isCreatePresented) {
-                CreateEntryView(
-                    presentation: activeDraftID == nil ? .compose : .editDraft,
-                    entryText: $entryText,
-                    storyTitle: $storyTitle,
-                    storyboardPhotos: $storyboardPhotos,
-                    isDraftSaved: $isDraftSaved,
-                    activeDraftID: $activeDraftID,
-                    selectedPage: pageSelection,
-                    generatedStoryboards: $generatedStoryboards,
-                    completedEntryOpenedStoryboardImage: $completedEntryOpenedStoryboardImage,
-                    isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
-                    storyboardGenerationStatus: $storyboardGenerationStatus,
-                    contentMode: .sampleAuthoring,
-                    dismissCreate: {
-                        closeCreateAndRefresh()
-                    }
-                )
-            }
-            .task {
-                await loadSamples()
-            }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if authStore.userID == nil {
-            List {
-                Section {
-                    SettingsRowContent(
-                        systemName: "person.badge.key",
-                        title: "Sign In Required",
-                        subtitle: "Sample Studio writes to Supabase sample tables.",
-                        showsChevron: false
-                    )
-                    .padding(.vertical, 4)
-                }
-            }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-        } else {
-            List {
-                Section {
-                    Text("Create and edit the public first-run sample stories using Journaltopia's real entry flow. Saves go to the sample tables and sample-story-assets bucket.")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.vertical, 4)
-                }
-
-                if isLoading {
-                    Section {
-                        HStack(spacing: 12) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Loading sample pack")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Color.storyInk)
-                        }
-                        .padding(.vertical, 8)
-                    }
-                }
-
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.red.opacity(0.82))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                Section("Sample Entries") {
-                    let entries = samplePack?.entries ?? []
-                    if entries.isEmpty && !isLoading {
-                        Button {
-                            openNewSampleEntry()
-                        } label: {
-                            SettingsRowContent(
-                                systemName: "plus.circle",
-                                title: "Create First Sample",
-                                subtitle: "Start the public demo pack",
-                                showsChevron: false
-                            )
-                            .padding(.vertical, 4)
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        ForEach(entries) { entry in
-                            Button {
-                                openSampleEntry(entry)
-                            } label: {
-                                SampleStudioEntryRow(
-                                    entry: entry,
-                                    storyboardCount: samplePack?.storyboardsByEntryID[entry.id]?.count ?? 0
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .refreshable {
-                await loadSamples()
-            }
-        }
-    }
-
-    private var isCreatePresented: Binding<Bool> {
-        Binding(
-            get: { selectedPage == .create },
-            set: { isPresented in
-                if !isPresented {
-                    closeCreateAndRefresh()
-                }
-            }
-        )
-    }
-
-    private var pageSelection: Binding<StoryPage> {
-        Binding(
-            get: { selectedPage },
-            set: { newPage in
-                if newPage == .create {
-                    selectedPage = .create
-                } else {
-                    closeCreateAndRefresh()
-                }
-            }
-        )
-    }
-
-    @MainActor
-    private func openNewSampleEntry() {
-        prepareCreateScratch()
-        activeDraftID = nil
-        selectedPage = .create
-    }
-
-    @MainActor
-    private func openSampleEntry(_ entry: CreateEntryDraft) {
-        prepareCreateScratch()
-        let savedID = CreateEntryDraftStore.save(
-            id: entry.id,
-            title: entry.title,
-            text: entry.text,
-            richText: entry.richText,
-            referencePhotos: entry.photos,
-            characters: entry.characters,
-            artStyle: entry.artStyle,
-            location: entry.location,
-            date: entry.date,
-            datePrecision: entry.datePrecision,
-            savesDraft: entry.savesDraft,
-            isPrivate: entry.isPrivate,
-            status: JournalEntryStatus(rawValue: entry.status) ?? .draft,
-            fontChoiceRawValue: entry.fontChoiceRawValue,
-            textColorIndex: entry.textColorIndex,
-            textSize: entry.textSize,
-            paperStyleRawValue: entry.paperStyleRawValue,
-            paperColorIndex: entry.paperColorIndex,
-            isBold: entry.isBold,
-            isItalic: entry.isItalic,
-            isUnderlined: entry.isUnderlined,
-            isStrikethrough: entry.isStrikethrough,
-            isHighlighted: entry.isHighlighted,
-            textAlignmentRawValue: entry.textAlignmentRawValue,
-            thumbnail: entry.thumbnail,
-            createdAt: entry.createdAt
-        )
-        activeDraftID = savedID ?? entry.id
-        scratchDraftID = activeDraftID
-        generatedStoryboards = samplePack?.storyboardsByEntryID[entry.id] ?? []
-        completedEntryOpenedStoryboardImage = generatedStoryboards.first?.image
-        isOpeningCompletedEntryFromEntries = entry.status == JournalEntryStatus.completed.rawValue
-        selectedPage = .create
-    }
-
-    @MainActor
-    private func prepareCreateScratch() {
-        entryText = ""
-        storyTitle = ""
-        storyboardPhotos = Array(repeating: nil, count: 5)
-        isDraftSaved = false
-        generatedStoryboards = []
-        completedEntryOpenedStoryboardImage = nil
-        isOpeningCompletedEntryFromEntries = false
-        storyboardGenerationStatus = nil
-        scratchDraftID = nil
-    }
-
-    @MainActor
-    private func closeCreateAndRefresh() {
-        selectedPage = .entries
-        if let scratchDraftID {
-            CreateEntryDraftStore.delete(id: scratchDraftID)
-        }
-        if let activeDraftID {
-            CreateEntryDraftStore.delete(id: activeDraftID)
-        }
-        activeDraftID = nil
-        scratchDraftID = nil
-        prepareCreateScratch()
-
-        Task {
-            await loadSamples()
-        }
-    }
-
-    @MainActor
-    private func loadSamples() async {
-        guard authStore.userID != nil else {
-            return
-        }
-
-        isLoading = true
-        errorMessage = nil
-        do {
-            samplePack = try await SupabaseSampleStoryService().loadAuthoringPack()
-        } catch {
-            errorMessage = "Could not load Sample Studio. Make sure this signed-in account is listed in sample_story_admins and the sample migrations are applied."
-        }
-        isLoading = false
-    }
-}
-
-private struct SampleStudioEntryRow: View {
-    let entry: CreateEntryDraft
-    let storyboardCount: Int
-
-    var body: some View {
-        HStack(spacing: 12) {
-            if let thumbnail = entry.thumbnail {
-                Image(uiImage: thumbnail)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 48, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            } else {
-                Image(systemName: entry.status == JournalEntryStatus.completed.rawValue ? "photo.on.rectangle" : "doc.text")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.homeAccent)
-                    .frame(width: 48, height: 60)
-                    .background(Color.homeAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(entry.title.isEmpty ? "Untitled Sample" : entry.title)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(Color.storyInk)
-                    .lineLimit(1)
-
-                Text(entry.text.isEmpty ? "No entry text yet" : entry.text)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.homeMutedText)
-                    .lineLimit(2)
-
-                Text(statusText)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Color.storyPurple)
-            }
-
-            Spacer(minLength: 8)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(Color.homeMutedText.opacity(0.65))
-        }
-        .padding(.vertical, 5)
-    }
-
-    private var statusText: String {
-        if entry.status == JournalEntryStatus.completed.rawValue {
-            return storyboardCount == 1 ? "Completed · 1 page" : "Completed · \(storyboardCount) pages"
-        }
-
-        return "Draft"
     }
 }
 

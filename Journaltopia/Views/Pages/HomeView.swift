@@ -60,7 +60,7 @@ struct HomeView: View {
         }
         .sheet(isPresented: $isSettingsSheetPresented) {
             NavigationStack {
-                SettingsView(selectedPage: $selectedPage, presentation: .sheet)
+                SettingsView(presentation: .sheet)
             }
         }
         .task(id: homeStoryboardLoadID) {
@@ -156,7 +156,7 @@ struct HomeView: View {
 
     private var settingsButton: some View {
         NavigationLink {
-            SettingsView(selectedPage: $selectedPage)
+            SettingsView()
                 .enableInteractivePopGesture()
         } label: {
             Image(systemName: "gearshape")
