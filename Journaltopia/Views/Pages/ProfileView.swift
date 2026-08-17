@@ -132,6 +132,27 @@ struct ProfileView: View {
             await loadProfileStoryboards()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
+        // The grid used to refetch on every mount, which is what kept it correct after a generation
+        // finished or an entry moved between Drafts and Completed. Now that a mount can be served
+        // from the session cache, the change has to say so itself.
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
+            ProfileStoryboardSessionCache.markStale(for: profileLoadModeID)
+
+            Task {
+                await loadProfileStoryboards()
+            }
+        }
+        // Likewise for a background re-check that turns up a newer sample pack than the cached one
+        // these storyboards came from.
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
+            guard showsSampleProfileContent, !isSampleAuthorMode else {
+                return
+            }
+
+            Task {
+                await loadSampleProfileStoryboards()
+            }
+        }
         .preferredColorScheme(.light)
     }
 
@@ -550,6 +571,17 @@ struct ProfileView: View {
 
         nextProfileStoryboardOffset = max(nextProfileStoryboardOffset - outcome.deletedStoryboardIDs.count, 0)
 
+        // A deletion also moves entries between Drafts and Completed on the server, so the cached
+        // page is no longer what a fresh load would return. Cached with what is on screen now and
+        // stamped stale, so returning to Profile draws immediately and then re-checks.
+        ProfileStoryboardSessionCache.store(
+            storyboards: generatedStoryboards,
+            nextOffset: nextProfileStoryboardOffset,
+            hasMore: hasMoreProfileStoryboards,
+            for: profileLoadModeID
+        )
+        ProfileStoryboardSessionCache.markStale(for: profileLoadModeID)
+
         // Keep the open viewer pointed at a real storyboard, or close it once none are left.
         if let openIndex = selectedStoryboardIndex, !generatedStoryboards.indices.contains(openIndex) {
             selectedStoryboardIndex = generatedStoryboards.isEmpty
@@ -636,18 +668,40 @@ struct ProfileView: View {
             return
         }
 
-        isLoadingProfileStoryboards = true
+        // Restored before anything is awaited, so a rebuilt Profile draws the grid — and the header
+        // cover, which is the first storyboard — on its first frame instead of a page of spinners
+        // over content it already had. A fresh page needs no round trip at all; a stale one still
+        // shows while the refresh runs behind it.
+        var hasRestoredCachedPage = false
+        if !forceReload, let cachedPage = ProfileStoryboardSessionCache.page(for: profileLoadModeID) {
+            generatedStoryboards = cachedPage.storyboards
+            nextProfileStoryboardOffset = cachedPage.nextOffset
+            hasMoreProfileStoryboards = cachedPage.hasMore
+            profileStoryboardErrorMessage = nil
+            isLoadingProfileStoryboards = false
+            hasRestoredCachedPage = true
+
+            if ProfileStoryboardSessionCache.isFresh(cachedPage) {
+                playProfileBookOpenHint()
+                return
+            }
+        }
+
+        if !hasRestoredCachedPage {
+            hasMoreProfileStoryboards = true
+            nextProfileStoryboardOffset = 0
+        }
+
+        // Only a load with nothing to show behind it gets the placeholder grid.
+        isLoadingProfileStoryboards = generatedStoryboards.isEmpty
         isLoadingMoreProfileStoryboards = false
-        hasMoreProfileStoryboards = true
-        nextProfileStoryboardOffset = 0
         profileStoryboardErrorMessage = nil
-        generatedStoryboards = []
         defer { isLoadingProfileStoryboards = false }
 
         do {
             let service = SupabaseStoryboardService()
             let sampleEntryIDs = await activeSampleEntryIDsForProfileFilter()
-            generatedStoryboards = try await service.loadCompletedJournalStoryboardImages(
+            let loadedStoryboards = try await service.loadCompletedJournalStoryboardImages(
                 limit: profileStoryboardPageSize,
                 offset: 0
             )
@@ -655,15 +709,27 @@ struct ProfileView: View {
                 isProfileEligibleStoryboard(storyboard, sampleEntryIDs: sampleEntryIDs)
             }
             .sorted { $0.createdAt > $1.createdAt }
-            nextProfileStoryboardOffset = generatedStoryboards.count
-            hasMoreProfileStoryboards = generatedStoryboards.count == profileStoryboardPageSize
+
+            generatedStoryboards = loadedStoryboards
+            nextProfileStoryboardOffset = loadedStoryboards.count
+            hasMoreProfileStoryboards = loadedStoryboards.count == profileStoryboardPageSize
             profileStoryboardErrorMessage = nil
+            ProfileStoryboardSessionCache.store(
+                storyboards: loadedStoryboards,
+                nextOffset: nextProfileStoryboardOffset,
+                hasMore: hasMoreProfileStoryboards,
+                for: profileLoadModeID
+            )
             playProfileBookOpenHint()
         } catch {
             print("[Journaltopia] Profile storyboard grid load failed: \(error.localizedDescription)")
-            generatedStoryboards = []
             hasMoreProfileStoryboards = false
-            profileStoryboardErrorMessage = "Could not load your completed AI storyboards from Journaltopia cloud."
+
+            // A failed *refresh* is not an empty profile. What is already on screen stays, and the
+            // error is only worth saying when there is nothing behind it.
+            if generatedStoryboards.isEmpty {
+                profileStoryboardErrorMessage = "Could not load your completed AI storyboards from Journaltopia cloud."
+            }
         }
     }
 
@@ -709,6 +775,14 @@ struct ProfileView: View {
             nextProfileStoryboardOffset += page.count
             hasMoreProfileStoryboards = page.count == profileStoryboardPageSize
             profileStoryboardErrorMessage = nil
+            // Cached with the pages already scrolled through, so coming back to Profile restores how
+            // far down the grid was rather than snapping to the first page.
+            ProfileStoryboardSessionCache.store(
+                storyboards: generatedStoryboards,
+                nextOffset: nextProfileStoryboardOffset,
+                hasMore: hasMoreProfileStoryboards,
+                for: profileLoadModeID
+            )
         } catch {
             profileStoryboardErrorMessage = "Could not load more storyboards."
         }
@@ -742,12 +816,19 @@ struct ProfileView: View {
 
     @MainActor
     private func loadSampleProfileStoryboards() async {
-        isLoadingProfileStoryboards = true
         isLoadingMoreProfileStoryboards = false
         hasMoreProfileStoryboards = false
         nextProfileStoryboardOffset = 0
         profileStoryboardErrorMessage = nil
-        generatedStoryboards = []
+
+        // The pack another sample screen already loaded, applied before anything is awaited. Same
+        // reason as the account path: this screen is rebuilt on every navigation, and the samples
+        // were in memory the whole time.
+        if !isSampleAuthorMode, let seededPack = SampleContentStore.pack {
+            applySampleProfilePack(seededPack)
+        }
+
+        isLoadingProfileStoryboards = generatedStoryboards.isEmpty
         defer { isLoadingProfileStoryboards = false }
 
         do {
@@ -759,16 +840,22 @@ struct ProfileView: View {
                 pack = try await service.loadActivePack()
                 SampleContentStore.replace(with: pack)
             }
-            generatedStoryboards = pack.storyboardsByEntryID.values
-                .flatMap { $0 }
-                .sorted(by: profileStoryboardSort)
-            selectedStoryboardIDs.formIntersection(Set(generatedStoryboards.map(\.id)))
+            applySampleProfilePack(pack)
             playProfileBookOpenHint()
         } catch {
             print("[Journaltopia] Sample profile storyboard load failed: \(error.localizedDescription)")
-            generatedStoryboards = []
-            profileStoryboardErrorMessage = "Could not load the sample storyboards."
+            if generatedStoryboards.isEmpty {
+                profileStoryboardErrorMessage = "Could not load the sample storyboards."
+            }
         }
+    }
+
+    @MainActor
+    private func applySampleProfilePack(_ pack: SampleStoryPack) {
+        generatedStoryboards = pack.storyboardsByEntryID.values
+            .flatMap { $0 }
+            .sorted(by: profileStoryboardSort)
+        selectedStoryboardIDs.formIntersection(Set(generatedStoryboards.map(\.id)))
     }
 
     private func isSampleProfileStoryboard(_ storyboard: GeneratedStoryboard) -> Bool {
@@ -2431,5 +2518,104 @@ private struct LegacyStoryboardImageViewer: View {
         lastImageScale = minimumScale
         imageOffset = .zero
         lastImageOffset = .zero
+    }
+}
+
+/// The first page of the profile grid, kept for the length of the session.
+///
+/// `ProfileView` is destroyed and rebuilt on every navigation, so its `.task` re-ran and refetched
+/// the whole page each time — and because the load cleared the array before going to the network,
+/// every visit spent a round trip showing placeholder tiles over content it already had. The header
+/// cover is `generatedStoryboards.first`, so it blanked along with the grid.
+///
+/// Keyed by the same load identity the `.task` is, so signing in, signing out and the sample-author
+/// toggle each get their own entry rather than seeing one another's storyboards.
+private enum ProfileStoryboardSessionCache {
+    private static let freshnessInterval: TimeInterval = 300
+    private static var pagesByLoadID: [String: Page] = [:]
+
+    /// Registered once, for the process, rather than on the view.
+    ///
+    /// The case that matters is a storyboard finishing while the user is somewhere else — Create, or
+    /// another app entirely. `ProfileView` is not mounted to hear about it, so an observer on the
+    /// view would leave the next visit served a "fresh" cached page that predates the storyboard
+    /// just generated. Invalidating where the cache lives is what keeps that from happening.
+    private static let storyboardChangeObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: .journaltopiaGeneratedStoryboardsChanged,
+        object: nil,
+        queue: .main
+    ) { _ in
+        markAllStale()
+    }
+
+    /// `storyboardChangeObserver` is a lazy `static let`, so it does not exist until something asks
+    /// for it. Every entry point into the cache does.
+    private static func startObservingIfNeeded() {
+        _ = storyboardChangeObserver
+    }
+
+    struct Page {
+        let storyboards: [GeneratedStoryboard]
+        let nextOffset: Int
+        let hasMore: Bool
+        let loadedAt: Date
+    }
+
+    static func page(for loadID: String) -> Page? {
+        startObservingIfNeeded()
+        return pagesByLoadID[loadID]
+    }
+
+    static func isFresh(_ page: Page) -> Bool {
+        Date().timeIntervalSince(page.loadedAt) < freshnessInterval
+    }
+
+    static func store(
+        storyboards: [GeneratedStoryboard],
+        nextOffset: Int,
+        hasMore: Bool,
+        for loadID: String
+    ) {
+        startObservingIfNeeded()
+        pagesByLoadID[loadID] = Page(
+            storyboards: storyboards,
+            nextOffset: nextOffset,
+            hasMore: hasMore,
+            loadedAt: Date()
+        )
+    }
+
+    private static func markAllStale() {
+        for (loadID, _) in pagesByLoadID {
+            markStale(for: loadID)
+        }
+    }
+
+    /// Drops the freshness stamp but keeps the storyboards, so the next load refetches while still
+    /// having something to draw.
+    static func markStale(for loadID: String) {
+        guard let page = pagesByLoadID[loadID] else {
+            return
+        }
+
+        pagesByLoadID[loadID] = Page(
+            storyboards: page.storyboards,
+            nextOffset: page.nextOffset,
+            hasMore: page.hasMore,
+            loadedAt: .distantPast
+        )
+    }
+
+    static func removeAll() {
+        pagesByLoadID.removeAll()
+    }
+}
+
+/// `LocalUserDataPurge`'s hook into this file, matching `JournalLocalCachePurge`. The cache holds one
+/// account's storyboard images in memory for the life of the process, so deleting the account's files
+/// on sign-out is not on its own enough to stop them being shown to whoever signs in next.
+enum ProfileLocalCachePurge {
+    static func purgeInMemoryCaches() {
+        ProfileStoryboardSessionCache.removeAll()
     }
 }

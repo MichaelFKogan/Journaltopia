@@ -249,6 +249,9 @@ extension Notification.Name {
     static let journaltopiaGeneratedStoryboardsChanged = Notification.Name("JournaltopiaGeneratedStoryboardsChanged")
     static let journaltopiaGeneratedStoryboardPrimaryChanged = Notification.Name("JournaltopiaGeneratedStoryboardPrimaryChanged")
     static let journaltopiaJournalCoverChanged = Notification.Name("JournaltopiaJournalCoverChanged")
+    /// A background re-check found a newer signed-out sample pack than the cached one the sample
+    /// screens are currently showing. They reload from the cache when they see it.
+    static let journaltopiaSampleStoryPackChanged = Notification.Name("JournaltopiaSampleStoryPackChanged")
 }
 
 struct CreateEntryReferencePhoto: Identifiable {

@@ -41,20 +41,34 @@ struct SupabaseSampleStoryService {
         self.client = client
     }
 
+    /// The signed-out sample pack, cache first.
+    ///
+    /// This used to go to the network every time and fall back to the cache only when that failed,
+    /// which made the cache a disaster fallback rather than a fast path. Loading the pack is six
+    /// serial round trips — pack row, entries, storyboard pages, assets, journals, storyboards — so
+    /// every visit to Entries, Journals or Profile while signed out paid for all of them again, and
+    /// the screens sat on their empty state until they finished.
+    ///
+    /// Now a device that has loaded the pack once returns it immediately and re-checks the server
+    /// behind the call. A pack that turns out to have changed replaces the cached copy and announces
+    /// itself with ``Notification/Name/journaltopiaSampleStoryPackChanged`` rather than making this
+    /// caller wait for it. Only a first launch blocks on the network, which is the one case where
+    /// there is genuinely nothing to show yet.
     func loadActivePack(locale: String = Locale.current.language.languageCode?.identifier ?? "en") async throws -> SampleStoryPack {
-        if let pack = try? await loadActivePackFromCloud(locale: locale) {
-            SampleStoryPackCache.store(pack)
-            return pack
-        }
-
         if let cachedPack = SampleStoryPackCache.load() {
+            SampleStoryPackRevalidator.shared.revalidate(locale: locale)
             return cachedPack
         }
 
-        throw SampleStoryServiceError.noSamplePackAvailable
+        guard let pack = try? await loadActivePackFromCloud(locale: locale) else {
+            throw SampleStoryServiceError.noSamplePackAvailable
+        }
+
+        SampleStoryPackCache.store(pack)
+        return pack
     }
 
-    private func loadActivePackFromCloud(locale: String) async throws -> SampleStoryPack {
+    fileprivate func loadActivePackFromCloud(locale: String) async throws -> SampleStoryPack {
         let localizedPack = try await loadPack(locale: locale)
         let fallbackPack = localizedPack == nil && locale != "en"
             ? try await loadPack(locale: "en")
@@ -118,7 +132,17 @@ struct SupabaseSampleStoryService {
         return EntryCharacterRules.orderedCharacters(uniqueCharacters(from: pack.entries.flatMap(\.characters)))
     }
 
+    /// The IDs of the sample entries, used to filter demo content out of an account's own screens.
+    ///
+    /// Cached for the session because it is two queries — the pack row, then every entry row in it —
+    /// and Profile ran both on every single load purely to build a set of IDs to *exclude*. The set
+    /// only changes when a sample author publishes, which is not something a signed-in user's grid
+    /// needs to re-check between navigations.
     func loadActiveSampleEntryIDs(locale: String = Locale.current.language.languageCode?.identifier ?? "en") async throws -> Set<UUID> {
+        if let cachedIDs = ActiveSampleEntryIDCache.ids(for: locale) {
+            return cachedIDs
+        }
+
         let localizedPack = try await loadPack(locale: locale)
         let fallbackPack = localizedPack == nil && locale != "en"
             ? try await loadPack(locale: "en")
@@ -129,7 +153,9 @@ struct SupabaseSampleStoryService {
         }
 
         let entryRows = try await loadEntries(packID: pack.id)
-        return Set(entryRows.map(\.id))
+        let entryIDs = Set(entryRows.map(\.id))
+        ActiveSampleEntryIDCache.store(entryIDs, for: locale)
+        return entryIDs
     }
 
     func saveSampleEntry(
@@ -1663,10 +1689,190 @@ private struct SampleStoryCallout: Codable {
     let text: String
 }
 
+/// Session cache for ``SupabaseSampleStoryService/loadActiveSampleEntryIDs(locale:)``.
+///
+/// Short-lived on purpose. The set is only used to exclude sample entries from an account's own
+/// content, so being a few minutes behind a newly published pack shows at worst one demo entry that
+/// a later load removes — much cheaper than two queries per screen load.
+private enum ActiveSampleEntryIDCache {
+    private static let freshnessInterval: TimeInterval = 300
+    private static let lock = NSLock()
+    private static var idsByLocale: [String: (ids: Set<UUID>, loadedAt: Date)] = [:]
+
+    static func ids(for locale: String) -> Set<UUID>? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard
+            let cached = idsByLocale[locale],
+            Date().timeIntervalSince(cached.loadedAt) < freshnessInterval
+        else {
+            return nil
+        }
+
+        return cached.ids
+    }
+
+    static func store(_ ids: Set<UUID>, for locale: String) {
+        lock.lock()
+        idsByLocale[locale] = (ids, Date())
+        lock.unlock()
+    }
+
+    static func clear() {
+        lock.lock()
+        idsByLocale.removeAll()
+        lock.unlock()
+    }
+}
+
+/// Keeps the cached sample pack fresh without any screen waiting on the answer.
+///
+/// An actor because the three screens that browse samples ask for the pack independently, often
+/// within the same second, and one refresh between them is enough. It also rate-limits: the pack
+/// changes when an author publishes one, not between two taps of the tab bar.
+private actor SampleStoryPackRevalidator {
+    static let shared = SampleStoryPackRevalidator()
+
+    private static let minimumInterval: TimeInterval = 300
+
+    private var isRevalidating = false
+    private var lastCompletedAt: Date?
+
+    nonisolated func revalidate(locale: String) {
+        Task {
+            await startIfNeeded(locale: locale)
+        }
+    }
+
+    private func startIfNeeded(locale: String) {
+        guard !isRevalidating else {
+            return
+        }
+
+        if let lastCompletedAt, Date().timeIntervalSince(lastCompletedAt) < Self.minimumInterval {
+            return
+        }
+
+        isRevalidating = true
+        Task {
+            let pack = try? await SupabaseSampleStoryService().loadActivePackFromCloud(locale: locale)
+            await self.finish(with: pack)
+        }
+    }
+
+    private func finish(with pack: SampleStoryPack?) {
+        isRevalidating = false
+
+        guard let pack else {
+            // A failed check is not a fresh one. Leaving `lastCompletedAt` alone lets the next screen
+            // try again rather than sitting on a stale pack for the whole interval.
+            return
+        }
+
+        lastCompletedAt = Date()
+
+        // Only a pack that actually differs is worth announcing. Reposting an identical one would
+        // make every sample screen rebuild its list for nothing.
+        guard SampleStoryPackCache.storeIfChanged(pack) else {
+            return
+        }
+
+        Task { @MainActor in
+            NotificationCenter.default.post(name: .journaltopiaSampleStoryPackChanged, object: nil)
+        }
+    }
+}
+
 private enum SampleStoryPackCache {
     private static let storageKey = "JournaltopiaActiveSampleStoryPack"
+    private static let lock = NSLock()
+
+    /// Decoding the stored pack re-renders a thumbnail for every entry, which is far too much work to
+    /// repeat each time a screen is rebuilt — and these screens are rebuilt on every navigation. The
+    /// decoded copy is kept for the life of the process.
+    private static var inMemoryPack: SampleStoryPack?
+    /// What ``inMemoryPack`` was built from, so a revalidation can tell a genuinely new pack from the
+    /// same one arriving again.
+    private static var inMemoryFingerprint: String?
 
     static func store(_ pack: SampleStoryPack) {
+        storeIfChanged(pack)
+    }
+
+    /// Stores `pack` and reports whether it differs from the copy already cached.
+    @discardableResult
+    static func storeIfChanged(_ pack: SampleStoryPack) -> Bool {
+        let newFingerprint = fingerprint(of: pack)
+
+        lock.lock()
+        let didChange = newFingerprint != inMemoryFingerprint
+        inMemoryPack = pack
+        inMemoryFingerprint = newFingerprint
+        lock.unlock()
+
+        guard didChange else {
+            return false
+        }
+
+        storeOnDisk(pack)
+        return true
+    }
+
+    static func load() -> SampleStoryPack? {
+        lock.lock()
+        let memoryPack = inMemoryPack
+        lock.unlock()
+
+        if let memoryPack {
+            return memoryPack
+        }
+
+        guard let diskPack = loadFromDisk() else {
+            return nil
+        }
+
+        lock.lock()
+        inMemoryPack = diskPack
+        // Seeded here as well as in `storeIfChanged`, or the first revalidation of a launch would
+        // compare a freshly fetched pack against nothing and report every launch as a change.
+        inMemoryFingerprint = fingerprint(of: diskPack)
+        lock.unlock()
+
+        return diskPack
+    }
+
+    static func clear() {
+        lock.lock()
+        inMemoryPack = nil
+        inMemoryFingerprint = nil
+        lock.unlock()
+
+        // Both describe the same published pack, and every caller that invalidates one means the
+        // other too — an author adding, renaming or deleting a sample entry changes the ID set.
+        ActiveSampleEntryIDCache.clear()
+
+        UserDefaults.standard.removeObject(forKey: storageKey)
+    }
+
+    /// A cheap identity for "is this the same pack we already have?".
+    ///
+    /// The version number alone is not enough: sample authoring edits rows in place without bumping
+    /// it, so this covers what the sample screens actually render.
+    private static func fingerprint(of pack: SampleStoryPack) -> String {
+        var parts: [String] = [pack.id.uuidString, "\(pack.version)", pack.locale]
+        parts += pack.entries.map { "e\($0.id)@\(Int($0.updatedAt.timeIntervalSince1970))" }
+        parts += pack.journals.map { "j\($0.id)@\(Int($0.updatedAt.timeIntervalSince1970))" }
+        parts += pack.storyboardsByEntryID
+            .values
+            .flatMap { $0 }
+            .map { "s\($0.id)" }
+            .sorted()
+
+        return parts.joined(separator: ",")
+    }
+
+    private static func storeOnDisk(_ pack: SampleStoryPack) {
         let payload = CachedSampleStoryPack(
             id: pack.id,
             slug: pack.slug,
@@ -1701,7 +1907,7 @@ private enum SampleStoryPackCache {
         UserDefaults.standard.set(data, forKey: storageKey)
     }
 
-    static func load() -> SampleStoryPack? {
+    private static func loadFromDisk() -> SampleStoryPack? {
         guard
             let data = UserDefaults.standard.data(forKey: storageKey),
             let payload = try? JSONDecoder().decode(CachedSampleStoryPack.self, from: data)
@@ -1752,10 +1958,6 @@ private enum SampleStoryPackCache {
             },
             storyboardsByEntryID: storyboardsByEntryID
         )
-    }
-
-    static func clear() {
-        UserDefaults.standard.removeObject(forKey: storageKey)
     }
 }
 

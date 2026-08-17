@@ -25,11 +25,22 @@ enum SampleContentStore {
     /// dictionary's.
     private(set) static var orderedEntryIDs: [UUID] = []
 
+    /// The pack the rest of this store was built from.
+    ///
+    /// Kept whole because the screens are destroyed and rebuilt on every navigation, and a rebuilt
+    /// screen needs the pack's *own* shape — `pack.entries` and `pack.journals` as the author
+    /// arranged them — not the flattened lookup above. Reading it is what lets Entries and Journals
+    /// come back with content already on screen instead of blanking while the same pack is fetched
+    /// again.
+    private(set) static var pack: SampleStoryPack?
+
     static var isEmpty: Bool {
         entriesByID.isEmpty && storyboardsByEntryID.isEmpty
     }
 
     static func replace(with pack: SampleStoryPack) {
+        self.pack = pack
+
         // Journal entries and top-level pack entries overlap; the journal copy wins because it is
         // the one the journal screens display.
         var entries: [UUID: CreateEntryDraft] = [:]
@@ -56,6 +67,7 @@ enum SampleContentStore {
     }
 
     static func clear() {
+        pack = nil
         entriesByID = [:]
         storyboardsByEntryID = [:]
         orderedEntryIDs = []

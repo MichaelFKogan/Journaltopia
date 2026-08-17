@@ -242,6 +242,10 @@ struct JournalView: View {
     @State private var isJournalOpening = false
     @State private var journalNavigationPath: [JournalRoute] = []
     @State private var sampleJournalLoadTask: Task<Void, Never>?
+    /// Whether the sample pack is still on its way. Without it an empty `chapters` reads as "this
+    /// library has no journals", which is how "No journals yet" ended up on screen for the whole
+    /// length of the load.
+    @State private var isLoadingSampleJournals = false
     @State private var sampleJournalEntryIDs: Set<UUID> = []
     /// Whether the IDs in `sampleJournalEntryIDs` were written to `CreateEntryDraftStore`, which only
     /// sample authoring does. The cleanup has to know which of the two places to clear, and it runs
@@ -364,6 +368,15 @@ struct JournalView: View {
             }
 
             reloadJournalsForCurrentMode(retriesCoverSync: true)
+        }
+        // These journals came from the cache, so a background re-check that turns up a newer pack
+        // has to be picked up rather than waiting for the next launch.
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
+            guard usesSampleJournalContent, !isSampleAuthorMode else {
+                return
+            }
+
+            loadSampleJournals()
         }
         .preferredColorScheme(.light)
         .alert("Rename Journal", isPresented: isRenameAlertPresented) {
@@ -633,7 +646,14 @@ struct JournalView: View {
 
             List {
                 Section {
-                    if chapters.isEmpty {
+                    if chapters.isEmpty && isLoadingSampleJournals {
+                        ForEach(0..<5, id: \.self) { _ in
+                            EntryListLoadingRow()
+                                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
+                                .listRowBackground(Color.homePageBackground)
+                                .listRowSeparatorTint(Color.storyInk.opacity(0.10))
+                        }
+                    } else if chapters.isEmpty {
                         noSearchResults
                             .listRowBackground(Color.homePageBackground)
                     } else {
@@ -676,7 +696,9 @@ struct JournalView: View {
 
     private var journalGridContent: some View {
         Group {
-            if chapters.isEmpty {
+            if chapters.isEmpty && isLoadingSampleJournals {
+                journalGridLoadingPlaceholders
+            } else if chapters.isEmpty {
                 emptyState
             } else {
                 journalGrid
@@ -684,6 +706,17 @@ struct JournalView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, selectedJournalLayout == .grid2x2 ? 8 : 4)
+    }
+
+    private var journalGridLoadingPlaceholders: some View {
+        LazyVGrid(columns: columns, spacing: selectedJournalLayout == .grid2x2 ? 18 : 14) {
+            ForEach(0..<6, id: \.self) { index in
+                JournalCoverLoadingCard(
+                    seed: index,
+                    usesWideGridStyle: selectedJournalLayout == .grid2x2
+                )
+            }
+        }
     }
 
     private var journalGrid: some View {
@@ -1392,6 +1425,7 @@ struct JournalView: View {
     private func resetJournalSessionState() {
         sampleJournalLoadTask?.cancel()
         sampleJournalLoadTask = nil
+        isLoadingSampleJournals = false
         removeSampleJournalDrafts()
         sampleJournalsByID = [:]
         chapters = []
@@ -1461,6 +1495,15 @@ struct JournalView: View {
     }
 
     private func loadSampleJournals() {
+        // Applied before anything is awaited, for the same reason Entries does it: this screen is
+        // rebuilt on every navigation, and without it a return to Journals renders "No journals yet"
+        // over a pack that is already in memory.
+        if !isSampleAuthorMode, let seededPack = SampleContentStore.pack {
+            applySampleJournalPack(seededPack)
+        }
+
+        isLoadingSampleJournals = chapters.isEmpty
+
         sampleJournalLoadTask?.cancel()
         sampleJournalLoadTask = Task {
             let service = SupabaseSampleStoryService()
@@ -1469,7 +1512,14 @@ struct JournalView: View {
                 : try? await service.loadActivePack()
 
             guard let pack else {
+                // A cancelled load is a superseded one, not a failed one. Clearing here would wipe
+                // the journals its replacement is in the middle of putting on screen.
+                guard !Task.isCancelled else {
+                    return
+                }
+
                 await MainActor.run {
+                    isLoadingSampleJournals = false
                     chapters = []
                     showsPrototypeData = true
                     editMode = .inactive
@@ -1477,13 +1527,23 @@ struct JournalView: View {
                 return
             }
 
+            // Still ahead of the apply: the grid reads its covers straight from `JournalCoverStore`
+            // during a body pass rather than observing it, so a pack applied first would draw with
+            // whatever covers happened to be on disk and not redraw when the real ones landed. On a
+            // warm cache this loop is disk reads, and the seed above means the screen is not blank
+            // while it runs.
             await reconcileSampleJournalCovers(
                 pack.journals,
                 service: service,
                 preservesLocalCoversWithoutRemotePath: isSampleAuthorMode
             )
 
+            guard !Task.isCancelled else {
+                return
+            }
+
             await MainActor.run {
+                isLoadingSampleJournals = false
                 applySampleJournalPack(pack)
             }
         }
@@ -9863,22 +9923,47 @@ private extension EntrySummaryStatusFilter {
 
 private enum EntriesSessionMemoryCache {
     private static var snapshotsByQueryKey: [EntriesCloudFetchCache.EntryQueryKey: Snapshot] = [:]
+    private static var mostRecentQueryKey: EntriesCloudFetchCache.EntryQueryKey?
 
     static func snapshot(for queryKey: EntriesCloudFetchCache.EntryQueryKey) -> Snapshot? {
         snapshotsByQueryKey[queryKey]
     }
 
+    /// The last snapshot stored, whichever query it belonged to.
+    ///
+    /// `EntriesView` seeds its `@State` from this when it is built, which is the only way to have
+    /// content in the *first* rendered frame: the keyed restore happens in `onAppear`, and SwiftUI
+    /// has already drawn the view once by then — with empty arrays, which render as "No Entries".
+    /// That one frame is the flash on returning to the tab.
+    ///
+    /// Unkeyed because the query key needs the signed-in user, and `@State` initial values are
+    /// evaluated before the environment exists. Being occasionally wrong is safe: `onAppear` compares
+    /// the real key and reloads when it differs, so a mismatch costs a frame and never persists. It
+    /// cannot leak across accounts either — signing out purges this cache outright.
+    static func mostRecentSnapshot() -> Snapshot? {
+        guard let mostRecentQueryKey else {
+            return nil
+        }
+
+        return snapshotsByQueryKey[mostRecentQueryKey]
+    }
+
     static func store(_ snapshot: Snapshot, for queryKey: EntriesCloudFetchCache.EntryQueryKey) {
         snapshotsByQueryKey[queryKey] = snapshot
+        mostRecentQueryKey = queryKey
     }
 
     static func invalidate(userID: UUID?) {
         guard let userID else {
             snapshotsByQueryKey.removeAll()
+            mostRecentQueryKey = nil
             return
         }
 
         snapshotsByQueryKey = snapshotsByQueryKey.filter { $0.key.userID != userID }
+        if mostRecentQueryKey?.userID == userID {
+            mostRecentQueryKey = nil
+        }
     }
 
     struct Snapshot {
@@ -9993,14 +10078,24 @@ struct EntriesView: View {
     private let thumbnailRendererVersion = 12
     private let thumbnailRendererVersionKey = "JournaltopiaEntryThumbnailRendererVersion"
 
+    // Seeded from the last session snapshot rather than starting empty. These are `@State`
+    // initialisers, so they run when SwiftUI builds the view — before the first frame is drawn, and
+    // before `onAppear` gets a chance to restore anything. Starting empty is what made a return to
+    // this tab paint "No Entries" for a frame and then swap in content that had been in memory the
+    // whole time. `onAppear` still does the real, key-checked restore immediately afterwards.
     @State private var showsPrototypeData = true
-    @State private var entries: [CreateEntryDraft] = []
-    @State private var sampleEntries: [CreateEntryDraft] = []
-    @State private var sampleStoryboardsByEntryID: [UUID: [GeneratedStoryboard]] = [:]
-    @State private var completedStoryboards: [GeneratedStoryboard] = []
-    @State private var storyboardCountsByClientEntryID: [UUID: Int] = [:]
-    @State private var cloudStoryboardClientIDs: Set<UUID> = []
-    @State private var failedCloudStoryboardClientIDs: Set<UUID> = []
+    @State private var entries: [CreateEntryDraft] = EntriesSessionMemoryCache.mostRecentSnapshot()?.entries ?? []
+    @State private var sampleEntries: [CreateEntryDraft] = EntriesSessionMemoryCache.mostRecentSnapshot()?.sampleEntries ?? []
+    @State private var sampleStoryboardsByEntryID: [UUID: [GeneratedStoryboard]] =
+        EntriesSessionMemoryCache.mostRecentSnapshot()?.sampleStoryboardsByEntryID ?? [:]
+    @State private var completedStoryboards: [GeneratedStoryboard] =
+        EntriesSessionMemoryCache.mostRecentSnapshot()?.completedStoryboards ?? []
+    @State private var storyboardCountsByClientEntryID: [UUID: Int] =
+        EntriesSessionMemoryCache.mostRecentSnapshot()?.storyboardCountsByClientEntryID ?? [:]
+    @State private var cloudStoryboardClientIDs: Set<UUID> =
+        EntriesSessionMemoryCache.mostRecentSnapshot()?.cloudStoryboardClientIDs ?? []
+    @State private var failedCloudStoryboardClientIDs: Set<UUID> =
+        EntriesSessionMemoryCache.mostRecentSnapshot()?.failedCloudStoryboardClientIDs ?? []
     @State private var editMode: EditMode = .inactive
     @State private var entryBeingRenamed: CreateEntryDraft?
     @State private var renamedEntryTitle = ""
@@ -10019,15 +10114,27 @@ struct EntriesView: View {
     @State private var isShowingAddSelectedEntriesToJournalSheet = false
     @State private var selectedEntriesJournalTitle: String?
     @State private var selectedEntriesJournalTitles: Set<String> = []
-    @State private var cloudEntries: [JournalEntry] = []
-    @State private var cloudEntryCounts: JournalEntrySummaryCounts?
+    @State private var cloudEntries: [JournalEntry] = EntriesSessionMemoryCache.mostRecentSnapshot()?.cloudEntries ?? []
+    @State private var cloudEntryCounts: JournalEntrySummaryCounts? = EntriesSessionMemoryCache.mostRecentSnapshot()?.cloudEntryCounts
     @State private var unjournaledEntryIDs: Set<UUID> = []
-    @State private var cloudEntryThumbnails: [UUID: UIImage] = [:]
-    @State private var cloudEntryThumbnailVersions: [UUID: String] = [:]
+    @State private var cloudEntryThumbnails: [UUID: UIImage] =
+        EntriesSessionMemoryCache.mostRecentSnapshot()?.cloudEntryThumbnails ?? [:]
+    @State private var cloudEntryThumbnailVersions: [UUID: String] =
+        EntriesSessionMemoryCache.mostRecentSnapshot()?.cloudEntryThumbnailVersions ?? [:]
     @State private var isLoadingCloudEntries = false
+    /// Tracked separately from ``isLoadingCloudEntries`` because the two are genuinely different
+    /// loads, and conflating them is what put "No Entries" on screen while the sample pack was in
+    /// flight: the signed-out path leaves the cloud flag false, so an empty list read as *empty*
+    /// rather than as *not loaded yet*.
+    @State private var isLoadingSampleContent = false
     @State private var isLoadingMoreCloudEntries = false
-    @State private var hasMoreCloudEntries = true
-    @State private var nextCloudEntryOffset = 0
+    @State private var hasMoreCloudEntries = EntriesSessionMemoryCache.mostRecentSnapshot()?.hasMoreCloudEntries ?? true
+    @State private var nextCloudEntryOffset = EntriesSessionMemoryCache.mostRecentSnapshot()?.nextCloudEntryOffset ?? 0
+    /// Whether a load has been attempted for the current mode yet.
+    ///
+    /// A first visit has no snapshot to seed from, so without this an empty list on the first frame
+    /// still reads as "No Entries" before anything has even been asked for.
+    @State private var hasAttemptedEntriesLoad = false
     @State private var cloudEntriesErrorMessage: String?
     @State private var openingEntryPreview: EntryOpeningPreview?
     @State private var isFinishingEntryOpening = false
@@ -10147,6 +10254,17 @@ struct EntriesView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
                 handleGeneratedStoryboardsChanged()
+            }
+            // The samples on screen came from the cache, so a background re-check that finds a newer
+            // pack has to hand it over rather than waiting for the next launch. Reloading rather
+            // than reading `SampleContentStore` directly, because that still holds the pack this
+            // screen was showing — the newer one is in the service's cache.
+            .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
+                guard contentMode.showsSampleContent else {
+                    return
+                }
+
+                loadRemoteSampleContentIfNeeded()
             }
             .onDisappear {
                 dismissAnyKeyboard()
@@ -11955,7 +12073,7 @@ struct EntriesView: View {
     }
 
     private var showsCloudLoadingPlaceholder: Bool {
-        isLoadingCloudEntries
+        (isLoadingCloudEntries || isLoadingSampleContent || !hasAttemptedEntriesLoad)
             && !showsSampleEntries
             && filteredEntryItems.isEmpty
             && cloudEntriesErrorMessage == nil
@@ -12459,6 +12577,8 @@ struct EntriesView: View {
             return
         }
 
+        hasAttemptedEntriesLoad = true
+
         scheduleEntryThumbnailBackfill()
         scheduleCloudEntryThumbnailBackfill()
         if selectedEntryTab != .addToJournal, EntriesCloudFetchCache.hasFreshEntrySummaries(for: queryKey) {
@@ -12533,6 +12653,7 @@ struct EntriesView: View {
 
     private func resetEntriesSessionState() {
         cancelThumbnailBackfills()
+        isLoadingSampleContent = false
         hasLoadedEntriesForSession = false
         loadedEntryQueryKey = nil
         storyboardCountsByClientEntryID = [:]
@@ -12620,11 +12741,32 @@ struct EntriesView: View {
             entries.isEmpty,
             cloudEntries.isEmpty
         else {
+            isLoadingSampleContent = false
             return
         }
 
+        // The pack another sample screen already loaded, applied before anything is awaited. This
+        // screen is destroyed and rebuilt on every navigation, so without this a return to Entries
+        // renders an empty list first and fills it a moment later — even though the content was in
+        // memory the whole time.
+        let seededPack = contentMode.showsSampleContent ? SampleContentStore.pack : nil
+        if let seededPack {
+            applySamplePack(seededPack)
+        }
+
+        isLoadingSampleContent = seededPack == nil
+
         sampleContentLoadTask?.cancel()
         sampleContentLoadTask = Task {
+            // Only the task that is still current may lower the flag. A superseded one reaching here
+            // after its replacement raised it would drop the placeholder back to "No Entries" while
+            // the replacement is still loading.
+            defer {
+                if !Task.isCancelled {
+                    isLoadingSampleContent = false
+                }
+            }
+
             guard let pack = try? await SupabaseSampleStoryService().loadActivePack() else {
                 return
             }
@@ -12638,14 +12780,18 @@ struct EntriesView: View {
                 return
             }
 
-            sampleEntries = pack.entries
-            sampleStoryboardsByEntryID = pack.storyboardsByEntryID
-            if contentMode.showsSampleContent {
-                // Same pack the Journals tab browses. Sharing one in-memory copy is what keeps a
-                // sample entry openable from either screen without either of them writing to disk.
-                SampleContentStore.replace(with: pack)
-            }
+            applySamplePack(pack)
             storeCurrentEntriesSessionSnapshot()
+        }
+    }
+
+    private func applySamplePack(_ pack: SampleStoryPack) {
+        sampleEntries = pack.entries
+        sampleStoryboardsByEntryID = pack.storyboardsByEntryID
+        if contentMode.showsSampleContent {
+            // Same pack the Journals tab browses. Sharing one in-memory copy is what keeps a
+            // sample entry openable from either screen without either of them writing to disk.
+            SampleContentStore.replace(with: pack)
         }
     }
 
@@ -12660,10 +12806,13 @@ struct EntriesView: View {
 
     private func refreshEntries(forceCloudReload: Bool = false) {
         // A session still being checked is not a signed-out one. Falling through would clear the
-        // list and load samples over content that is about to come back.
+        // list and load samples over content that is about to come back — and it is not an attempt
+        // either, so the placeholder stays up rather than dropping to an empty state.
         guard contentMode.isResolved else {
             return
         }
+
+        hasAttemptedEntriesLoad = true
 
         if isSampleAuthorMode {
             resetEntriesSessionState()
@@ -13951,6 +14100,54 @@ private struct EntryGridLoadingCard: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .opacity(isPulsing ? 0.42 : 0.78)
         }
+        .onAppear {
+            isPulsing = true
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// The journals-grid counterpart to ``EntryGridLoadingCard``, so a sample pack still loading reads as
+/// "on its way" rather than as an empty library.
+private struct JournalCoverLoadingCard: View {
+    let seed: Int
+    let usesWideGridStyle: Bool
+
+    @State private var isPulsing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white)
+                .overlay(
+                    VStack(alignment: .leading, spacing: 10) {
+                        EntryLoadingBar(width: CGFloat(58 + (seed % 3) * 14), height: 11)
+                        EntryLoadingBar(width: CGFloat(42 + (seed % 2) * 18), height: 9)
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, usesWideGridStyle ? 16 : 11)
+                    .padding(.top, usesWideGridStyle ? 22 : 16),
+                    alignment: .topLeading
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.homeBorder.opacity(0.76), lineWidth: 1)
+                )
+                .aspectRatio(usesWideGridStyle ? 168.0 / 208.0 : 104.0 / 136.0, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .shadow(color: Color.storyInk.opacity(0.05), radius: 8, y: 4)
+
+            EntryLoadingBar(width: usesWideGridStyle ? 86 : 62, height: 9)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .opacity(isPulsing ? 0.54 : 0.9)
+        .animation(
+            .easeInOut(duration: 0.88)
+                .repeatForever(autoreverses: true)
+                .delay(Double(seed) * 0.06),
+            value: isPulsing
+        )
         .onAppear {
             isPulsing = true
         }
