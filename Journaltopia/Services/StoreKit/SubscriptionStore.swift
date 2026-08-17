@@ -123,6 +123,21 @@ final class SubscriptionStore: ObservableObject {
         await reconcileUnfinishedPurchases()
     }
 
+    /// Drops back to "not asked yet", synchronously, because the account is about to change.
+    ///
+    /// Without this there is a window between one user signing in and the server answering during
+    /// which `state` still holds the *previous* user's entitlement — long enough for the gate to
+    /// wave a generation through on somebody else's subscription. `.unresolved` rather than
+    /// `.notSubscribed` because nothing has been decided yet: the gate waits on it instead of
+    /// showing a paywall to a subscriber mid-switch.
+    ///
+    /// Must be called before any `await`, or the window it closes simply moves.
+    func prepareForAccountChange() {
+        state = .unresolved
+        purchasePhase = .idle
+        errorMessage = nil
+    }
+
     /// Clears this device's presentation of a subscription without touching the server's record.
     ///
     /// Called on sign-out. The subscription belongs to the Journaltopia account, not to the device, so

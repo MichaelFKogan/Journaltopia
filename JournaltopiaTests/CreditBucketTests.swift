@@ -170,6 +170,67 @@ final class CreditBucketTests: XCTestCase {
         XCTAssertNotNil(gate.pendingRequest)
     }
 
+    // MARK: - Account switching
+
+    func testSigningOutClearsTheBalanceRatherThanCarryingItToTheNextAccount() {
+        let store = GenerationCreditStore()
+        store.apply(GenerationCreditBalance(monthly: 25, purchased: 40))
+
+        // What ContentView does synchronously the moment the account id changes.
+        store.reset()
+
+        XCTAssertNil(store.balance, "one account's balance must not be visible to the next")
+        XCTAssertNil(store.monthlyCredits)
+        XCTAssertNil(store.purchasedCredits)
+        XCTAssertFalse(store.canSpend(1))
+    }
+
+    func testAnAccountChangeDropsEntitlementToUnresolvedBeforeAnythingIsAwaited() {
+        // The leak this closes: the refresh for the new account takes a round trip, and until it
+        // lands the published entitlement is still the *previous* user's. Long enough for the gate
+        // to authorise a generation on somebody else's subscription.
+        let store = SubscriptionStore()
+        let gate = EntitlementGate()
+
+        gate.update(state: .subscribed(productID: JournaltopiaProducts.journaltopiaPlusMonthly, currentPeriodEnd: nil))
+        XCTAssertTrue(gate.requireJournaltopiaPlus(for: .generateStoryboard))
+
+        store.prepareForAccountChange()
+        gate.update(state: store.state)
+
+        XCTAssertEqual(store.state, .unresolved)
+        XCTAssertFalse(gate.requireJournaltopiaPlus(for: .generateStoryboard), "the new account is not entitled by inheritance")
+        XCTAssertNil(gate.pendingRequest, "and is not shown a paywall before the server has answered")
+    }
+
+    func testSigningOutDiscardsAPendingPaywallAndItsRetry() {
+        // A pending request carries a closure that would resume the previous account's generation.
+        let gate = EntitlementGate()
+        gate.update(state: .notSubscribed)
+        var resumed = 0
+
+        XCTAssertFalse(gate.requireJournaltopiaPlus(for: .generateStoryboard, retry: { resumed += 1 }))
+        XCTAssertNotNil(gate.pendingRequest)
+
+        gate.update(state: .signedOut)
+        XCTAssertNil(gate.pendingRequest, "a sheet raised by one account must not survive into another's session")
+
+        // And it cannot fire later when the next account turns out to be subscribed.
+        gate.update(state: .subscribed(productID: nil, currentPeriodEnd: nil))
+        gate.resumeIfEntitlementArrived()
+        XCTAssertEqual(resumed, 0)
+    }
+
+    func testPurchaseErrorStateDoesNotSurviveAnAccountChange() {
+        let store = SubscriptionStore()
+        store.errorMessage = "This Apple subscription is already linked to a different account."
+
+        store.prepareForAccountChange()
+
+        XCTAssertNil(store.errorMessage, "one account's purchase error must not greet the next")
+        XCTAssertEqual(store.purchasePhase, .idle)
+    }
+
     func testBuyingCreditsDoesNotResumeASubscriptionPaywall() {
         // Different requirement, different resolution. A pack cannot satisfy "you need a plan".
         let gate = EntitlementGate()

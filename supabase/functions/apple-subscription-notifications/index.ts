@@ -1,31 +1,56 @@
 // App Store Server Notifications V2.
 //
-// Apple posts here when a subscription changes without the app being involved: a renewal charged at
-// 3am, a card that failed, a refund, a cancellation. Without this endpoint the server only learns
-// about a subscription when the app next opens, which means a renewal's credits arrive late and an
-// expiry is honoured late — and a lapsed subscriber keeps generating until they relaunch.
+// Apple posts here when something changes without the app being involved: a renewal charged at 3am,
+// a card that failed, a refund granted days later, a subscription revoked. Without this endpoint the
+// server only learns about any of it when the app next opens — so a renewal's credits arrive late, a
+// lapsed subscriber keeps generating until they relaunch, and a refunded credit pack is never
+// clawed back at all.
 //
 // There is no Supabase session on this request and there cannot be one: the caller is Apple. The
 // authentication is the signature. The notification is a JWS whose certificate chain is validated to
-// Apple's root exactly as a client-reported transaction is, and the subscription is located by the
-// original transaction id inside the *verified* payload — never by anything in the URL or an
+// Apple's root, the transaction inside it is verified separately on its own terms, and every value
+// acted on below comes out of those verified payloads — never from the URL, the headers, or an
 // unverified body field.
+//
+// The endpoint carries two unrelated kinds of traffic, and the first thing it does is tell them
+// apart:
+//
+//   subscription   Journaltopia+ — entitlement, periods, the monthly credit grant
+//   credit pack    a consumable — the purchased bucket, and refunds against it
+//   unknown        acknowledged and ignored; it must never reach a balance
+//
+// Mixing those up is the failure this routing exists to prevent. A consumable refund must not cancel
+// anyone's subscription, and a subscription refund must not delete credits somebody bought
+// separately.
 import {
   AppleSubscriptionFailure,
   applyVerifiedSubscription,
+  classifyProduct,
   environmentFromName,
+  reverseCreditPackPurchase,
   serviceRoleClient,
   toVerifiedSubscription,
   verifierFor,
 } from "../_shared/apple-subscription.ts";
 import { jsonResponse } from "../_shared/storyboard-generation.ts";
-// Apple's own decoded-notification shape. Every field on it is optional, which is why the logging
-// below tolerates a missing notificationType rather than asserting one.
-import type { ResponseBodyV2DecodedPayload } from "npm:@apple/app-store-server-library@1.6.0";
+import type {
+  JWSRenewalInfoDecodedPayload,
+  JWSTransactionDecodedPayload,
+  ResponseBodyV2DecodedPayload,
+} from "npm:@apple/app-store-server-library@1.6.0";
+import { Environment } from "npm:@apple/app-store-server-library@1.6.0";
 
 type NotificationRequest = {
   signedPayload?: string;
 };
+
+/// The notification types that mean money went back to the customer. `REFUND` is the ordinary case;
+/// `REVOKE` is Family Sharing access being withdrawn. Both should take back what they granted.
+///
+/// `REFUND_REVERSED` — Apple undoing a refund it previously granted — is deliberately *not* here.
+/// Re-granting credits automatically would need its own idempotency story, and getting it wrong
+/// hands out free credits; it is logged for a human instead.
+const REVERSAL_NOTIFICATION_TYPES = new Set(["REFUND", "REVOKE"]);
 
 Deno.serve(async (request) => {
   if (request.method !== "POST") {
@@ -45,44 +70,34 @@ Deno.serve(async (request) => {
   }
 
   try {
-    const { notification, verified } = await verifyNotification(signedPayload);
+    const verified = await verifyNotification(signedPayload);
+    const { notification, transaction, renewal, environment } = verified;
+    const label = `${notification.notificationType ?? "?"}/${notification.subtype ?? "-"}`;
 
-    // Notifications that carry no transaction — Apple's test ping, and the consumption request
-    // family — are acknowledged rather than treated as failures, or Apple will retry them forever.
-    if (!verified) {
-      console.log(
-        `[apple-subscription-notifications] ${notification.notificationType}/${notification.subtype ?? "-"}: nothing to apply.`,
-      );
-      return jsonResponse({ received: true, applied: false });
+    // Notifications that carry no transaction — Apple's TEST ping, consumption requests — are
+    // acknowledged rather than treated as failures, or Apple retries them for days.
+    if (!transaction) {
+      console.log(`[apple-subscription-notifications] ${label}: nothing to apply.`);
+      return jsonResponse({ received: true, applied: false, reason: "no-transaction" });
     }
 
-    // `account` is null here: nobody is signed in, so the owner comes from the subscription row
-    // Apple's identity already points at. A notification for a subscription no account has synced
-    // reports `unknown_subscription` and is acknowledged — the client sync will bind it when that
-    // user next opens the app, and retrying delivery would not change anything.
-    const outcome = await applyVerifiedSubscription(serviceRoleClient(), null, verified);
+    const kind = classifyProduct(transaction.productId);
+    const client = serviceRoleClient();
 
-    if (outcome.conflict) {
+    if (kind === "unknown") {
+      // Not one of our products. Acknowledged so Apple stops, and pointedly not acted on: there is
+      // no balance or entitlement this could correctly touch.
       console.log(
-        `[apple-subscription-notifications] ${notification.notificationType}: ${outcome.conflict} for ${verified.originalTransactionID}.`,
+        `[apple-subscription-notifications] ${label}: ignoring unknown product ${transaction.productId}.`,
       );
-      return jsonResponse({ received: true, applied: false, code: outcome.conflict });
+      return jsonResponse({ received: true, applied: false, reason: "unknown-product" });
     }
 
-    console.log(
-      `[apple-subscription-notifications] ${notification.notificationType}/${notification.subtype ?? "-"}` +
-        ` -> ${outcome.status}, granted ${outcome.granted}.`,
-    );
+    if (kind === "credit_pack") {
+      return await handleCreditPackNotification(client, notification, transaction, label);
+    }
 
-    // The same idempotent grant path the client sync uses, so whichever observes a renewal first
-    // wins and the other is a no-op.
-    return jsonResponse({
-      received: true,
-      applied: true,
-      status: outcome.status,
-      grantedCredits: outcome.granted,
-      alreadyGranted: outcome.alreadyGranted,
-    });
+    return await handleSubscriptionNotification(client, transaction, renewal, environment, label);
   } catch (error) {
     if (error instanceof AppleSubscriptionFailure) {
       // 401 for a signature that did not verify: Apple should not retry something it cannot sign
@@ -98,20 +113,108 @@ Deno.serve(async (request) => {
   }
 });
 
-/// Verifies the notification envelope and the signed transaction inside it.
+/// Consumables: only refunds and revocations do anything.
 ///
-/// Both environments are attempted for the same reason the client path attempts both: the sandbox
-/// and production notification URLs are configured separately in App Store Connect, and a
-/// misconfiguration should surface as a verification failure rather than as silently trusted data.
+/// A consumable has no period and no entitlement, so there is nothing to "sync" — the purchase was
+/// already redeemed by `redeem-credit-purchase` when the app reported it. The only thing left for a
+/// notification to say is that the money came back.
+async function handleCreditPackNotification(
+  client: ReturnType<typeof serviceRoleClient>,
+  notification: ResponseBodyV2DecodedPayload,
+  transaction: JWSTransactionDecodedPayload,
+  label: string,
+): Promise<Response> {
+  const notificationType = notification.notificationType ?? "";
+
+  if (!REVERSAL_NOTIFICATION_TYPES.has(notificationType)) {
+    console.log(`[apple-subscription-notifications] ${label}: credit pack notification with nothing to do.`);
+    return jsonResponse({ received: true, applied: false, reason: "not-a-reversal" });
+  }
+
+  // The same identity `redeem-credit-purchase` recorded the grant under, so the reversal finds its
+  // own grant rather than searching by user and product and hoping.
+  const transactionID = transaction.transactionId ?? transaction.originalTransactionId;
+  if (!transactionID) {
+    console.log(`[apple-subscription-notifications] ${label}: refund with no transaction id.`);
+    return jsonResponse({ received: true, applied: false, reason: "no-transaction-id" });
+  }
+
+  const outcome = await reverseCreditPackPurchase(client, transactionID);
+
+  // A refund for a pack this server never redeemed. Acknowledged: retrying cannot make a grant
+  // appear, and the customer keeps nothing they were not given.
+  if (outcome.conflict === "unknown_transaction") {
+    console.log(`[apple-subscription-notifications] ${label}: no redemption found for ${transactionID}.`);
+    return jsonResponse({ received: true, applied: false, reason: outcome.conflict });
+  }
+
+  console.log(
+    `[apple-subscription-notifications] ${label}: reclaimed ${outcome.reclaimed} of ` +
+      `${outcome.originallyGranted} credits for ${transactionID}` +
+      (outcome.alreadyReversed ? " (already reversed)" : ""),
+  );
+
+  return jsonResponse({
+    received: true,
+    applied: !outcome.alreadyReversed,
+    reclaimedCredits: outcome.reclaimed,
+    originallyGranted: outcome.originallyGranted,
+    alreadyReversed: outcome.alreadyReversed,
+  });
+}
+
+/// Subscriptions: unchanged from before the split. Entitlement, periods and the idempotent monthly
+/// grant, all decided by `sync_apple_subscription`.
+async function handleSubscriptionNotification(
+  client: ReturnType<typeof serviceRoleClient>,
+  transaction: JWSTransactionDecodedPayload,
+  renewal: JWSRenewalInfoDecodedPayload | null,
+  environment: Environment,
+  label: string,
+): Promise<Response> {
+  const verified = toVerifiedSubscription(transaction, renewal, environment);
+
+  // `account` is null here: nobody is signed in, so the owner comes from the subscription row Apple's
+  // identity already points at. A notification for a subscription no account has synced reports
+  // `unknown_subscription` and is acknowledged — the client sync binds it when that user next opens
+  // the app, and retrying would not change anything.
+  const outcome = await applyVerifiedSubscription(client, null, verified);
+
+  if (outcome.conflict) {
+    console.log(`[apple-subscription-notifications] ${label}: ${outcome.conflict} for ${verified.originalTransactionID}.`);
+    return jsonResponse({ received: true, applied: false, code: outcome.conflict });
+  }
+
+  console.log(
+    `[apple-subscription-notifications] ${label} -> ${outcome.status}, granted ${outcome.granted}.`,
+  );
+
+  return jsonResponse({
+    received: true,
+    applied: true,
+    status: outcome.status,
+    grantedCredits: outcome.granted,
+    alreadyGranted: outcome.alreadyGranted,
+  });
+}
+
+/// Verifies the notification envelope and the signed transaction inside it, and hands back the
+/// decoded payloads *unmapped*.
+///
+/// Deliberately does not reduce the transaction to a subscription shape: a consumable has no expiry
+/// date, and forcing one through that mapping is how a credit-pack refund used to end up rejected as
+/// "a subscription with no period" and retried by Apple forever. Classification happens after
+/// verification, on the raw payload.
 async function verifyNotification(signedPayload: string): Promise<{
   notification: ResponseBodyV2DecodedPayload;
-  verified: ReturnType<typeof toVerifiedSubscription> | null;
+  transaction: JWSTransactionDecodedPayload | null;
+  renewal: JWSRenewalInfoDecodedPayload | null;
+  environment: Environment;
 }> {
-  const environments = [
-    environmentFromName("production"),
-    environmentFromName("sandbox"),
-  ];
-
+  // Both environments are attempted for the same reason the client path attempts both: sandbox and
+  // production notification URLs are configured separately in App Store Connect, and a
+  // misconfiguration should surface as a verification failure rather than as silently trusted data.
+  const environments = [environmentFromName("production"), environmentFromName("sandbox")];
   let lastError: unknown;
 
   for (const environment of environments) {
@@ -121,15 +224,14 @@ async function verifyNotification(signedPayload: string): Promise<{
 
       const signedTransactionInfo = notification.data?.signedTransactionInfo;
       if (!signedTransactionInfo) {
-        return { notification, verified: null };
+        return { notification, transaction: null, renewal: null, environment };
       }
 
       // Verified again in its own right. The envelope being genuine does not make its contents
-      // genuine, and Apple signs the transaction separately precisely so it can be checked on its
-      // own terms.
+      // genuine, and Apple signs the transaction separately precisely so it can be checked alone.
       const transaction = await verifier.verifyAndDecodeTransaction(signedTransactionInfo);
 
-      let renewal = null;
+      let renewal: JWSRenewalInfoDecodedPayload | null = null;
       if (notification.data?.signedRenewalInfo) {
         try {
           renewal = await verifier.verifyAndDecodeRenewalInfo(notification.data.signedRenewalInfo);
@@ -138,10 +240,7 @@ async function verifyNotification(signedPayload: string): Promise<{
         }
       }
 
-      return {
-        notification,
-        verified: toVerifiedSubscription(transaction, renewal, environment),
-      };
+      return { notification, transaction, renewal, environment };
     } catch (error) {
       if (error instanceof AppleSubscriptionFailure && error.code === "not_configured") {
         throw error;

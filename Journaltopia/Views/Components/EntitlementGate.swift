@@ -116,6 +116,13 @@ final class EntitlementGate: ObservableObject {
         if !state.isSubscribed {
             awaitingEntitlementRetry = nil
         }
+
+        // Signing out ends the request outright. A pending paywall carries a retry closure that
+        // would resume the previous account's generation, and leaving it up would show the next
+        // person to sign in a sheet raised by somebody else.
+        if state == .signedOut {
+            pendingRequest = nil
+        }
     }
 
     /// Whether this action may go ahead, presenting the paywall if it may not.

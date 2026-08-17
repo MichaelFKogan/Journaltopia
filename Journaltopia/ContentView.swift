@@ -170,6 +170,15 @@ struct ContentView: View {
             pendingStoryboardMonitor.consumeRestoredStoryboard()
         }
         .onChange(of: authStore.userID) { userID in
+            // Cleared synchronously, before anything is awaited. The refreshes below take a round
+            // trip, and until they land the published entitlement and balance would still be the
+            // *previous* account's — which is long enough for the gate to authorise a generation on
+            // someone else's subscription, or for a screen to show one person's credits to another.
+            // Both drop to "unknown" the instant the account changes.
+            subscriptionStore.prepareForAccountChange()
+            generationCreditStore.reset()
+            entitlementGate.update(state: subscriptionStore.state)
+
             Task {
                 await generationCreditStore.refresh(isSignedIn: userID != nil)
 

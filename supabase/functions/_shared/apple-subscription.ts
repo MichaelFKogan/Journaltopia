@@ -147,6 +147,40 @@ export function verifierFor(environment: Environment): SignedDataVerifier {
   );
 }
 
+/// The products this server sells, and what each one is.
+///
+/// Both endpoints classify before they act. A subscription transaction and a consumable transaction
+/// look almost identical coming off the wire and mean entirely different things, and the notification
+/// endpoint receives both — so "which of our products is this?" has one answer, here, rather than a
+/// pair of divergent guesses.
+export const JOURNALTOPIA_SUBSCRIPTION_PRODUCT_IDS = ["com.journaltopia.plus.monthly"];
+
+export const JOURNALTOPIA_CREDIT_PACK_PRODUCT_IDS = [
+  "com.journaltopia.credits.10",
+  "com.journaltopia.credits.25",
+  "com.journaltopia.credits.60",
+];
+
+export type JournaltopiaProductKind = "subscription" | "credit_pack" | "unknown";
+
+export function classifyProduct(productID: string | undefined): JournaltopiaProductKind {
+  if (!productID) {
+    return "unknown";
+  }
+
+  if (JOURNALTOPIA_SUBSCRIPTION_PRODUCT_IDS.includes(productID)) {
+    return "subscription";
+  }
+
+  if (JOURNALTOPIA_CREDIT_PACK_PRODUCT_IDS.includes(productID)) {
+    return "credit_pack";
+  }
+
+  // Anything else — a product from a future build, a test transaction, something that is not ours at
+  // all — is deliberately inert. It must never reach a balance or an entitlement.
+  return "unknown";
+}
+
 export type VerifiedSubscription = {
   productID: string;
   originalTransactionID: string;
@@ -331,6 +365,49 @@ export async function applyVerifiedSubscription(
     granted: typeof row.granted === "number" ? row.granted : 0,
     balance: typeof row.balance === "number" ? row.balance : null,
     alreadyGranted: row.already_granted === true,
+    conflict: (row.conflict as string | null) ?? null,
+  };
+}
+
+export type ReversalOutcome = {
+  reclaimed: number;
+  originallyGranted: number;
+  purchasedBalance: number | null;
+  alreadyReversed: boolean;
+  conflict: string | null;
+};
+
+/// Hands a refunded consumable to the database, which owns the clamping and the idempotency.
+///
+/// Nothing about how many credits to remove is decided here. The amount comes from the ledger entry
+/// the original redemption wrote, clamped to what the balance still holds, inside one transaction.
+export async function reverseCreditPackPurchase(
+  client: SupabaseClient,
+  appleTransactionID: string,
+): Promise<ReversalOutcome> {
+  const { data, error } = await client.rpc("reverse_credit_pack_purchase", {
+    apple_transaction_id: appleTransactionID,
+  });
+
+  if (error) {
+    console.error("[apple-subscription] reverse_credit_pack_purchase failed:", error.message);
+    throw new AppleSubscriptionFailure(
+      "The refund could not be recorded.",
+      500,
+      "reversal_failed",
+    );
+  }
+
+  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+  if (!row) {
+    throw new AppleSubscriptionFailure("The refund could not be recorded.", 500, "reversal_failed");
+  }
+
+  return {
+    reclaimed: typeof row.reclaimed === "number" ? row.reclaimed : 0,
+    originallyGranted: typeof row.originally_granted === "number" ? row.originally_granted : 0,
+    purchasedBalance: typeof row.purchased_balance === "number" ? row.purchased_balance : null,
+    alreadyReversed: row.already_reversed === true,
     conflict: (row.conflict as string | null) ?? null,
   };
 }
