@@ -80,6 +80,33 @@ private struct EntryClientIDRow: Decodable, Sendable {
     }
 }
 
+/// The slice of an entry the journals surface needs to describe a membership: enough to render a
+/// journal's stored entry list, and nothing else. Styling flags, thumbnails, and the ownership
+/// columns are all irrelevant there, so they stay out of the projection — and out of the wire.
+struct JournalEntryDigest: Identifiable, Codable, Equatable, Sendable {
+    let clientEntryID: UUID
+    let title: String?
+    let content: String?
+    let richText: NotebookRichTextDocument?
+    let location: String?
+    let entryDate: Date?
+    let createdAt: Date
+
+    var id: UUID {
+        clientEntryID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case clientEntryID = "client_entry_id"
+        case title
+        case content
+        case richText = "rich_text"
+        case location
+        case entryDate = "entry_date"
+        case createdAt = "created_at"
+    }
+}
+
 struct JournalEntryPayload: Encodable, Sendable {
     let userID: UUID
     let clientEntryID: UUID
@@ -976,6 +1003,12 @@ struct SupabaseEntryRepository {
     private let client: SupabaseClient
     private static let entrySummaryColumns = "id,user_id,client_entry_id,title,content,status,rich_text,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,display_order,thumbnail_storage_path,thumbnail_updated_at,created_at,updated_at"
     private static let legacyEntrySummaryColumns = "id,user_id,client_entry_id,title,content,status,rich_text,art_style,location,entry_date,date_precision,saves_draft,is_private,font_choice_raw_value,text_color_index,text_size,paper_style_raw_value,paper_color_index,is_bold,is_italic,is_underlined,is_strikethrough,is_highlighted,text_alignment_raw_value,created_at,updated_at"
+    /// Every column here also exists in `legacyEntrySummaryColumns`, so this projection needs no
+    /// schema fallback the way the summary queries do.
+    private static let entryDigestColumns = "client_entry_id,title,content,rich_text,location,entry_date,created_at"
+    /// Postgres filters travel in the query string, so the ID list is chunked to keep a long journal
+    /// from pushing a request past the gateway's URL limit.
+    private static let entryFilterChunkSize = 80
 
     init(client: SupabaseClient = SupabaseService.shared) {
         self.client = client
@@ -1034,8 +1067,8 @@ struct SupabaseEntryRepository {
         var aggregated: [JournalEntry] = []
         var seen = Set<UUID>()
 
-        for start in stride(from: 0, to: orderedIDs.count, by: 80) {
-            let chunk = Array(orderedIDs[start..<min(start + 80, orderedIDs.count)])
+        for start in stride(from: 0, to: orderedIDs.count, by: Self.entryFilterChunkSize) {
+            let chunk = Array(orderedIDs[start..<min(start + Self.entryFilterChunkSize, orderedIDs.count)])
             let page = try await getEntrySummaries(userID: userID, clientEntryIDs: chunk)
             for entry in page where seen.insert(entry.clientEntryID).inserted {
                 aggregated.append(entry)
@@ -1078,6 +1111,45 @@ struct SupabaseEntryRepository {
                 throw JournalEntryRepositoryError.operationFailed
             }
         }
+    }
+
+    /// Fetches the journals surface's per-membership entry slice, scoped to a membership set.
+    ///
+    /// The journals page used to reach this data through `getEntries()` — every entry the account
+    /// owns, every column, unbounded — and then throw almost all of it away. This asks for the seven
+    /// columns it actually reads, only for entries that belong to a journal, in bounded chunks.
+    func getEntryDigests(clientEntryIDs: Set<UUID>) async throws -> [JournalEntryDigest] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        let userID = try await authenticatedUserID()
+        let orderedIDs = Array(clientEntryIDs)
+        var aggregated: [JournalEntryDigest] = []
+        var seen = Set<UUID>()
+
+        do {
+            for start in stride(from: 0, to: orderedIDs.count, by: Self.entryFilterChunkSize) {
+                let chunk = Array(orderedIDs[start..<min(start + Self.entryFilterChunkSize, orderedIDs.count)])
+                let values: [any PostgrestFilterValue] = chunk.map { $0 as any PostgrestFilterValue }
+                let page: [JournalEntryDigest] = try await client
+                    .from("entries")
+                    .select(Self.entryDigestColumns)
+                    .eq("user_id", value: userID)
+                    .in("client_entry_id", values: values)
+                    .order("created_at", ascending: false)
+                    .execute()
+                    .value
+
+                for digest in page where seen.insert(digest.clientEntryID).inserted {
+                    aggregated.append(digest)
+                }
+            }
+        } catch {
+            throw JournalEntryRepositoryError.mapped(from: error, context: "Entry digest fetch")
+        }
+
+        return aggregated.sorted { $0.createdAt > $1.createdAt }
     }
 
     func getEntrySummariesPage(
@@ -1215,14 +1287,29 @@ struct SupabaseEntryRepository {
     }
 
     func getActiveEntryClientIDs() async throws -> Set<UUID> {
+        try await entryClientIDs(excludesArchived: true)
+    }
+
+    /// Every entry ID the account owns, archived included — the membership reconciler needs to know
+    /// which locally recorded entries still exist at all, not which ones are currently visible.
+    func getEntryClientIDs() async throws -> Set<UUID> {
+        try await entryClientIDs(excludesArchived: false)
+    }
+
+    private func entryClientIDs(excludesArchived: Bool) async throws -> Set<UUID> {
         let userID = try await authenticatedUserID()
 
         do {
-            let rows: [EntryClientIDRow] = try await client
+            var query = client
                 .from("entries")
                 .select("client_entry_id")
                 .eq("user_id", value: userID)
-                .neq("status", value: JournalEntryStatus.archived.rawValue)
+
+            if excludesArchived {
+                query = query.neq("status", value: JournalEntryStatus.archived.rawValue)
+            }
+
+            let rows: [EntryClientIDRow] = try await query
                 .execute()
                 .value
             return Set(rows.map(\.clientEntryID))

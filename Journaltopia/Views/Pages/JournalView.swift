@@ -1789,9 +1789,18 @@ struct JournalView: View {
         Task {
             do {
                 let journalRepository = SupabaseJournalRepository()
-                let cloudJournals = try await journalRepository.getJournals()
-                let cloudEntries = try await SupabaseEntryRepository().getEntries()
-                let memberships = try await journalRepository.getJournalEntryMemberships()
+                let entryRepository = SupabaseEntryRepository()
+
+                // These three are independent reads, so let them overlap rather than stacking
+                // three round trips end to end.
+                async let cloudJournalsTask = journalRepository.getJournals()
+                async let cloudEntryIDsTask = entryRepository.getEntryClientIDs()
+                async let membershipsTask = journalRepository.getJournalEntryMemberships()
+
+                let cloudJournals = try await cloudJournalsTask
+                let cloudEntryIDs = try await cloudEntryIDsTask
+                let memberships = try await membershipsTask
+
                 let cloudChapters = cloudJournals
                     .filter { !LegacySystemJournalIDs.all.contains($0.id) }
                     .map(PrototypeChapter.init(cloudJournal:))
@@ -1802,7 +1811,7 @@ struct JournalView: View {
                 let membershipRepairs = await MainActor.run {
                     StoryEntryStore.missingCloudMembershipRepairs(
                         journals: cloudChapters,
-                        entries: cloudEntries,
+                        cloudEntryIDs: cloudEntryIDs,
                         existingMemberships: memberships
                     )
                 }
@@ -1810,6 +1819,16 @@ struct JournalView: View {
                 let repairedMemberships = membershipRepairs.isEmpty
                     ? memberships
                     : try await journalRepository.getJournalEntryMemberships()
+
+                // Only entries that belong to a journal the page is about to render can produce a
+                // stored record, so only those are worth fetching bodies for.
+                let renderedJournalIDs = Set(cloudChapters.map(\.id))
+                let memberEntryIDs = Set(
+                    repairedMemberships
+                        .filter { renderedJournalIDs.contains($0.journalID) }
+                        .map(\.clientEntryID)
+                )
+                let memberEntries = try await entryRepository.getEntryDigests(clientEntryIDs: memberEntryIDs)
 
                 await MainActor.run {
                     let mergedCloudChapters = Self.cloudChapters(
@@ -1820,9 +1839,9 @@ struct JournalView: View {
                     StoryEntryStore.replaceCloudMemberships(
                         repairedMemberships,
                         journals: mergedCloudChapters,
-                        entries: cloudEntries
+                        entries: memberEntries
                     )
-                    chapters = DailyJournalData.allChapters(cloudEntries: cloudEntries)
+                    chapters = DailyJournalData.allChapters()
                 }
             } catch {
                 print("[Journaltopia] Cloud journals load failed: \(error.localizedDescription)")
@@ -8981,7 +9000,7 @@ private struct DaybookStoryPage: Identifiable {
 }
 
 enum DailyJournalData {
-    static func allChapters(cloudEntries _: [JournalEntry]? = nil) -> [PrototypeChapter] {
+    static func allChapters() -> [PrototypeChapter] {
         UserChapterStore.load().map(chapterWithStoredEntries)
     }
 
@@ -21131,7 +21150,7 @@ enum StoryEntryStore {
             self.location = location
         }
 
-        init(cloudEntry entry: JournalEntry, chapterTitle: String) {
+        init(cloudEntry entry: JournalEntryDigest, chapterTitle: String) {
             let displayDate = entry.entryDate ?? entry.createdAt
             let weekdayFormatter = DateFormatter()
             weekdayFormatter.dateFormat = "EEE"
@@ -21194,10 +21213,13 @@ enum StoryEntryStore {
         return positions
     }
 
+    /// `entries` only has to cover the memberships being written; anything missing from it simply
+    /// keeps no record, which is the same outcome the old full-table fetch produced for an entry it
+    /// could not match.
     static func replaceCloudMemberships(
         _ memberships: [JournalEntryMembership],
         journals: [PrototypeChapter],
-        entries: [JournalEntry]
+        entries: [JournalEntryDigest]
     ) {
         let cloudJournalTitlesByID = Dictionary(uniqueKeysWithValues: journals.map { ($0.id, $0.title) })
         let cloudJournalTitles = Set(cloudJournalTitlesByID.values)
@@ -21236,11 +21258,10 @@ enum StoryEntryStore {
 
     static func missingCloudMembershipRepairs(
         journals: [PrototypeChapter],
-        entries: [JournalEntry],
+        cloudEntryIDs: Set<UUID>,
         existingMemberships: [JournalEntryMembership]
     ) -> [JournalEntryMembershipRepair] {
         let journalIDsByTitle = Dictionary(uniqueKeysWithValues: journals.map { ($0.title, $0.id) })
-        let cloudEntryIDs = Set(entries.map(\.clientEntryID))
         let existingKeys = Set(existingMemberships.map { MembershipKey(journalID: $0.journalID, clientEntryID: $0.clientEntryID) })
 
         var seenKeys = existingKeys
