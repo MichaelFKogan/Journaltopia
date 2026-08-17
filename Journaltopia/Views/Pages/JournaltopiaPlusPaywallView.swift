@@ -110,7 +110,7 @@ struct JournaltopiaPlusPaywallView: View {
             benefitRow(
                 icon: "sparkle",
                 title: "25 AI credits every month",
-                detail: "Unused credits roll over to the next month."
+                detail: "Monthly credits reset each billing period."
             )
             Divider().padding(.leading, 46)
             benefitRow(
@@ -407,6 +407,29 @@ extension View {
 
 /// Date and status wording used by every Journaltopia+ surface, so "renews 3 September" reads the
 /// same in Settings, on the paywall and on the credits screen.
+/// How the two buckets are written, in one place, so "12 monthly · 20 purchased" reads the same
+/// everywhere it appears.
+enum CreditBucketFormatting {
+    /// `12 monthly · 20 purchased`, or nil when there is nothing worth splitting out — an account
+    /// with credits in only one bucket is better served by the total alone.
+    static func split(for store: GenerationCreditStore) -> String? {
+        guard let credits = store.credits, credits.total > 0 else {
+            return nil
+        }
+
+        guard credits.monthly > 0, credits.purchased > 0 else {
+            return credits.purchased > 0 ? "\(credits.purchased) purchased" : "\(credits.monthly) monthly"
+        }
+
+        return "\(credits.monthly) monthly · \(credits.purchased) purchased"
+    }
+
+    /// The one sentence that explains the difference. Shown on the credits screen and nowhere else —
+    /// repeating it on every surface would be noise.
+    static let explanation =
+        "Monthly credits reset each billing period. Purchased credits never expire."
+}
+
 enum JournaltopiaPlusFormatting {
     static func renewalCaption(for state: JournaltopiaPlusState) -> String {
         guard let periodEnd = state.currentPeriodEnd else {

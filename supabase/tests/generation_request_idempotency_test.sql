@@ -31,7 +31,8 @@ values (
 );
 
 update public.profiles
-set generation_credits = 10
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 10
 where id = 'dddddddd-0000-4000-8000-000000000001';
 
 insert into public.subscriptions (
@@ -123,7 +124,8 @@ set status = 'expired'
 where user_id = 'dddddddd-0000-4000-8000-000000000001';
 
 update public.profiles
-set generation_credits = 0
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 0
 where id = 'dddddddd-0000-4000-8000-000000000001';
 
 select is(
@@ -150,7 +152,8 @@ set status = 'active',
 where user_id = 'dddddddd-0000-4000-8000-000000000001';
 
 update public.profiles
-set generation_credits = 5
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 5
 where id = 'dddddddd-0000-4000-8000-000000000001';
 
 select is(
@@ -208,7 +211,8 @@ values (
 );
 
 update public.profiles
-set generation_credits = 5
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 5
 where id = 'dddddddd-0000-4000-8000-000000000002';
 
 insert into public.subscriptions (

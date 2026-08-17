@@ -221,11 +221,11 @@ final class EntitlementGatingTests: XCTestCase {
 
     // MARK: - Credit packs
 
-    func testCreditPacksAreNotPurchasableWithoutAVerifiedServerPath() {
-        // The guard against the shortcut this whole architecture exists to avoid: granting credits
-        // because StoreKit said a purchase succeeded. Flipping this to `.available` requires the
-        // server-side consumable verification that does not exist yet.
-        XCTAssertEqual(CreditPackPurchasing.availability(isSubscribed: true), .awaitingServerVerification)
+    func testCreditPacksArePurchasableOnlyBySubscribers() {
+        // Available now that `redeem-credit-purchase` verifies the signed consumable with Apple and
+        // the database owns the product-to-credits mapping. `.available` means the server can
+        // honour a purchase — never that Swift may add credits itself.
+        XCTAssertEqual(CreditPackPurchasing.availability(isSubscribed: true), .available)
         XCTAssertEqual(CreditPackPurchasing.availability(isSubscribed: false), .requiresSubscription)
     }
 

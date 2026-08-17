@@ -132,6 +132,19 @@ struct GenerationCreditsView: View {
                             .background(Color.storyPurple.opacity(0.12), in: Capsule())
                     }
                 }
+
+                if let split = CreditBucketFormatting.split(for: generationCreditStore) {
+                    Text(split)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+                }
+
+                // The one place the difference is spelled out. Every other surface just shows the
+                // split and trusts this screen to have explained it.
+                Text(CreditBucketFormatting.explanation)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.storyInk.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let errorMessage = generationCreditStore.errorMessage {
@@ -163,8 +176,8 @@ struct GenerationCreditsView: View {
 
             planRow(
                 icon: "arrow.clockwise",
-                title: "25 credits each period",
-                detail: "Unused credits roll over."
+                title: "25 monthly credits each period",
+                detail: monthlyResetDetail
             )
         }
         .padding(4)
@@ -360,6 +373,16 @@ struct GenerationCreditsView: View {
         case .signedOut:
             return "Sign in to sync and use credits"
         }
+    }
+
+    /// Names the reset date when there is one, because "resets on the 3rd" is the fact a subscriber
+    /// deciding whether to buy a pack actually needs.
+    private var monthlyResetDetail: String {
+        guard let periodEnd = subscriptionStore.state.currentPeriodEnd else {
+            return "Monthly credits reset each period and do not roll over."
+        }
+
+        return "Resets \(JournaltopiaPlusFormatting.formatted(periodEnd)) · unused monthly credits do not roll over."
     }
 
     private var priceLine: String {

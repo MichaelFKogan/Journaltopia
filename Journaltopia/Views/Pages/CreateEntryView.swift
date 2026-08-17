@@ -7677,13 +7677,21 @@ struct CreateEntryView: View {
             return "AI Credits"
         }
 
-        guard let balance = generationCreditStore.balance else {
+        guard let credits = generationCreditStore.credits else {
             return "AI Credits"
         }
 
         let quality = selectedImageGenerationQuality
-        let plural = balance == 1 ? "credit" : "credits"
-        return "\(balance) \(plural) • \(quality.title) costs \(quality.creditCost)"
+
+        // Compact by design: the Create screen is for writing, not for accounting. The split only
+        // appears when both buckets actually hold something, because that is the only time the
+        // distinction changes what the user would do.
+        if credits.monthly > 0, credits.purchased > 0 {
+            return "\(credits.monthly) monthly + \(credits.purchased) purchased • \(quality.title) costs \(quality.creditCost)"
+        }
+
+        let plural = credits.total == 1 ? "credit" : "credits"
+        return "\(credits.total) \(plural) • \(quality.title) costs \(quality.creditCost)"
     }
 
     private var generationCreditsStatusText: String {

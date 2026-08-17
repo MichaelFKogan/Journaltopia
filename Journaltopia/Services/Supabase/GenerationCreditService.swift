@@ -2,11 +2,38 @@ import Foundation
 import Combine
 import Supabase
 
-struct GenerationCreditBalance: Decodable, Sendable {
-    let generationCredits: Int
+/// The two balances, and the total the app usually shows.
+///
+/// They behave differently and the difference is visible to the user, so it is modelled rather than
+/// summed away: monthly credits are replaced at each renewal and vanish when a subscription lapses,
+/// purchased credits never expire. The total is derived here for the same reason it is derived in
+/// the database — one place, no drift.
+struct GenerationCreditBalance: Decodable, Sendable, Equatable {
+    let monthly: Int
+    let purchased: Int
+
+    var total: Int {
+        monthly + purchased
+    }
+
+    static let empty = GenerationCreditBalance(monthly: 0, purchased: 0)
+
+    init(monthly: Int, purchased: Int) {
+        self.monthly = max(0, monthly)
+        self.purchased = max(0, purchased)
+    }
 
     enum CodingKeys: String, CodingKey {
-        case generationCredits = "generation_credits"
+        case monthly = "monthly_generation_credits"
+        case purchased = "purchased_generation_credits"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            monthly: try container.decodeIfPresent(Int.self, forKey: .monthly) ?? 0,
+            purchased: try container.decodeIfPresent(Int.self, forKey: .purchased) ?? 0
+        )
     }
 }
 
@@ -53,19 +80,22 @@ struct GenerationCreditService {
         self.client = client
     }
 
-    func fetchBalance() async throws -> Int {
+    /// Reads both buckets straight from the profile. The app never derives them from ledger history —
+    /// the balances are columns, and replaying a ledger to find out what someone has would be both
+    /// slower and a second source of truth.
+    func fetchBalance() async throws -> GenerationCreditBalance {
         let userID = try await authenticatedUserID()
 
         do {
             let row: GenerationCreditBalance = try await client
                 .from("profiles")
-                .select("generation_credits")
+                .select("monthly_generation_credits,purchased_generation_credits")
                 .eq("id", value: userID)
                 .single()
                 .execute()
                 .value
 
-            return max(0, row.generationCredits)
+            return row
         } catch {
             throw GenerationCreditError.mapped(from: error, context: "fetch generation credits")
         }
@@ -82,7 +112,8 @@ struct GenerationCreditService {
 
 @MainActor
 final class GenerationCreditStore: ObservableObject {
-    @Published private(set) var balance: Int?
+    /// Both buckets, or nil when nothing has been read yet. Nil is not zero — see ``canSpend(_:)``.
+    @Published private(set) var credits: GenerationCreditBalance?
     @Published private(set) var isRefreshing = false
     @Published var errorMessage: String?
 
@@ -92,8 +123,21 @@ final class GenerationCreditStore: ObservableObject {
         self.service = service
     }
 
+    /// The total, for the many places that only care how many credits there are.
+    var balance: Int? {
+        credits?.total
+    }
+
+    var monthlyCredits: Int? {
+        credits?.monthly
+    }
+
+    var purchasedCredits: Int? {
+        credits?.purchased
+    }
+
     func reset() {
-        balance = nil
+        credits = nil
         isRefreshing = false
         errorMessage = nil
     }
@@ -108,7 +152,7 @@ final class GenerationCreditStore: ObservableObject {
         errorMessage = nil
 
         do {
-            balance = try await service.fetchBalance()
+            credits = try await service.fetchBalance()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -116,17 +160,27 @@ final class GenerationCreditStore: ObservableObject {
         isRefreshing = false
     }
 
+    /// Adopts balances the server just returned, so a purchase or redemption shows immediately
+    /// rather than after another round trip. Only ever called with values the server computed.
+    func apply(_ balance: GenerationCreditBalance) {
+        credits = balance
+        errorMessage = nil
+    }
+
     /// True only when a balance has actually been read from Supabase.
     var hasKnownBalance: Bool {
-        balance != nil
+        credits != nil
     }
 
     /// Fails closed: an unknown balance is not permission to spend, it is a reason to refresh.
+    ///
+    /// Spends against the total, because the server spends monthly first and falls through to
+    /// purchased — a cost the two buckets can only cover together is still affordable.
     func canSpend(_ cost: Int) -> Bool {
-        guard let balance else {
+        guard let credits else {
             return false
         }
 
-        return balance >= cost
+        return credits.total >= cost
     }
 }

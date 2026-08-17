@@ -45,7 +45,8 @@ values (
 -- Profiles start at zero since 20260817092000, and reserving needs an active subscription since
 -- 20260817094000. Both are arranged here so the assertions below stay about privileges.
 update public.profiles
-set generation_credits = 10
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 10
 where id = 'aaaaaaaa-0000-4000-8000-000000000002';
 
 insert into public.subscriptions (
@@ -72,13 +73,13 @@ select ok(
 
 -- Spending is reachable only through a reservation ----------------------------------------------
 select is(
-    has_function_privilege('authenticated', 'public.spend_generation_credit(integer)', 'execute'),
+    has_function_privilege('authenticated', 'public.spend_generation_credits(integer)', 'execute'),
     false,
     'a signed-in client may not spend a credit directly'
 );
 
 select is(
-    has_function_privilege('anon', 'public.spend_generation_credit(integer)', 'execute'),
+    has_function_privilege('anon', 'public.spend_generation_credits(integer)', 'execute'),
     false,
     'an anonymous caller may not spend a credit directly'
 );
@@ -86,7 +87,7 @@ select is(
 -- Revoked from PUBLIC, which is where service_role inherited it. The background worker never spends;
 -- it only claims, completes, and fails.
 select is(
-    has_function_privilege('service_role', 'public.spend_generation_credit(integer)', 'execute'),
+    has_function_privilege('service_role', 'public.spend_generation_credits(integer)', 'execute'),
     false,
     'even the service role reaches spending only through a reservation'
 );
@@ -229,7 +230,7 @@ select is(
 -- Two things are deliberately not covered, because neither can be exercised from inside a pgTAP
 -- transaction that has to keep writing as the test owner:
 --
---   * A literal `set role authenticated; update public.profiles set generation_credits = 999;`
+--   * A literal `set role authenticated; update public.profiles set purchased_generation_credits = 999;`
 --     round trip. Switching role mid-transaction breaks pgTAP's own bookkeeping, and switching back
 --     requires privileges the switched-to role does not have. The catalog assertion above is the
 --     same check that statement would fail.

@@ -15,6 +15,7 @@ struct BuyCreditsView: View {
     var promptTitle: String?
     var promptSubtitle: String?
     var onDismiss: (() -> Void)?
+    var onPurchased: (() -> Void)?
 
     var body: some View {
         ScrollView {
@@ -87,6 +88,12 @@ struct BuyCreditsView: View {
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.storyInk)
                     .monospacedDigit()
+
+                if let split = CreditBucketFormatting.split(for: generationCreditStore) {
+                    Text(split)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+                }
             }
 
             Spacer(minLength: 0)
@@ -125,19 +132,36 @@ struct BuyCreditsView: View {
 /// alternative, granting credits when StoreKit reports success, is exactly the client-trusting
 /// shortcut the rest of this system exists to avoid.
 struct CreditPackSection: View {
+    @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
+
+    /// Runs after credits actually land, so a gated generation resumes on the server's word rather
+    /// than on StoreKit's.
+    var onPurchased: (() -> Void)?
 
     @State private var selectedPack: JournaltopiaProducts.CreditPack = .twentyFive
+    @State private var isPurchasing = false
 
     private var availability: CreditPackPurchasing.Availability {
         CreditPackPurchasing.availability(isSubscribed: subscriptionStore.state.isSubscribed)
     }
 
+    private var canPurchase: Bool {
+        availability == .available && !isPurchasing && price(for: selectedPack) != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add more credits")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(Color.storyInk)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Add more credits")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+
+                Text("Purchased credits · never expire")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.homeMutedText)
+            }
 
             VStack(spacing: 10) {
                 ForEach(JournaltopiaProducts.CreditPack.allCases) { pack in
@@ -157,45 +181,82 @@ struct CreditPackSection: View {
             }
 
             Button {
-                // Intentionally inert. Left in place so the shape of the flow is visible and Phase 5
-                // is a wiring change, but it must never grant credits from the client.
+                purchase()
             } label: {
-                Text(buttonTitle)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.homeAccent.opacity(0.45), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                HStack(spacing: 8) {
+                    if isPurchasing {
+                        ProgressView().tint(.white)
+                    }
+
+                    Text(buttonTitle)
+                        .font(.system(size: 16, weight: .bold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(
+                    canPurchase ? Color.homeAccent : Color.homeAccent.opacity(0.45),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
             }
             .buttonStyle(.plain)
-            .disabled(true)
-            .accessibilityHint(explanation)
+            .disabled(!canPurchase)
 
-            Text(explanation)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.homeMutedText)
-                .fixedSize(horizontal: false, vertical: true)
+            if let explanation {
+                Text(explanation)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.homeMutedText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
     private var buttonTitle: String {
-        availability == .requiresSubscription
+        if isPurchasing {
+            return "Adding credits…"
+        }
+
+        return availability == .requiresSubscription
             ? "Journaltopia+ Required"
             : "Buy \(selectedPack.title)"
     }
 
-    private var explanation: String {
+    /// Only says something when there is something to say. A working purchase button needs no
+    /// footnote.
+    private var explanation: String? {
         switch availability {
         case .requiresSubscription:
-            return "Credit packs are available to Journaltopia+ members."
-        case .awaitingServerVerification, .available:
             return CreditPackPurchasing.unavailableExplanation
+        case .awaitingServerVerification:
+            return "Credit packs are not on sale yet."
+        case .available:
+            return price(for: selectedPack) == nil ? "Fetching prices from the App Store…" : nil
         }
     }
 
     /// The App Store's price when StoreKit has the product, and nothing invented when it does not.
     private func price(for pack: JournaltopiaProducts.CreditPack) -> String? {
         subscriptionStore.creditPackProducts.first { $0.id == pack.rawValue }?.displayPrice
+    }
+
+    private func purchase() {
+        isPurchasing = true
+
+        Task {
+            let purchased = await subscriptionStore.purchaseCreditPack(
+                selectedPack,
+                isSignedIn: authStore.userID != nil
+            )
+
+            // Re-read regardless: the redemption already applied the server's balances, and this
+            // catches the case where it failed and the displayed total would otherwise be stale.
+            await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+            isPurchasing = false
+
+            if purchased {
+                onPurchased?()
+            }
+        }
     }
 }
 

@@ -13,7 +13,7 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 
-select plan(35);
+select plan(36);
 
 -- Fixtures -------------------------------------------------------------------------------------
 insert into auth.users (instance_id, id, aud, role, email, encrypted_password, created_at, updated_at)
@@ -163,9 +163,10 @@ select is(
 );
 
 -- F. A genuine renewal ----------------------------------------------------------------------------
--- Spend some first, to show the renewal adds rather than resets.
+-- Hold purchased credits across the renewal, to show the monthly reset leaves them alone.
 update public.profiles
-set generation_credits = 4
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 4
 where id = 'abababab-0000-4000-8000-000000000001';
 
 select is(
@@ -181,7 +182,7 @@ select is(
 select is(
     (select generation_credits from public.profiles where id = 'abababab-0000-4000-8000-000000000001'),
     29,
-    'renewal credits roll over: 4 + 25 = 29'
+    'purchased credits survive the renewal: 4 purchased + 25 new monthly = 29'
 );
 
 select is(
@@ -264,10 +265,18 @@ select ok(
     'expiry removes generation entitlement'
 );
 
+-- The two buckets part company here. Monthly credits belong to the period that just ended and go
+-- with it; the 4 purchased credits this account was seeded with are its own property and stay.
 select is(
-    (select generation_credits from public.profiles where id = 'abababab-0000-4000-8000-000000000001'),
-    29,
-    'expiry leaves already-granted credits alone'
+    (select monthly_generation_credits from public.profiles where id = 'abababab-0000-4000-8000-000000000001'),
+    0,
+    'expiry clears the monthly bucket'
+);
+
+select is(
+    (select purchased_generation_credits from public.profiles where id = 'abababab-0000-4000-8000-000000000001'),
+    4,
+    'expiry leaves purchased credits on the account'
 );
 
 -- Existing storyboards stay readable: nothing about entitlement touches the storyboard tables, and

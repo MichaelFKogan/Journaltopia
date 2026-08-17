@@ -30,7 +30,8 @@ values (
 -- The ten credits this file's arithmetic is written against. Set here rather than inherited from a
 -- column default, so the lifecycle assertions stay readable as the balance moves 10 -> 9 -> 7 -> …
 update public.profiles
-set generation_credits = 10
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 10
 where id = 'aaaaaaaa-0000-4000-8000-000000000001';
 
 -- Reserving requires an active Journaltopia+ subscription as of 20260817094000. This file is about

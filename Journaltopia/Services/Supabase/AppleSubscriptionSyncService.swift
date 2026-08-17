@@ -44,6 +44,57 @@ struct AppleSubscriptionSyncResult: Decodable, Sendable {
     }
 }
 
+/// What the server did with a verified consumable purchase.
+struct CreditPackRedemptionResult: Decodable, Sendable {
+    let creditsGranted: Int
+    let alreadyRedeemed: Bool
+    let monthlyCredits: Int
+    let purchasedCredits: Int
+
+    var balance: GenerationCreditBalance {
+        GenerationCreditBalance(monthly: monthlyCredits, purchased: purchasedCredits)
+    }
+}
+
+enum CreditPackRedemptionError: LocalizedError, Equatable {
+    case notAuthenticated
+    case subscriptionRequired
+    /// Bought on a different Journaltopia account. Settled rather than transient — retrying will
+    /// never succeed — so the client finishes the transaction instead of looping forever.
+    case alreadyRedeemedByAnotherAccount
+    case unknownProduct
+    case verificationFailed(String)
+    case unavailable
+
+    /// Whether the transaction should be finished despite the failure. True for outcomes that will
+    /// never change; false for anything worth retrying on the next launch.
+    var isSettled: Bool {
+        switch self {
+        case .alreadyRedeemedByAnotherAccount, .unknownProduct:
+            return true
+        case .notAuthenticated, .subscriptionRequired, .verificationFailed, .unavailable:
+            return false
+        }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthenticated:
+            return "Sign in to add credits to your account."
+        case .subscriptionRequired:
+            return "Credit packs are available to Journaltopia+ members."
+        case .alreadyRedeemedByAnotherAccount:
+            return "This purchase has already been added to a different Journaltopia account."
+        case .unknownProduct:
+            return "This purchase is not a Journaltopia credit pack."
+        case .verificationFailed(let message):
+            return message
+        case .unavailable:
+            return "Your credits could not be added right now. Please try again."
+        }
+    }
+}
+
 enum AppleSubscriptionSyncError: LocalizedError, Equatable {
     case notAuthenticated
     /// This Apple subscription already belongs to a different Journaltopia account. There is no safe
@@ -149,6 +200,88 @@ struct AppleSubscriptionSyncService {
         } catch {
             print("[Journaltopia] Apple subscription sync response unreadable: \(error)")
             throw AppleSubscriptionSyncError.unavailable
+        }
+    }
+}
+
+/// Sends a signed Apple consumable transaction to the server to be turned into purchased credits.
+///
+/// Deliberately the same shape as ``AppleSubscriptionSyncService``, and deliberately sends the same
+/// single thing: the JWS. The product is read out of Apple's signed payload server-side and mapped
+/// to a credit amount by the database. Nothing about how many credits a pack is worth travels
+/// through this request, because anything that did would be a number a modified client could pick.
+struct CreditPackRedemptionService {
+    private let client: SupabaseClient
+    private let requestTimeout: TimeInterval = 30
+
+    init(client: SupabaseClient = SupabaseService.shared) {
+        self.client = client
+    }
+
+    private struct RedeemPayload: Encodable {
+        let signedTransactionInfo: String
+    }
+
+    private struct RedeemErrorResponse: Decodable {
+        let error: String?
+        let code: String?
+    }
+
+    func redeem(signedTransactionInfo: String) async throws -> CreditPackRedemptionResult {
+        let session: Session
+        do {
+            session = try await client.auth.session
+        } catch {
+            throw CreditPackRedemptionError.notAuthenticated
+        }
+
+        let projectURL = try JournaltopiaSupabaseConfig.projectURL
+        let anonKey = try JournaltopiaSupabaseConfig.anonKey
+        let functionURL = projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("redeem-credit-purchase")
+
+        var request = URLRequest(url: functionURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try JSONEncoder().encode(
+            RedeemPayload(signedTransactionInfo: signedTransactionInfo)
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CreditPackRedemptionError.unavailable
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let failure = try? JSONDecoder().decode(RedeemErrorResponse.self, from: data)
+
+            switch (failure?.code, httpResponse.statusCode) {
+            case ("subscription_required", _), (_, 403):
+                throw CreditPackRedemptionError.subscriptionRequired
+            case ("already_redeemed_by_another_account", _), (_, 409):
+                throw CreditPackRedemptionError.alreadyRedeemedByAnotherAccount
+            case ("unknown_product", _), (_, 422):
+                throw CreditPackRedemptionError.unknownProduct
+            case (_, 401):
+                throw CreditPackRedemptionError.verificationFailed(
+                    failure?.error ?? "This purchase could not be verified with Apple."
+                )
+            default:
+                print("[Journaltopia] Credit pack redemption failed: \(httpResponse.statusCode) \(failure?.error ?? "")")
+                throw CreditPackRedemptionError.unavailable
+            }
+        }
+
+        do {
+            return try JSONDecoder().decode(CreditPackRedemptionResult.self, from: data)
+        } catch {
+            print("[Journaltopia] Credit pack redemption response unreadable: \(error)")
+            throw CreditPackRedemptionError.unavailable
         }
     }
 }

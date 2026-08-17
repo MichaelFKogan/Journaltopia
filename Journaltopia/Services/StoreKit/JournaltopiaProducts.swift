@@ -70,18 +70,16 @@ enum CreditPackPurchasing {
         case requiresSubscription
     }
 
-    /// Purchasing is deliberately not implemented. Flipping this to `.available` without the server
-    /// path in place would mean granting credits on a client's say-so.
+    /// Packs are purchasable now that `redeem-credit-purchase` verifies the signed consumable with
+    /// Apple and the database owns the product-to-credits mapping. Credits are still never granted
+    /// on the client's word — `.available` means "the server can honour this", not "Swift may add
+    /// credits".
     static func availability(isSubscribed: Bool) -> Availability {
-        guard isSubscribed else {
-            return .requiresSubscription
-        }
-
-        return .awaitingServerVerification
+        isSubscribed ? .available : .requiresSubscription
     }
 
     static let unavailableExplanation =
-        "Extra credit packs are not on sale yet. Your monthly 25 credits arrive with each renewal."
+        "Credit packs are available to Journaltopia+ members."
 }
 
 /// What a restore actually did. Three outcomes, because they are three different things to tell

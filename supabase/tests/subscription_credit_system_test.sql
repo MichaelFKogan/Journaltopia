@@ -219,9 +219,11 @@ select is(
     'a repeated grant does not add a second ledger entry'
 );
 
--- Spend some of it, then renew, to prove the grant adds rather than resets.
+-- Hold some purchased credits across a renewal, to prove the monthly reset leaves them alone.
+-- The bucket-level behaviour of the reset itself is covered in credit_bucket_test.sql.
 update public.profiles
-set generation_credits = 7
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 7
 where id = 'eeeeeeee-0000-4000-8000-000000000001';
 
 update public.subscriptions
@@ -238,7 +240,7 @@ select is(
 select is(
     (select generation_credits from public.profiles where id = 'eeeeeeee-0000-4000-8000-000000000001'),
     32,
-    'unused credits roll over: 7 + 25 = 32 rather than a reset to 25'
+    'purchased credits survive a renewal: 7 purchased + 25 new monthly = 32'
 );
 
 select is(
@@ -282,7 +284,8 @@ select throws_like(
 -- The free account, with credits but no subscription. Credits alone must not be enough, or the
 -- paywall is decorative.
 update public.profiles
-set generation_credits = 10
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 10
 where id = 'eeeeeeee-0000-4000-8000-000000000002';
 
 select set_config(
@@ -328,7 +331,8 @@ set status = 'active',
 where id = 'aaaabbbb-0000-4000-8000-000000000001';
 
 update public.profiles
-set generation_credits = 3
+set monthly_generation_credits = 0,
+    purchased_generation_credits = 3
 where id = 'eeeeeeee-0000-4000-8000-000000000001';
 
 select set_config(

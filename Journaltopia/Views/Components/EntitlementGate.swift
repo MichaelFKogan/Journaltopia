@@ -229,6 +229,26 @@ final class EntitlementGate: ObservableObject {
         retry?()
     }
 
+    /// Resumes a generation that was blocked on credits, once the server says the balance covers it.
+    ///
+    /// The balance passed in is the one the server returned from the redemption, never a local
+    /// guess, and it is compared against the cost that was actually blocked. Buying a 10-pack when
+    /// an HD page needs 2 resumes; buying nothing, or a purchase whose redemption failed, does not.
+    /// StoreKit reporting `.success` is not on its own a reason to retry anything.
+    func completeCreditRequestIfAffordable(balance: Int?) {
+        guard
+            case .credits(let needed, _)? = pendingRequest?.requirement,
+            let balance,
+            balance >= needed
+        else {
+            return
+        }
+
+        let retry = pendingRequest?.retry
+        pendingRequest = nil
+        retry?()
+    }
+
     /// Runs a retry that was held back waiting for the server. Called after an entitlement refresh.
     func resumeIfEntitlementArrived() {
         guard state.isSubscribed, let retry = awaitingEntitlementRetry else {
@@ -244,6 +264,7 @@ final class EntitlementGate: ObservableObject {
 struct EntitlementGateSheet: View {
     @EnvironmentObject private var entitlementGate: EntitlementGate
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
+    @EnvironmentObject private var generationCreditStore: GenerationCreditStore
 
     let request: EntitlementGateRequest
 
@@ -261,7 +282,14 @@ struct EntitlementGateSheet: View {
                 BuyCreditsView(
                     promptTitle: request.action.creditsTitle,
                     promptSubtitle: request.action.creditsMessage(needed: needed, balance: balance),
-                    onDismiss: { entitlementGate.dismiss() }
+                    onDismiss: { entitlementGate.dismiss() },
+                    onPurchased: {
+                        // The balance here is whatever the server last told this device, having just
+                        // been refreshed by the purchase. The gate decides whether it is enough.
+                        entitlementGate.completeCreditRequestIfAffordable(
+                            balance: generationCreditStore.balance
+                        )
+                    }
                 )
             }
         }

@@ -333,7 +333,7 @@ select ok(
 );
 
 select is(
-    has_function_privilege('authenticated', 'public.spend_generation_credit(integer)', 'execute'),
+    has_function_privilege('authenticated', 'public.spend_generation_credits(integer)', 'execute'),
     false,
     'a signed-in client still may not spend a credit directly'
 );

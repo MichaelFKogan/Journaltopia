@@ -52,15 +52,18 @@ final class SubscriptionStore: ObservableObject {
     }
 
     private let syncService: AppleSubscriptionSyncService
+    private let redemptionService: CreditPackRedemptionService
     private let entitlementService: JournaltopiaPlusEntitlementService
     private var listenerTask: Task<Void, Never>?
     private weak var creditStore: GenerationCreditStore?
 
     init(
         syncService: AppleSubscriptionSyncService = AppleSubscriptionSyncService(),
+        redemptionService: CreditPackRedemptionService = CreditPackRedemptionService(),
         entitlementService: JournaltopiaPlusEntitlementService = JournaltopiaPlusEntitlementService()
     ) {
         self.syncService = syncService
+        self.redemptionService = redemptionService
         self.entitlementService = entitlementService
     }
 
@@ -114,6 +117,10 @@ final class SubscriptionStore: ObservableObject {
 
         await reconcileCurrentEntitlements()
         await refreshServerEntitlement()
+
+        // After entitlement, because a pack redemption is refused without an active subscription and
+        // would otherwise be retried pointlessly on a device that has just reconciled into one.
+        await reconcileUnfinishedPurchases()
     }
 
     /// Clears this device's presentation of a subscription without touching the server's record.
@@ -248,6 +255,107 @@ final class SubscriptionStore: ObservableObject {
         return .nothingToRestore
     }
 
+    /// Buys a credit pack.
+    ///
+    /// Requires an active subscription *by the server's reckoning*, not StoreKit's: packs are a
+    /// member benefit, and the redemption endpoint enforces it again, so letting a non-member buy
+    /// one here would only take their money and refuse the credits.
+    @discardableResult
+    func purchaseCreditPack(_ pack: JournaltopiaProducts.CreditPack, isSignedIn: Bool) async -> Bool {
+        errorMessage = nil
+
+        guard isSignedIn else {
+            errorMessage = CreditPackRedemptionError.notAuthenticated.localizedDescription
+            return false
+        }
+
+        guard state.isSubscribed else {
+            errorMessage = CreditPackRedemptionError.subscriptionRequired.localizedDescription
+            return false
+        }
+
+        guard let product = creditPackProducts.first(where: { $0.id == pack.rawValue }) else {
+            errorMessage = "That credit pack is unavailable right now. Please try again."
+            return false
+        }
+
+        purchasePhase = .purchasing
+        defer {
+            if purchasePhase == .purchasing {
+                purchasePhase = .idle
+            }
+        }
+
+        do {
+            let result = try await product.purchase()
+
+            switch result {
+            case .success(let verification):
+                guard let transaction = verifiedTransaction(from: verification) else {
+                    errorMessage = "This purchase could not be verified with Apple."
+                    return false
+                }
+
+                return await redeemAndFinish(transaction, jws: verification.jwsRepresentation)
+
+            case .pending:
+                purchasePhase = .awaitingApproval
+                return false
+
+            case .userCancelled:
+                return false
+
+            @unknown default:
+                return false
+            }
+        } catch {
+            print("[Journaltopia] Credit pack purchase failed: \(error)")
+            errorMessage = "The purchase could not be completed. Please try again."
+            return false
+        }
+    }
+
+    /// Sends a verified consumable to the server and finishes it only once the outcome is settled.
+    ///
+    /// Same ordering discipline as the subscription path, and the same reason: `finish()` tells Apple
+    /// to stop redelivering, so finishing before the credits are recorded would throw away the only
+    /// reliable reminder that someone paid and got nothing. A transient failure leaves it unfinished
+    /// and Apple hands it back next launch.
+    ///
+    /// Settled failures — bought on another account, a product this server does not sell — *are*
+    /// finished, because redelivering them forever helps nobody.
+    private func redeemAndFinish(_ transaction: Transaction, jws: String) async -> Bool {
+        do {
+            let result = try await redemptionService.redeem(signedTransactionInfo: jws)
+
+            await transaction.finish()
+
+            // The server just told us both balances; adopting them avoids a round trip and any
+            // window where the UI still shows the pre-purchase total.
+            creditStore?.apply(result.balance)
+
+            if result.creditsGranted > 0 {
+                print("[Journaltopia] Credit pack added \(result.creditsGranted) credits.")
+            }
+
+            return true
+        } catch let error as CreditPackRedemptionError {
+            errorMessage = error.errorDescription
+
+            if error.isSettled {
+                await transaction.finish()
+            } else {
+                print("[Journaltopia] Credit pack redemption deferred: \(error.localizedDescription)")
+            }
+
+            return false
+        } catch {
+            print("[Journaltopia] Credit pack redemption deferred: \(error.localizedDescription)")
+            errorMessage = CreditPackRedemptionError.unavailable.localizedDescription
+            return false
+        }
+    }
+
     // MARK: - Reconciliation
 
     /// Sends everything Apple currently considers active for this Apple ID to the server.
@@ -307,15 +415,42 @@ final class SubscriptionStore: ObservableObject {
             return
         }
 
-        guard JournaltopiaProducts.subscriptionIdentifiers.contains(transaction.productID) else {
-            // Not ours, but still Apple's to be told about, or it is redelivered forever.
-            await transaction.finish()
+        if JournaltopiaProducts.subscriptionIdentifiers.contains(transaction.productID) {
+            _ = await syncAndFinish(transaction, jws: update.jwsRepresentation)
+            await refreshServerEntitlement()
+            await creditStore?.refresh(isSignedIn: true)
             return
         }
 
-        _ = await syncAndFinish(transaction, jws: update.jwsRepresentation)
-        await refreshServerEntitlement()
-        await creditStore?.refresh(isSignedIn: true)
+        if JournaltopiaProducts.creditPackIdentifiers.contains(transaction.productID) {
+            // The recovery path for a pack bought while the app was killed, or whose redemption
+            // failed on a dead network. Apple keeps redelivering it until it is finished, which is
+            // exactly the retry this needs.
+            _ = await redeemAndFinish(transaction, jws: update.jwsRepresentation)
+            return
+        }
+
+        // Not ours, but still Apple's to be told about, or it is redelivered forever.
+        await transaction.finish()
+    }
+
+    /// Everything Apple is still waiting to have finished.
+    ///
+    /// `currentEntitlements` covers subscriptions but never consumables — a credit pack disappears
+    /// from it the moment it is consumed — so unfinished transactions are the only way to pick up a
+    /// pack whose redemption never completed. Run at launch and on every account change.
+    private func reconcileUnfinishedPurchases() async {
+        for await unfinished in Transaction.unfinished {
+            guard let transaction = verifiedTransaction(from: unfinished) else {
+                continue
+            }
+
+            guard JournaltopiaProducts.creditPackIdentifiers.contains(transaction.productID) else {
+                continue
+            }
+
+            _ = await redeemAndFinish(transaction, jws: unfinished.jwsRepresentation)
+        }
     }
 
     /// Sends a verified transaction to the server and finishes it only if the server accepted it.

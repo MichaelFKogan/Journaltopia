@@ -1,149 +1,141 @@
 {
-  "identifier" : "A1F0C4E2-7B93-4D51-9E28-6C3A0B5D8F14",
-  "nonRenewingSubscriptions" : [
-
-  ],
-  "products" : [
+  "identifier": "A1F0C4E2-7B93-4D51-9E28-6C3A0B5D8F14",
+  "nonRenewingSubscriptions": [],
+  "products": [
     {
-      "displayPrice" : "2.99",
-      "familyShareable" : false,
-      "internalID" : "6740000010",
-      "localizations" : [
+      "displayPrice": "4.99",
+      "familyShareable": false,
+      "internalID": "6740000010",
+      "localizations": [
         {
-          "description" : "10 extra AI credits for Journaltopia+ members.",
-          "displayName" : "10 Credits",
-          "locale" : "en_US"
+          "description": "10 extra AI credits for Journaltopia+ members.",
+          "displayName": "10 Credits",
+          "locale": "en_US"
         }
       ],
-      "productID" : "com.journaltopia.credits.10",
-      "referenceName" : "10 AI Credits",
-      "type" : "Consumable"
+      "productID": "com.journaltopia.credits.10",
+      "referenceName": "10 AI Credits",
+      "type": "Consumable"
     },
     {
-      "displayPrice" : "5.99",
-      "familyShareable" : false,
-      "internalID" : "6740000011",
-      "localizations" : [
+      "displayPrice": "9.99",
+      "familyShareable": false,
+      "internalID": "6740000011",
+      "localizations": [
         {
-          "description" : "25 extra AI credits for Journaltopia+ members.",
-          "displayName" : "25 Credits",
-          "locale" : "en_US"
+          "description": "25 extra AI credits for Journaltopia+ members.",
+          "displayName": "25 Credits",
+          "locale": "en_US"
         }
       ],
-      "productID" : "com.journaltopia.credits.25",
-      "referenceName" : "25 AI Credits",
-      "type" : "Consumable"
+      "productID": "com.journaltopia.credits.25",
+      "referenceName": "25 AI Credits",
+      "type": "Consumable"
     },
     {
-      "displayPrice" : "11.99",
-      "familyShareable" : false,
-      "internalID" : "6740000012",
-      "localizations" : [
+      "displayPrice": "19.99",
+      "familyShareable": false,
+      "internalID": "6740000012",
+      "localizations": [
         {
-          "description" : "60 extra AI credits for Journaltopia+ members.",
-          "displayName" : "60 Credits",
-          "locale" : "en_US"
+          "description": "60 extra AI credits for Journaltopia+ members.",
+          "displayName": "60 Credits",
+          "locale": "en_US"
         }
       ],
-      "productID" : "com.journaltopia.credits.60",
-      "referenceName" : "60 AI Credits",
-      "type" : "Consumable"
+      "productID": "com.journaltopia.credits.60",
+      "referenceName": "60 AI Credits",
+      "type": "Consumable"
     }
   ],
-  "settings" : {
-    "_applicationInternalID" : "6740000000",
-    "_developerTeamID" : "JOURNALTOPIALOCAL",
-    "_failTransactionsEnabled" : false,
-    "_lastSynchronizedDate" : 0,
-    "_locale" : "en_US",
-    "_storefront" : "USA",
-    "_storeKitErrors" : [
+  "settings": {
+    "_applicationInternalID": "6740000000",
+    "_developerTeamID": "JOURNALTOPIALOCAL",
+    "_failTransactionsEnabled": false,
+    "_lastSynchronizedDate": 0,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_storeKitErrors": [
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "Load Products"
+        "current": null,
+        "enabled": false,
+        "name": "Load Products"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "Purchase"
+        "current": null,
+        "enabled": false,
+        "name": "Purchase"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "Verification"
+        "current": null,
+        "enabled": false,
+        "name": "Verification"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "App Store Sync"
+        "current": null,
+        "enabled": false,
+        "name": "App Store Sync"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "Subscription Status"
+        "current": null,
+        "enabled": false,
+        "name": "Subscription Status"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "App Transaction"
+        "current": null,
+        "enabled": false,
+        "name": "App Transaction"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "Manage Subscriptions Sheet"
+        "current": null,
+        "enabled": false,
+        "name": "Manage Subscriptions Sheet"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "Refund Request Sheet"
+        "current": null,
+        "enabled": false,
+        "name": "Refund Request Sheet"
       },
       {
-        "current" : null,
-        "enabled" : false,
-        "name" : "Offer Code Redeem Sheet"
+        "current": null,
+        "enabled": false,
+        "name": "Offer Code Redeem Sheet"
       }
     ],
-    "_subscriptionRenewalRate" : 3600
+    "_subscriptionRenewalRate": 3600
   },
-  "subscriptionGroups" : [
+  "subscriptionGroups": [
     {
-      "id" : "21594730",
-      "localizations" : [
-
-      ],
-      "name" : "Journaltopia Plus",
-      "subscriptions" : [
+      "id": "21594730",
+      "localizations": [],
+      "name": "Journaltopia Plus",
+      "subscriptions": [
         {
-          "adHocOffers" : [
-
-          ],
-          "codeOffers" : [
-
-          ],
-          "displayPrice" : "14.99",
-          "familyShareable" : false,
-          "groupNumber" : 1,
-          "internalID" : "6740000001",
-          "introductoryOffer" : null,
-          "localizations" : [
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "14.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "6740000001",
+          "introductoryOffer": null,
+          "localizations": [
             {
-              "description" : "Turn your journal entries into AI graphic novel pages, with 25 generation credits every month.",
-              "displayName" : "Journaltopia+",
-              "locale" : "en_US"
+              "description": "Turn your journal entries into AI graphic novel pages, with 25 generation credits every month.",
+              "displayName": "Journaltopia+",
+              "locale": "en_US"
             }
           ],
-          "productID" : "com.journaltopia.plus.monthly",
-          "recurringSubscriptionPeriod" : "P1M",
-          "referenceName" : "Journaltopia Plus Monthly",
-          "subscriptionGroupID" : "21594730",
-          "type" : "RecurringSubscription"
+          "productID": "com.journaltopia.plus.monthly",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Journaltopia Plus Monthly",
+          "subscriptionGroupID": "21594730",
+          "type": "RecurringSubscription"
         }
       ]
     }
   ],
-  "version" : {
-    "major" : 4,
-    "minor" : 0
+  "version": {
+    "major": 4,
+    "minor": 0
   }
 }
