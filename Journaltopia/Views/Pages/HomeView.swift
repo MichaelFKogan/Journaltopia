@@ -17,6 +17,7 @@ struct HomeView: View {
 
     @State private var fullScreenImageName: String?
     @State private var isLoadingHomeStoryboards = false
+    @State private var isSettingsSheetPresented = false
 
     private let homeStoryboardLoadLimit = 50
 
@@ -57,6 +58,11 @@ struct HomeView: View {
                 }
             }
         }
+        .sheet(isPresented: $isSettingsSheetPresented) {
+            NavigationStack {
+                SettingsView(selectedPage: $selectedPage, presentation: .sheet)
+            }
+        }
         .task(id: homeStoryboardLoadID) {
             await loadHomeStoryboards()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
@@ -90,12 +96,35 @@ struct HomeView: View {
 
             Spacer()
 
-            HStack(spacing: 4) {
-                creditsButton
-                settingsButton
+            if contentMode.requiresSignIn {
+                signInButton
+            } else {
+                HStack(spacing: 4) {
+                    creditsButton
+                    settingsButton
+                }
+                .padding(.top, 2)
             }
-            .padding(.top, 2)
         }
+    }
+
+    /// Signed out, both trailing icons are answers to questions nobody has asked yet: there is no
+    /// balance to show and no account to configure. One word for the one thing worth doing replaces
+    /// them, and it still lands in Settings — which is where the account lives either way.
+    private var signInButton: some View {
+        Button {
+            isSettingsSheetPresented = true
+        } label: {
+            Text("Sign In")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+                .padding(.horizontal, 8)
+                .frame(height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sign in")
+        .accessibilityHint("Opens settings")
     }
 
     /// A balance for subscribers, an invitation for everyone else.

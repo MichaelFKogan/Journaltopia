@@ -11017,7 +11017,9 @@ struct EntriesView: View {
                 .listRowSeparatorTint(Color.storyInk.opacity(0.10))
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
-                    loadCloudThumbnailIfNeeded(for: item)
+                }
+                .task(id: cloudThumbnailLoadID(for: item)) {
+                    await loadCloudThumbnailIfNeeded(for: item)
                 }
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
                     Button {
@@ -11146,7 +11148,9 @@ struct EntriesView: View {
                     entryGridCard(for: item, displayEntry: displayEntry, index: index)
                         .onAppear {
                             loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: filteredEntryItems.count)
-                            loadCloudThumbnailIfNeeded(for: item)
+                        }
+                        .task(id: cloudThumbnailLoadID(for: item)) {
+                            await loadCloudThumbnailIfNeeded(for: item)
                         }
                         .onDrop(
                             of: [UTType.text],
@@ -11220,7 +11224,9 @@ struct EntriesView: View {
                 )
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
-                    loadCloudThumbnailIfNeeded(for: item)
+                }
+                .task(id: cloudThumbnailLoadID(for: item)) {
+                    await loadCloudThumbnailIfNeeded(for: item)
                 }
                 .onDrop(
                     of: [UTType.text],
@@ -12894,10 +12900,11 @@ struct EntriesView: View {
         isDraftSaved = false
         storeCurrentEntriesSessionSnapshot()
 
-        if forceCloudReload {
-            cloudEntryThumbnails = [:]
-            cloudEntryThumbnailVersions = [:]
-        }
+        // A forced reload deliberately keeps the thumbnails it already has. Dropping them here is
+        // what put a screen of blank cards up on every sign-in: the images went, and the refetch
+        // came back with the same entries, so the grid reused its cells and nothing asked for them
+        // again. `restoreCachedCloudEntryThumbnails` drops the ones that are genuinely stale by
+        // comparing versions, which is the narrower thing this was reaching for.
 
         let didHydrateCachedEntries = forceCloudReload ? false : hydrateCachedCloudEntries(for: queryKey)
         isLoadingCloudEntries = !didHydrateCachedEntries && filteredEntryItems.isEmpty
@@ -13431,7 +13438,22 @@ struct EntriesView: View {
         }
     }
 
-    private func loadCloudThumbnailIfNeeded(for item: EntryDisplayItem) {
+    /// Identity for a card's thumbnail load, driving the `.task(id:)` each card attaches.
+    ///
+    /// This used to hang off `onAppear`, which fires once when a cell is *created* and never again
+    /// while it stays on screen. Anything that dropped a loaded thumbnail afterwards — a forced
+    /// reload on sign-in, a version bump — left the card blank with nothing left to ask for it, and
+    /// the only cure was destroying the cell: scrolling it out of the lazy grid, or leaving the tab
+    /// and coming back. Keying on whether an image is actually in hand makes losing one a reason to
+    /// fetch it again, in place, without the cell going anywhere.
+    private func cloudThumbnailLoadID(for item: EntryDisplayItem) -> String {
+        let version = item.cloudEntry.flatMap { cloudThumbnailVersion(for: $0) } ?? "none"
+        let state = cloudEntryThumbnails[item.id] == nil ? "missing" : "loaded"
+        return "\(item.id.uuidString)|\(version)|\(state)"
+    }
+
+    @MainActor
+    private func loadCloudThumbnailIfNeeded(for item: EntryDisplayItem) async {
         guard
             let cloudEntry = item.cloudEntry,
             cloudEntryThumbnails[item.id] == nil,
@@ -13441,29 +13463,60 @@ struct EntriesView: View {
         }
 
         cloudThumbnailIDsBeingLoaded.insert(item.id)
-        Task {
-            defer {
-                cloudThumbnailIDsBeingLoaded.remove(item.id)
-            }
+        defer {
+            cloudThumbnailIDsBeingLoaded.remove(item.id)
+        }
 
-            guard let thumbnailStoragePath = cloudEntry.thumbnailStoragePath else {
-                await renderLocalCloudThumbnail(for: cloudEntry)
+        guard let thumbnailStoragePath = cloudEntry.thumbnailStoragePath else {
+            await renderLocalCloudThumbnail(for: cloudEntry)
+            return
+        }
+
+        // The disk cache is keyed by the same version this load is keyed on, so a hit here is the
+        // right image, not a stale one. Worth asking before the network: a refresh that clears the
+        // in-memory copies leaves this cache intact, and reading it back is instant.
+        if let cachedThumbnail = EntriesCloudThumbnailDiskCache.image(for: cloudEntry) {
+            applyCloudThumbnail(cachedThumbnail, for: cloudEntry, storesToDiskCache: false)
+            return
+        }
+
+        do {
+            let thumbnail = try await SupabaseEntryThumbnailService().downloadThumbnail(
+                storagePath: thumbnailStoragePath,
+                bypassCache: true
+            )
+            guard !Task.isCancelled else {
                 return
             }
 
-            do {
-                let thumbnail = try await SupabaseEntryThumbnailService().downloadThumbnail(
-                    storagePath: thumbnailStoragePath,
-                    bypassCache: true
-                )
-                cloudEntryThumbnails[item.id] = thumbnail
-                cloudEntryThumbnailVersions[item.id] = cloudThumbnailVersion(for: cloudEntry)
-                EntriesCloudThumbnailDiskCache.store(thumbnail, for: cloudEntry)
-                storeCurrentEntriesSessionSnapshot()
-            } catch {
-                await renderLocalCloudThumbnail(for: cloudEntry)
+            applyCloudThumbnail(thumbnail, for: cloudEntry, storesToDiskCache: true)
+        } catch {
+            // A cancelled download is a card that scrolled away, not a thumbnail that failed to
+            // arrive. Falling through to the local render would write a text-only page over an entry
+            // whose real thumbnail is sitting in storage, and the load key would then read as
+            // satisfied — so the good image would never be asked for again.
+            guard !Task.isCancelled else {
+                return
             }
+
+            await renderLocalCloudThumbnail(for: cloudEntry)
         }
+    }
+
+    @MainActor
+    private func applyCloudThumbnail(
+        _ thumbnail: UIImage,
+        for cloudEntry: JournalEntry,
+        storesToDiskCache: Bool
+    ) {
+        cloudEntryThumbnails[cloudEntry.clientEntryID] = thumbnail
+        cloudEntryThumbnailVersions[cloudEntry.clientEntryID] = cloudThumbnailVersion(for: cloudEntry)
+
+        if storesToDiskCache {
+            EntriesCloudThumbnailDiskCache.store(thumbnail, for: cloudEntry)
+        }
+
+        storeCurrentEntriesSessionSnapshot()
     }
 
     private func cloudThumbnailVersion(for entry: JournalEntry) -> String? {

@@ -1,22 +1,38 @@
 import SwiftUI
 
 struct SettingsView: View {
+    /// How this screen was reached. A pushed page is part of the navigation stack it came from; a
+    /// sheet has to close itself and cannot rely on the app root's sign-in sheet, which is already
+    /// underneath it.
+    enum Presentation {
+        case page
+        case sheet
+    }
+
     @Binding var selectedPage: StoryPage
+    var presentation: Presentation = .page
+
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
 
     @State private var isSigningOut = false
     @State private var restoreOutcome: SubscriptionRestoreOutcome?
     @State private var isRestoring = false
     @State private var isManageSubscriptionPresented = false
+    @State private var isSignInSheetPresented = false
 
     var body: some View {
         List {
             Section("Account") {
-                accountStatusRow
+                // Signed out there is no status worth a row of its own: "Signed Out" only restates
+                // what the single action below already says, so the section is just the action.
+                if !isSignedOut {
+                    accountStatusRow
+                }
 
                 accountActionRow
             }
@@ -69,11 +85,53 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            if presentation == .sheet {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+                }
+            }
+        }
         .preferredColorScheme(.light)
         .enableInteractivePopGesture()
+        // Presented from here rather than through the gate: the gate's sheet is mounted at the app
+        // root, and a root sheet cannot come up over the one this screen is already sitting in.
+        .sheet(isPresented: $isSignInSheetPresented) {
+            SignInView(
+                presentationMode: .sheet,
+                promptTitle: AccountRequiredAction.signIn.title,
+                promptSubtitle: AccountRequiredAction.signIn.message
+            ) {
+                isSignInSheetPresented = false
+            }
+            .onChange(of: authStore.status) { status in
+                // Closed on the auth store's word, not on the provider call returning — the session
+                // arrives through `authStateChanges`, which can land later.
+                if status == .signedIn {
+                    isSignInSheetPresented = false
+                }
+            }
+        }
         .task {
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+        }
+    }
+
+    private var isSignedOut: Bool {
+        authStore.status == .signedOut
+    }
+
+    private func presentSignIn() {
+        switch presentation {
+        case .page:
+            signInGate.requireAccount(for: .signIn)
+        case .sheet:
+            isSignInSheetPresented = true
         }
     }
 
@@ -245,7 +303,7 @@ struct SettingsView: View {
             EmptyView()
         case .signedOut:
             Button {
-                signInGate.requireAccount(for: .signIn)
+                presentSignIn()
             } label: {
                 SettingsRowContent(
                     systemName: "person.badge.key",
