@@ -12,14 +12,17 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
-            WatercolorPaperPageBackground()
+            OnboardingBackgroundView()
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                topBar
-
                 TabView(selection: $selectedPage) {
                     ForEach(pages.indices, id: \.self) { index in
-                        OnboardingPageView(page: pages[index])
+                        OnboardingPageView(
+                            page: pages[index],
+                            isLastPage: index == lastPageIndex,
+                            onComplete: finish
+                        )
                             .tag(index)
                     }
                 }
@@ -27,7 +30,13 @@ struct OnboardingView: View {
 
                 bottomControls
             }
+
+            VStack {
+                topBar
+                Spacer()
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var topBar: some View {
@@ -38,7 +47,7 @@ struct OnboardingView: View {
                 finish()
             }
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color.storyInk.opacity(0.72))
+            .foregroundStyle(Color.storyPurple)
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
             .accessibilityLabel("Skip onboarding")
@@ -48,45 +57,17 @@ struct OnboardingView: View {
     }
 
     private var bottomControls: some View {
-        VStack(spacing: 22) {
-            HStack(spacing: 8) {
-                ForEach(pages.indices, id: \.self) { index in
-                    Circle()
-                        .fill(index == selectedPage ? Color.storyPurple : Color.homeBorder)
-                        .frame(width: index == selectedPage ? 9 : 7, height: index == selectedPage ? 9 : 7)
-                        .animation(.snappy(duration: 0.22), value: selectedPage)
-                        .accessibilityHidden(true)
-                }
-            }
-
-            Group {
-                if selectedPage == lastPageIndex {
-                    Button {
-                        finish()
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text("Get Started")
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 15, weight: .bold))
-                        }
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(Color.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 54)
-                        .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .shadow(color: Color.storyPurple.opacity(0.22), radius: 12, y: 6)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Get Started")
-                } else {
-                    Color.clear
-                        .frame(height: 54)
-                        .accessibilityHidden(true)
-                }
+        HStack(spacing: 18) {
+            ForEach(pages.indices, id: \.self) { index in
+                Circle()
+                    .fill(index == selectedPage ? Color.storyPurple : Color.homeBorder)
+                    .frame(width: 9, height: 9)
+                    .animation(.snappy(duration: 0.22), value: selectedPage)
+                    .accessibilityHidden(true)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 28)
+        .frame(height: 24)
+        .padding(.bottom, 34)
     }
 
     private func finish() {
@@ -94,93 +75,132 @@ struct OnboardingView: View {
     }
 }
 
+private struct OnboardingBackgroundView: View {
+    var body: some View {
+        GeometryReader { proxy in
+            Image("onboarding-background")
+                .resizable()
+                .scaledToFill()
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
 private struct OnboardingPageView: View {
     let page: OnboardingPage
+    let isLastPage: Bool
+    let onComplete: () -> Void
 
     var body: some View {
         GeometryReader { proxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 30) {
-                    Spacer(minLength: 8)
+            VStack(spacing: 0) {
+                Spacer(minLength: 52)
 
-                    image
-                        .frame(height: min(proxy.size.height * 0.48, 360))
+                VStack(spacing: 12) {
+                    page.titleText
+                        .font(.system(size: titleSize(for: proxy.size), weight: .bold, design: .serif))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.76)
 
+                    Text(page.message)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 34)
+
+                Spacer(minLength: 12)
+
+                image(maxHeight: imageHeight(for: proxy.size))
+
+                if isLastPage {
                     VStack(spacing: 14) {
-                        Text(page.title)
-                            .font(.system(size: 34, weight: .bold, design: .serif))
-                            .foregroundStyle(Color.storyInk)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(3)
-                            .minimumScaleFactor(0.82)
+                        Button {
+                            onComplete()
+                        } label: {
+                            Text("Start Journaling")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundStyle(Color.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 60)
+                                .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Start Journaling")
 
-                        Text(page.message)
-                            .font(.system(size: 17, weight: .regular))
+                        Text("You can always sign in later.")
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.homeMutedText)
-                            .multilineTextAlignment(.center)
-                            .lineSpacing(4)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(.horizontal, 26)
-
-                    Spacer(minLength: 24)
+                    .padding(.top, 16)
                 }
-                .frame(minHeight: proxy.size.height)
+
+                Spacer(minLength: isLastPage ? 14 : 24)
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
     }
 
-    private var image: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(page.backdropColor)
+    private func image(maxHeight: CGFloat) -> some View {
+        Image(page.imageName)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity)
+            .frame(maxHeight: maxHeight)
+            .padding(.horizontal, page.horizontalImagePadding)
+    }
 
-            Image(page.imageName)
-                .resizable()
-                .scaledToFill()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .padding(.horizontal, 24)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.white.opacity(0.78), lineWidth: 1)
-                .padding(.horizontal, 24)
-        }
-        .shadow(color: Color.storyInk.opacity(0.12), radius: 18, y: 10)
+    private func titleSize(for size: CGSize) -> CGFloat {
+        size.height < 720 ? 30 : 34
+    }
+
+    private func imageHeight(for size: CGSize) -> CGFloat {
+        let reservedHeight: CGFloat = isLastPage ? 340 : 206
+        return max(320, size.height - reservedHeight)
     }
 }
 
 private struct OnboardingPage {
-    let title: String
+    let titleText: Text
     let message: String
     let imageName: String
-    let backdropColor: Color
+    let horizontalImagePadding: CGFloat
 
     static let allPages: [OnboardingPage] = [
         OnboardingPage(
-            title: "Turn your life into story.",
-            message: "Journaltopia helps your journals become a living world of scenes, characters, and visual memories.",
-            imageName: "storyboard_placeholder_1",
-            backdropColor: Color.storyBlush
+            titleText: Text("Your life,\ntold in ").foregroundColor(.storyInk)
+                + Text("storyboards.").foregroundColor(.storyPurple),
+            message: "Write about your day, a memory,\nor something you're dreaming about.",
+            imageName: "1",
+            horizontalImagePadding: 0
         ),
         OnboardingPage(
-            title: "Write your entry.",
-            message: "Start with a moment, a dream, a trip, or one small detail worth remembering.",
-            imageName: "art_style_graphic_novel",
-            backdropColor: Color.storyCream
+            titleText: Text("Turn your words\ninto a ").foregroundColor(.storyInk)
+                + Text("story.").foregroundColor(.storyPurple),
+            message: "Journaltopia transforms your writing\ninto illustrated storyboards.",
+            imageName: "2",
+            horizontalImagePadding: 8
         ),
         OnboardingPage(
-            title: "Add your characters.",
-            message: "Bring in the people, places, and inner-world figures that make the scene feel unmistakably yours.",
-            imageName: "art_style_anime",
-            backdropColor: Color.storyLavender
+            titleText: Text("Make every\nstory ").foregroundColor(.storyInk)
+                + Text("yours.").foregroundColor(.storyPurple),
+            message: "Add characters, reference photos,\nart styles, and details to shape\nhow your story looks.",
+            imageName: "3",
+            horizontalImagePadding: 8
         ),
         OnboardingPage(
-            title: "Get your storyboard.",
-            message: "Generate illustrated panels and browse sample stories first, without needing an account.",
-            imageName: "storyboard_placeholder_4",
-            backdropColor: Color.homeCardGray
+            titleText: Text("Build the story\nof ").foregroundColor(.storyInk)
+                + Text("your life.").foregroundColor(.storyPurple),
+            message: "Organize your moments into journals\nand watch your visual story\ngrow over time.",
+            imageName: "4",
+            horizontalImagePadding: 0
         )
     ]
 }
