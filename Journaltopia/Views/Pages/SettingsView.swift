@@ -1,22 +1,41 @@
 import SwiftUI
 
 struct SettingsView: View {
+    /// How this screen was reached. A pushed page is part of the navigation stack it came from; a
+    /// sheet has to close itself and cannot rely on the app root's sign-in sheet, which is already
+    /// underneath it.
+    enum Presentation {
+        case page
+        case sheet
+    }
+
     @Binding var selectedPage: StoryPage
+    var presentation: Presentation = .page
+
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
 
     @State private var isSigningOut = false
     @State private var restoreOutcome: SubscriptionRestoreOutcome?
     @State private var isRestoring = false
     @State private var isManageSubscriptionPresented = false
+    @State private var isSignInSheetPresented = false
+    @State private var isPaywallSheetPresented = false
+    @State private var showsSignedOutConfirmation = false
+    @State private var signedOutConfirmationHideTask: Task<Void, Never>?
 
     var body: some View {
         List {
             Section("Account") {
-                accountStatusRow
+                // Signed out there is no status worth a row of its own: "Signed Out" only restates
+                // what the single action below already says, so the section is just the action.
+                if !isSignedOut {
+                    accountStatusRow
+                }
 
                 accountActionRow
             }
@@ -69,12 +88,126 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            if presentation == .sheet {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+                }
+            }
+        }
+        .overlay {
+            if showsSignedOutConfirmation {
+                signedOutConfirmationCard
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: showsSignedOutConfirmation)
         .preferredColorScheme(.light)
         .enableInteractivePopGesture()
+        // Presented from here rather than through the gate: the gate's sheet is mounted at the app
+        // root, and a root sheet cannot come up over the one this screen is already sitting in.
+        .sheet(isPresented: $isSignInSheetPresented) {
+            SignInView(
+                presentationMode: .sheet,
+                promptTitle: AccountRequiredAction.signIn.title,
+                promptSubtitle: AccountRequiredAction.signIn.message
+            )
+            .onChange(of: authStore.status) { status in
+                // Closed on the auth store's word, not on the provider call returning — the session
+                // arrives through `authStateChanges`, which can land later.
+                if status == .signedIn {
+                    isSignInSheetPresented = false
+                }
+            }
+        }
+        .sheet(isPresented: $isPaywallSheetPresented) {
+            JournaltopiaPlusPaywallView(
+                presentation: .sheet,
+                onDismiss: { isPaywallSheetPresented = false }
+            )
+        }
         .task {
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
+        .onDisappear {
+            signedOutConfirmationHideTask?.cancel()
+            signedOutConfirmationHideTask = nil
+        }
+    }
+
+    private var isSignedOut: Bool {
+        authStore.status == .signedOut
+    }
+
+    private func presentSignIn() {
+        switch presentation {
+        case .page:
+            signInGate.requireAccount(for: .signIn)
+        case .sheet:
+            isSignInSheetPresented = true
+        }
+    }
+
+    private func signOut() {
+        Task {
+            isSigningOut = true
+            await authStore.signOut()
+            isSigningOut = false
+            presentSignedOutConfirmation()
+        }
+    }
+
+    private func presentSignedOutConfirmation() {
+        signedOutConfirmationHideTask?.cancel()
+        showsSignedOutConfirmation = true
+
+        signedOutConfirmationHideTask = Task {
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            showsSignedOutConfirmation = false
+            signedOutConfirmationHideTask = nil
+        }
+    }
+
+    private var signedOutConfirmationCard: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+
+            VStack(spacing: 6) {
+                Text("Signed Out")
+                    .font(.system(size: 20, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+
+                Text("This device is back in signed-out mode. Your local samples stay available to browse.")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.homeMutedText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 26)
+        .frame(maxWidth: 300)
+        .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.storyPurple.opacity(0.16), lineWidth: 1)
+        )
+        .shadow(color: Color.storyPurple.opacity(0.14), radius: 20, y: 10)
+        .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Signed out. This device is back in signed-out mode.")
+        .accessibilityAddTraits(.isStaticText)
     }
 
     private var accountStatusRow: some View {
@@ -89,23 +222,42 @@ struct SettingsView: View {
 
     // MARK: - Journaltopia+
 
-    /// Status only — no marketing. Someone in Settings is looking for a fact.
+    /// Status when signed in; a door into the pricing sheet when signed out. The paywall itself
+    /// asks for an account before anything is purchased, so browsing plans does not need one.
+    @ViewBuilder
     private var subscriptionStatusRow: some View {
-        SettingsRowContent(
-            systemName: subscriptionStore.state.isSubscribed ? "checkmark.seal.fill" : "sparkles",
-            title: "Journaltopia+",
-            subtitle: subscriptionSubtitle,
-            showsChevron: false,
-            trailingContent: {
-                if subscriptionStore.state.isSubscribed {
-                    CreditBalanceBadge(
-                        balance: generationCreditStore.balance,
-                        isRefreshing: generationCreditStore.isRefreshing
-                    )
-                }
+        if isSignedOut {
+            Button {
+                isPaywallSheetPresented = true
+            } label: {
+                SettingsRowContent(
+                    systemName: "crown.fill",
+                    title: "Journaltopia+",
+                    subtitle: subscriptionSubtitle,
+                    showsChevron: true
+                )
+                .padding(.vertical, 4)
             }
-        )
-        .padding(.vertical, 4)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Journaltopia+")
+            .accessibilityHint("Shows plans and pricing")
+        } else {
+            SettingsRowContent(
+                systemName: "crown.fill",
+                title: "Journaltopia+",
+                subtitle: subscriptionSubtitle,
+                showsChevron: false,
+                trailingContent: {
+                    if subscriptionStore.state.isSubscribed {
+                        CreditBalanceBadge(
+                            balance: generationCreditStore.balance,
+                            isRefreshing: generationCreditStore.isRefreshing
+                        )
+                    }
+                }
+            )
+            .padding(.vertical, 4)
+        }
     }
 
     private var upgradeRow: some View {
@@ -166,14 +318,14 @@ struct SettingsView: View {
 
     private var subscriptionSubtitle: String {
         guard authStore.userID != nil else {
-            return "Sign in to see your plan"
+            return "See plans and pricing"
         }
 
         switch subscriptionStore.state {
         case .unresolved:
             return "Checking your plan…"
         case .signedOut:
-            return "Sign in to see your plan"
+            return "See plans and pricing"
         case .notSubscribed:
             return "Not subscribed"
         case .subscribed:
@@ -245,7 +397,7 @@ struct SettingsView: View {
             EmptyView()
         case .signedOut:
             Button {
-                signInGate.requireAccount(for: .signIn)
+                presentSignIn()
             } label: {
                 SettingsRowContent(
                     systemName: "person.badge.key",
@@ -258,11 +410,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         case .signedIn:
             Button(role: .destructive) {
-                Task {
-                    isSigningOut = true
-                    await authStore.signOut()
-                    isSigningOut = false
-                }
+                signOut()
             } label: {
                 SettingsRowContent(
                     systemName: "rectangle.portrait.and.arrow.right",

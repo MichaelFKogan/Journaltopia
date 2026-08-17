@@ -160,10 +160,11 @@ struct SignInGateSheet: View {
         SignInView(
             presentationMode: .sheet,
             promptTitle: request.action.title,
-            promptSubtitle: request.action.message
-        ) {
-            signInGate.dismiss()
-        }
+            promptSubtitle: request.action.message,
+            // Deliberate Sign In has nowhere else to "keep browsing" from — dismiss by swipe.
+            // Interrupted writes still offer an explicit way out of the sheet.
+            onContinueBrowsing: request.action == .signIn ? nil : { signInGate.dismiss() }
+        )
         .onChange(of: authStore.status) { status in
             // The sheet closes on the auth store's word, not on the OAuth call returning: the
             // session arrives through `authStateChanges`, which can land after the provider call

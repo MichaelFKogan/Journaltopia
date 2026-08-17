@@ -179,6 +179,14 @@ struct ContentView: View {
             generationCreditStore.reset()
             entitlementGate.update(state: subscriptionStore.state)
 
+            if userID == nil {
+                // Leaving an account is a deliberate move into signed-out browsing. Without this,
+                // the first-run full-screen Sign In cover would treat the transition as a cold
+                // launch — especially after a purge wiped the dismiss flag, or for installs that
+                // signed in before that flag was ever written.
+                isSignedOutSignInPromptDismissed = true
+            }
+
             Task {
                 await generationCreditStore.refresh(isSignedIn: userID != nil)
 

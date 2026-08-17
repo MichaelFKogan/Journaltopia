@@ -20,6 +20,10 @@ struct SignInView: View {
     let onContinueBrowsing: (() -> Void)?
 
     @State private var signingInProvider: SignInProvider?
+    /// Which half of the same two buttons the copy is describing. Apple and Google make no
+    /// distinction between signing up and signing in — the first tap creates the account — but a
+    /// visitor without one still needs to see somewhere that says so.
+    @State private var isCreatingAccount = false
 
     init(
         presentationMode: PresentationMode,
@@ -63,7 +67,7 @@ struct SignInView: View {
                 }
             }
         }
-        .presentationDetents(presentationMode == .sheet ? [.height(470)] : [.large])
+        .presentationDetents(presentationMode == .sheet ? [.height(520)] : [.large])
         .presentationDragIndicator(.hidden)
         .preferredColorScheme(.light)
         .onChange(of: authStore.status) { status in
@@ -142,14 +146,33 @@ struct SignInView: View {
                 .lineSpacing(1)
                 .padding(.top, 2)
                 .fixedSize(horizontal: false, vertical: true)
+
+            accountModeToggle
         }
         .padding(.top, presentationMode == .sheet ? 1 : 4)
+    }
+
+    private var accountModeToggle: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.2)) {
+                isCreatingAccount.toggle()
+            }
+        } label: {
+            Text(isCreatingAccount ? "Already have an account? Sign In" : "Create an Account")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isAuthInteractionDisabled)
     }
 
     private var appleSignInButton: some View {
         ZStack {
             SignInWithAppleButton(
-                .signIn,
+                isCreatingAccount ? .signUp : .signIn,
                 onRequest: { request in
                     signingInProvider = .apple
                     authStore.prepareSignInWithAppleRequest(request)
@@ -176,7 +199,7 @@ struct SignInView: View {
         }
         .disabled(isAuthInteractionDisabled)
         .allowsHitTesting(!isAuthInteractionDisabled)
-        .accessibilityLabel("Sign in with Apple")
+        .accessibilityLabel(isCreatingAccount ? "Sign up with Apple" : "Sign in with Apple")
     }
 
     private var googleSignInButton: some View {
@@ -191,7 +214,7 @@ struct SignInView: View {
                         .font(.system(size: 21, weight: .semibold))
                 }
 
-                Text(signingInProvider == .google ? "Signing In" : "Sign In with Google")
+                Text(googleButtonTitle)
                     .font(.system(size: 16, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
@@ -203,7 +226,15 @@ struct SignInView: View {
         }
         .buttonStyle(.plain)
         .disabled(isAuthInteractionDisabled)
-        .accessibilityLabel("Sign in with Google")
+        .accessibilityLabel(isCreatingAccount ? "Sign up with Google" : "Sign in with Google")
+    }
+
+    private var googleButtonTitle: String {
+        if signingInProvider == .google {
+            return isCreatingAccount ? "Creating Account" : "Signing In"
+        }
+
+        return isCreatingAccount ? "Sign Up with Google" : "Sign In with Google"
     }
 
     private var loadingState: some View {
@@ -320,7 +351,7 @@ struct SignInView: View {
         case .loading:
             return "person.crop.circle.badge.clock"
         case .signedOut:
-            return "person.badge.key"
+            return isCreatingAccount ? "person.crop.circle.badge.plus" : "person.badge.key"
         }
     }
 
@@ -331,6 +362,12 @@ struct SignInView: View {
         case .misconfigured:
             return "Sign In Needs Setup"
         case .loading, .signedOut:
+            // The create-account copy replaces the prompt: someone who has just said they have no
+            // account should not still be reading why this particular action needed one.
+            if isCreatingAccount {
+                return "Create Your Account"
+            }
+
             if let promptTitle {
                 return promptTitle
             }
@@ -348,6 +385,10 @@ struct SignInView: View {
         case .loading:
             return "Looking for an existing account session."
         case .signedOut:
+            if isCreatingAccount {
+                return "Continue with Apple or Google and Journaltopia makes the account for you — no password to remember."
+            }
+
             if let promptSubtitle {
                 return promptSubtitle
             }
@@ -379,7 +420,7 @@ struct SignInView_Previews: PreviewProvider {
 
             SignInView(presentationMode: .sheet)
                 .environmentObject(SupabaseAuthStore.preview(status: .signedOut))
-                .frame(height: 470)
+                .frame(height: 520)
                 .previewDisplayName("Sheet Signed Out")
 
             SignInView(presentationMode: .fullScreen)
@@ -393,7 +434,7 @@ struct SignInView_Previews: PreviewProvider {
                         errorMessage: nil
                     )
                 )
-                .frame(height: 470)
+                .frame(height: 520)
                 .previewDisplayName("Misconfigured")
         }
     }
