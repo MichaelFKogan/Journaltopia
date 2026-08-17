@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var isRestoring = false
     @State private var isManageSubscriptionPresented = false
     @State private var isSignInSheetPresented = false
+    @State private var isPaywallSheetPresented = false
     @State private var showsSignedOutConfirmation = false
     @State private var signedOutConfirmationHideTask: Task<Void, Never>?
 
@@ -123,6 +124,12 @@ struct SettingsView: View {
                 }
             }
         }
+        .sheet(isPresented: $isPaywallSheetPresented) {
+            JournaltopiaPlusPaywallView(
+                presentation: .sheet,
+                onDismiss: { isPaywallSheetPresented = false }
+            )
+        }
         .task {
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
@@ -215,23 +222,42 @@ struct SettingsView: View {
 
     // MARK: - Journaltopia+
 
-    /// Status only — no marketing. Someone in Settings is looking for a fact.
+    /// Status when signed in; a door into the pricing sheet when signed out. The paywall itself
+    /// asks for an account before anything is purchased, so browsing plans does not need one.
+    @ViewBuilder
     private var subscriptionStatusRow: some View {
-        SettingsRowContent(
-            systemName: "crown.fill",
-            title: "Journaltopia+",
-            subtitle: subscriptionSubtitle,
-            showsChevron: false,
-            trailingContent: {
-                if subscriptionStore.state.isSubscribed {
-                    CreditBalanceBadge(
-                        balance: generationCreditStore.balance,
-                        isRefreshing: generationCreditStore.isRefreshing
-                    )
-                }
+        if isSignedOut {
+            Button {
+                isPaywallSheetPresented = true
+            } label: {
+                SettingsRowContent(
+                    systemName: "crown.fill",
+                    title: "Journaltopia+",
+                    subtitle: subscriptionSubtitle,
+                    showsChevron: true
+                )
+                .padding(.vertical, 4)
             }
-        )
-        .padding(.vertical, 4)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Journaltopia+")
+            .accessibilityHint("Shows plans and pricing")
+        } else {
+            SettingsRowContent(
+                systemName: "crown.fill",
+                title: "Journaltopia+",
+                subtitle: subscriptionSubtitle,
+                showsChevron: false,
+                trailingContent: {
+                    if subscriptionStore.state.isSubscribed {
+                        CreditBalanceBadge(
+                            balance: generationCreditStore.balance,
+                            isRefreshing: generationCreditStore.isRefreshing
+                        )
+                    }
+                }
+            )
+            .padding(.vertical, 4)
+        }
     }
 
     private var upgradeRow: some View {
@@ -292,14 +318,14 @@ struct SettingsView: View {
 
     private var subscriptionSubtitle: String {
         guard authStore.userID != nil else {
-            return "Sign in to see your plan"
+            return "See plans and pricing"
         }
 
         switch subscriptionStore.state {
         case .unresolved:
             return "Checking your plan…"
         case .signedOut:
-            return "Sign in to see your plan"
+            return "See plans and pricing"
         case .notSubscribed:
             return "Not subscribed"
         case .subscribed:

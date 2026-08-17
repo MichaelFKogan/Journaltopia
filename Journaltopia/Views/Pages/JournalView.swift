@@ -10582,21 +10582,29 @@ struct EntriesView: View {
 
             Spacer()
 
-            Button(editMode == .active ? "Done" : "Edit") {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    if editMode == .active {
-                        editMode = .inactive
-                        selectedEntryIDs = []
-                    } else {
-                        editMode = .active
+            if canEditEntries {
+                Button(editMode == .active ? "Done" : "Edit") {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        if editMode == .active {
+                            editMode = .inactive
+                            selectedEntryIDs = []
+                        } else {
+                            editMode = .active
+                        }
                     }
                 }
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.homeAccent)
+                .disabled(filteredEntryItems.isEmpty)
             }
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(Color.homeAccent)
-            .disabled(filteredEntryItems.isEmpty)
         }
         .padding(.top, 12)
+    }
+
+    /// Sample browsing has nothing of the visitor's to select, rename or delete — Edit belongs to
+    /// signed-in accounts (and sample authors editing the pack).
+    private var canEditEntries: Bool {
+        contentMode.canPersistUserContent || contentMode.isSampleAuthoring
     }
 
     private var tabSwitcher: some View {
