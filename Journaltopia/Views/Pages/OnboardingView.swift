@@ -4,11 +4,10 @@ struct OnboardingView: View {
     let onComplete: () -> Void
 
     @State private var selectedPage = 0
-    @State private var isChoosePlanPresented = false
 
     private let pages = OnboardingPage.allPages
     private var lastPageIndex: Int {
-        max(pages.count - 1, 0)
+        pages.count
     }
 
     var body: some View {
@@ -20,12 +19,17 @@ struct OnboardingView: View {
                 TabView(selection: $selectedPage) {
                     ForEach(pages.indices, id: \.self) { index in
                         OnboardingPageView(
-                            page: pages[index],
-                            isLastPage: index == lastPageIndex,
-                            onComplete: showChoosePlan
+                            page: pages[index]
                         )
                             .tag(index)
                     }
+
+                    StartYourStoryView(
+                        showsNavigationChrome: false,
+                        onExploreFirst: finish,
+                        onAuthenticated: finish
+                    )
+                    .tag(lastPageIndex)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
 
@@ -38,34 +42,22 @@ struct OnboardingView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(isPresented: $isChoosePlanPresented) {
-            JournaltopiaPlusPaywallView(
-                presentation: .sheet,
-                onDismiss: { isChoosePlanPresented = false },
-                onFreePlan: {
-                    isChoosePlanPresented = false
-                    finish()
-                },
-                onPlanActivated: {
-                    isChoosePlanPresented = false
-                    finish()
-                }
-            )
-        }
     }
 
     private var topBar: some View {
         HStack {
             Spacer()
 
-            Button("Skip") {
-                finish()
+            if selectedPage != lastPageIndex {
+                Button("Skip") {
+                    finish()
+                }
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .accessibilityLabel("Skip onboarding")
             }
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color.storyPurple)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .accessibilityLabel("Skip onboarding")
         }
         .padding(.top, 12)
         .padding(.horizontal, 12)
@@ -73,7 +65,7 @@ struct OnboardingView: View {
 
     private var bottomControls: some View {
         HStack(spacing: 18) {
-            ForEach(pages.indices, id: \.self) { index in
+            ForEach(0...lastPageIndex, id: \.self) { index in
                 Circle()
                     .fill(index == selectedPage ? Color.storyPurple : Color.homeBorder)
                     .frame(width: 9, height: 9)
@@ -87,10 +79,6 @@ struct OnboardingView: View {
 
     private func finish() {
         onComplete()
-    }
-
-    private func showChoosePlan() {
-        isChoosePlanPresented = true
     }
 }
 
@@ -110,8 +98,6 @@ private struct OnboardingBackgroundView: View {
 
 private struct OnboardingPageView: View {
     let page: OnboardingPage
-    let isLastPage: Bool
-    let onComplete: () -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -138,30 +124,7 @@ private struct OnboardingPageView: View {
 
                 image(maxHeight: imageHeight(for: proxy.size))
 
-                if isLastPage {
-                    VStack(spacing: 14) {
-                        Button {
-                            onComplete()
-                        } label: {
-                            Text("Start Journaling")
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundStyle(Color.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 60)
-                                .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Start Journaling")
-
-                        Text("You can always sign in later.")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.homeMutedText)
-                    }
-                    .padding(.horizontal, 26)
-                    .padding(.top, 16)
-                }
-
-                Spacer(minLength: isLastPage ? 14 : 24)
+                Spacer(minLength: 24)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
@@ -181,7 +144,7 @@ private struct OnboardingPageView: View {
     }
 
     private func imageHeight(for size: CGSize) -> CGFloat {
-        let reservedHeight: CGFloat = isLastPage ? 340 : 206
+        let reservedHeight: CGFloat = 206
         return max(320, size.height - reservedHeight)
     }
 }

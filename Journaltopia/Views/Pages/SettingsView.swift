@@ -493,6 +493,16 @@ private struct SettingsExtraView: View {
         List {
             Section("Pages") {
                 SettingsNavigationRow(
+                    systemName: "book.pages",
+                    title: "Start Your Story",
+                    subtitle: "Open the account-start page",
+                    accessibilityLabel: "Open Start Your Story"
+                ) {
+                    StartYourStoryView()
+                        .enableInteractivePopGesture()
+                }
+
+                SettingsNavigationRow(
                     systemName: "person.crop.circle.badge.plus",
                     title: "Create An Account",
                     subtitle: "Open the sign-up screen",
