@@ -24,6 +24,8 @@ struct SettingsView: View {
     @State private var isRestoring = false
     @State private var isManageSubscriptionPresented = false
     @State private var isSignInSheetPresented = false
+    @State private var showsSignedOutConfirmation = false
+    @State private var signedOutConfirmationHideTask: Task<Void, Never>?
 
     var body: some View {
         List {
@@ -96,6 +98,13 @@ struct SettingsView: View {
                 }
             }
         }
+        .overlay {
+            if showsSignedOutConfirmation {
+                signedOutConfirmationCard
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: showsSignedOutConfirmation)
         .preferredColorScheme(.light)
         .enableInteractivePopGesture()
         // Presented from here rather than through the gate: the gate's sheet is mounted at the app
@@ -105,9 +114,7 @@ struct SettingsView: View {
                 presentationMode: .sheet,
                 promptTitle: AccountRequiredAction.signIn.title,
                 promptSubtitle: AccountRequiredAction.signIn.message
-            ) {
-                isSignInSheetPresented = false
-            }
+            )
             .onChange(of: authStore.status) { status in
                 // Closed on the auth store's word, not on the provider call returning — the session
                 // arrives through `authStateChanges`, which can land later.
@@ -119,6 +126,10 @@ struct SettingsView: View {
         .task {
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+        }
+        .onDisappear {
+            signedOutConfirmationHideTask?.cancel()
+            signedOutConfirmationHideTask = nil
         }
     }
 
@@ -133,6 +144,63 @@ struct SettingsView: View {
         case .sheet:
             isSignInSheetPresented = true
         }
+    }
+
+    private func signOut() {
+        Task {
+            isSigningOut = true
+            await authStore.signOut()
+            isSigningOut = false
+            presentSignedOutConfirmation()
+        }
+    }
+
+    private func presentSignedOutConfirmation() {
+        signedOutConfirmationHideTask?.cancel()
+        showsSignedOutConfirmation = true
+
+        signedOutConfirmationHideTask = Task {
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            showsSignedOutConfirmation = false
+            signedOutConfirmationHideTask = nil
+        }
+    }
+
+    private var signedOutConfirmationCard: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+
+            VStack(spacing: 6) {
+                Text("Signed Out")
+                    .font(.system(size: 20, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+
+                Text("This device is back in signed-out mode. Your local samples stay available to browse.")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.homeMutedText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 26)
+        .frame(maxWidth: 300)
+        .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.storyPurple.opacity(0.16), lineWidth: 1)
+        )
+        .shadow(color: Color.storyPurple.opacity(0.14), radius: 20, y: 10)
+        .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Signed out. This device is back in signed-out mode.")
+        .accessibilityAddTraits(.isStaticText)
     }
 
     private var accountStatusRow: some View {
@@ -150,7 +218,7 @@ struct SettingsView: View {
     /// Status only — no marketing. Someone in Settings is looking for a fact.
     private var subscriptionStatusRow: some View {
         SettingsRowContent(
-            systemName: subscriptionStore.state.isSubscribed ? "checkmark.seal.fill" : "sparkles",
+            systemName: "crown.fill",
             title: "Journaltopia+",
             subtitle: subscriptionSubtitle,
             showsChevron: false,
@@ -316,11 +384,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         case .signedIn:
             Button(role: .destructive) {
-                Task {
-                    isSigningOut = true
-                    await authStore.signOut()
-                    isSigningOut = false
-                }
+                signOut()
             } label: {
                 SettingsRowContent(
                     systemName: "rectangle.portrait.and.arrow.right",

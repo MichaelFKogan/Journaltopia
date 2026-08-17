@@ -51,6 +51,9 @@ enum LocalUserDataPurge {
     /// purged — except install-level walkthrough state, which should not return after sign-out.
     static let devicePreferenceKeys: Set<String> = [
         "JournaltopiaHasCompletedOnboarding",
+        // Install-level: once this device has moved past the first signed-out auth wall (onboarding
+        // or "Continue Without Signing In"), signing out must not raise that wall again.
+        "JournaltopiaSignedOutSignInPromptDismissed",
         "JournaltopiaSampleAuthorModeEnabled",
         "JournaltopiaSelectedJournalLayout",
         "JournaltopiaSelectedJournalDetailEntryLayout",

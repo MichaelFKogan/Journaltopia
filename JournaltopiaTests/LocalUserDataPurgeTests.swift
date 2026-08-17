@@ -204,6 +204,14 @@ final class LocalUserDataPurgeTests: XCTestCase {
         XCTAssertTrue(LocalUserDataPurge.shouldPurgeUserDefaultsKey("JournaltopiaActiveSampleStoryPack"))
     }
 
+    /// Clearing this on sign-out would re-present the first-run full-screen Sign In cover the
+    /// moment status flips to signed out — including when the user just tapped Sign Out in Settings.
+    func testSignedOutSignInPromptDismissalSurvivesThePurge() {
+        XCTAssertFalse(
+            LocalUserDataPurge.shouldPurgeUserDefaultsKey("JournaltopiaSignedOutSignInPromptDismissed")
+        )
+    }
+
     // MARK: - Failure isolation
 
     /// One unusable location must not cost the purge everything after it. A file sitting where a
