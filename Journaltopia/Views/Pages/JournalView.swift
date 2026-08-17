@@ -3193,10 +3193,17 @@ private struct JournalCustomizationSheet: View {
     @State private var unsplashQuery: String
     @State private var unsplashPhotos: [UnsplashCoverPhoto] = []
     @State private var unsplashResultsCache: [String: [UnsplashCoverPhoto]] = [:]
+    @State private var unsplashPageCache: [String: Int] = [:]
+    @State private var unsplashHasMoreCache: [String: Bool] = [:]
+    @State private var currentUnsplashCacheKey: String?
+    @State private var currentUnsplashPage = 0
+    @State private var canLoadMoreUnsplashPhotos = false
     @State private var isSearchingUnsplash = false
+    @State private var isLoadingMoreUnsplash = false
     @State private var unsplashErrorMessage: String?
     @FocusState private var isUnsplashSearchFocused: Bool
     private let unsplashService = UnsplashCoverService()
+    private let unsplashPageSize = 18
 
     init(
         chapter: PrototypeChapter,
@@ -3522,7 +3529,7 @@ private struct JournalCustomizationSheet: View {
                         .background(Color.homeAccent, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(isSearchingUnsplash)
+                .disabled(isSearchingUnsplash || isLoadingMoreUnsplash)
                 .accessibilityLabel("Search stock photos")
             }
             .frame(height: 40)
@@ -3583,6 +3590,34 @@ private struct JournalCustomizationSheet: View {
                 }
                 .padding(.top, 2)
                 .zIndex(1)
+
+                if canLoadMoreUnsplashPhotos, currentUnsplashCacheKey == normalizedUnsplashQuery(unsplashQuery) {
+                    Button {
+                        loadMoreUnsplashPhotos()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isLoadingMoreUnsplash {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+
+                            Text(isLoadingMoreUnsplash ? "Loading..." : "Load More")
+                                .font(.system(size: 13, weight: .bold))
+                        }
+                        .foregroundStyle(isLoadingMoreUnsplash ? Color.homeMutedText : Color.homeAccent)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(Color.homeBorder, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoadingMoreUnsplash || isSearchingUnsplash)
+                    .accessibilityLabel("Load more stock photos")
+                    .padding(.top, 2)
+                }
             }
 
             Color.clear
@@ -3651,7 +3686,7 @@ private struct JournalCustomizationSheet: View {
 
     private func searchUnsplash() {
         let query = unsplashQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, !isSearchingUnsplash else {
+        guard !query.isEmpty, !isSearchingUnsplash, !isLoadingMoreUnsplash else {
             return
         }
         isUnsplashSearchFocused = false
@@ -3659,19 +3694,30 @@ private struct JournalCustomizationSheet: View {
 
         if let cachedPhotos = unsplashResultsCache[cacheKey] {
             unsplashPhotos = cachedPhotos
+            currentUnsplashCacheKey = cacheKey
+            currentUnsplashPage = unsplashPageCache[cacheKey] ?? cachedPageCount(for: cachedPhotos)
+            canLoadMoreUnsplashPhotos = unsplashHasMoreCache[cacheKey] ?? (cachedPhotos.count >= unsplashPageSize)
             unsplashErrorMessage = nil
             return
         }
 
+        currentUnsplashCacheKey = cacheKey
+        currentUnsplashPage = 0
+        canLoadMoreUnsplashPhotos = false
         isSearchingUnsplash = true
         unsplashErrorMessage = nil
 
         Task {
             do {
-                let photos = try await unsplashService.search(query: query)
+                let photos = try await unsplashService.search(query: query, page: 1, perPage: unsplashPageSize)
                 await MainActor.run {
                     unsplashPhotos = photos
                     unsplashResultsCache[cacheKey] = photos
+                    unsplashPageCache[cacheKey] = 1
+                    unsplashHasMoreCache[cacheKey] = photos.count == unsplashPageSize
+                    currentUnsplashCacheKey = cacheKey
+                    currentUnsplashPage = 1
+                    canLoadMoreUnsplashPhotos = photos.count == unsplashPageSize
                     isSearchingUnsplash = false
                 }
             } catch {
@@ -3681,6 +3727,48 @@ private struct JournalCustomizationSheet: View {
                 }
             }
         }
+    }
+
+    private func loadMoreUnsplashPhotos() {
+        let query = unsplashQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cacheKey = normalizedUnsplashQuery(query)
+        guard !query.isEmpty,
+              !isSearchingUnsplash,
+              !isLoadingMoreUnsplash,
+              canLoadMoreUnsplashPhotos,
+              currentUnsplashCacheKey == cacheKey else {
+            return
+        }
+
+        let nextPage = currentUnsplashPage + 1
+        isLoadingMoreUnsplash = true
+        unsplashErrorMessage = nil
+
+        Task {
+            do {
+                let photos = try await unsplashService.search(query: query, page: nextPage, perPage: unsplashPageSize)
+                await MainActor.run {
+                    let existingIDs = Set(unsplashPhotos.map(\.id))
+                    let newPhotos = photos.filter { !existingIDs.contains($0.id) }
+                    unsplashPhotos.append(contentsOf: newPhotos)
+                    unsplashResultsCache[cacheKey] = unsplashPhotos
+                    unsplashPageCache[cacheKey] = nextPage
+                    unsplashHasMoreCache[cacheKey] = photos.count == unsplashPageSize
+                    currentUnsplashPage = nextPage
+                    canLoadMoreUnsplashPhotos = photos.count == unsplashPageSize
+                    isLoadingMoreUnsplash = false
+                }
+            } catch {
+                await MainActor.run {
+                    unsplashErrorMessage = error.localizedDescription
+                    isLoadingMoreUnsplash = false
+                }
+            }
+        }
+    }
+
+    private func cachedPageCount(for photos: [UnsplashCoverPhoto]) -> Int {
+        max(Int(ceil(Double(photos.count) / Double(unsplashPageSize))), 1)
     }
 
     private func normalizedUnsplashQuery(_ query: String) -> String {
