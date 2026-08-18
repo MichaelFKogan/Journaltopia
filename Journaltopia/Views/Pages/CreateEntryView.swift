@@ -1377,6 +1377,10 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         backgroundImageName != nil
     }
 
+    var requiresPremiumPaperAccess: Bool {
+        backgroundImageName != nil
+    }
+
     var backgroundImageName: String? {
         switch self {
         case .watercolorPaper:
@@ -5780,6 +5784,8 @@ struct CreateEntryView: View {
             selectedTextColorIndex: $selectedTextColorIndex,
             selectedPaperColorIndex: $selectedPaperColorIndex,
             previewTextSize: $previewTextSize,
+            canUsePremiumPaperImages: canUsePremiumPaperImages,
+            onLockedPaperStyleSelected: openPremiumPaperGate,
             onClose: closeCustomizePanel
         )
         .id(activeCustomizeTab)
@@ -6881,6 +6887,23 @@ struct CreateEntryView: View {
 
     private var isSubscribedForGeneration: Bool {
         authoringMode.isSampleStudio || subscriptionStore.state.isSubscribed
+    }
+
+    private var canUsePremiumPaperImages: Bool {
+        authoringMode.isSampleStudio || subscriptionStore.state.isSubscribed
+    }
+
+    private func openPremiumPaperGate() {
+        guard signInGate.requireAccount(for: .customizePaper, retry: { openPremiumPaperGate() }) else {
+            return
+        }
+
+        guard entitlementGate.requireJournaltopiaPlus(for: .customizePaper) else {
+            if !subscriptionStore.state.isResolved {
+                Task { await subscriptionStore.refreshServerEntitlement() }
+            }
+            return
+        }
     }
 
     private var photosMenuBadgeCount: Int {
@@ -12021,6 +12044,8 @@ private struct CreateFormattingSheet: View {
     @Binding var selectedTextColorIndex: Int
     @Binding var selectedPaperColorIndex: Int
     @Binding var previewTextSize: Double
+    let canUsePremiumPaperImages: Bool
+    let onLockedPaperStyleSelected: () -> Void
     let onClose: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
@@ -12032,6 +12057,8 @@ private struct CreateFormattingSheet: View {
         selectedTextColorIndex: Binding<Int>,
         selectedPaperColorIndex: Binding<Int>,
         previewTextSize: Binding<Double>,
+        canUsePremiumPaperImages: Bool = true,
+        onLockedPaperStyleSelected: @escaping () -> Void = {},
         onClose: (() -> Void)? = nil
     ) {
         _selectedTab = State(initialValue: initialTab)
@@ -12040,6 +12067,8 @@ private struct CreateFormattingSheet: View {
         _selectedTextColorIndex = selectedTextColorIndex
         _selectedPaperColorIndex = selectedPaperColorIndex
         _previewTextSize = previewTextSize
+        self.canUsePremiumPaperImages = canUsePremiumPaperImages
+        self.onLockedPaperStyleSelected = onLockedPaperStyleSelected
         self.onClose = onClose
     }
 
@@ -12221,16 +12250,24 @@ private struct CreateFormattingSheet: View {
             spacing: 24
         ) {
             ForEach(CreatePaperStyleChoice.allCases) { paperStyle in
+                let isLocked = paperStyle.requiresPremiumPaperAccess && !canUsePremiumPaperImages
+
                 Button {
-                    selectedPaperStyle = paperStyle
+                    if isLocked {
+                        onLockedPaperStyleSelected()
+                    } else {
+                        selectedPaperStyle = paperStyle
+                    }
                 } label: {
                     CreatePaperStyleOption(
                         style: paperStyle,
                         paperColor: CreateFormattingPalette.paperColors[selectedPaperColorIndex],
-                        isSelected: selectedPaperStyle == paperStyle
+                        isSelected: selectedPaperStyle == paperStyle,
+                        isLocked: isLocked
                     )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isLocked ? "\(paperStyle.title), Journaltopia Plus required" : paperStyle.title)
             }
         }
         .frame(maxWidth: .infinity)
@@ -12296,12 +12333,15 @@ private struct CreatePaperStyleOption: View {
     let style: CreatePaperStyleChoice
     let paperColor: Color
     let isSelected: Bool
+    let isLocked: Bool
 
     var body: some View {
         VStack(spacing: 8) {
             CreatePaperPreview(style: style, paperColor: paperColor)
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: .infinity)
+                .saturation(isLocked ? 0.72 : 1)
+                .opacity(isLocked ? 0.62 : 1)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -12317,10 +12357,27 @@ private struct CreatePaperStyleOption: View {
                             .offset(x: 5, y: 5)
                     }
                 }
+                .overlay {
+                    if isLocked {
+                        ZStack {
+                            Color.white.opacity(0.36)
+
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.storyInk.opacity(0.72))
+                                .frame(width: 30, height: 30)
+                                .background(Color.white.opacity(0.88), in: Circle())
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.storyBorder.opacity(0.54), lineWidth: 1)
+                                )
+                        }
+                    }
+                }
 
             Text(style.title)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.homeMutedText)
+                .foregroundStyle(isLocked ? Color.homeMutedText.opacity(0.72) : Color.homeMutedText)
                 .frame(maxWidth: .infinity)
                 .lineLimit(1)
                 .minimumScaleFactor(0.76)

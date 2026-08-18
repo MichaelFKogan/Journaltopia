@@ -159,6 +159,7 @@ struct JournaltopiaPlusPaywallView: View {
 
                     VStack(alignment: .leading, spacing: 12) {
                         featureRow("Everything in Free", isIncluded: true)
+                        featureRow("Unlock all paper styles", isIncluded: true)
                         featureRow("Generate storyboard images\n(25 credits/month)", isIncluded: true)
                         featureRow("HD storyboard quality", isIncluded: true)
                         featureRow("Use credits for Standard or HD", isIncluded: true)

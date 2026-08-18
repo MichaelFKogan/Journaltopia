@@ -15,6 +15,7 @@ enum AccountRequiredAction: String, Equatable {
     case generateStoryboard
     case attachReferencePhoto
     case saveCharacter
+    case customizePaper
     case createJournal
     case editJournal
     case deleteJournal
@@ -36,6 +37,8 @@ enum AccountRequiredAction: String, Equatable {
             return "Sign In to Add Photos"
         case .saveCharacter:
             return "Sign In to Save Characters"
+        case .customizePaper:
+            return "Sign In for Paper Styles"
         case .createJournal, .editJournal, .customizeJournalCover, .reorderContent:
             return "Sign In to Edit Journals"
         case .spendCredits:
@@ -63,6 +66,8 @@ enum AccountRequiredAction: String, Equatable {
             return "Reference photos are uploaded to your account. Sign in to add them to an entry."
         case .saveCharacter:
             return "Your character library is stored with your account so it is there for every entry. Sign in to save one."
+        case .customizePaper:
+            return "Paper image styles are included with Journaltopia+. Sign in to use them in your entries."
         case .createJournal:
             return "Journals are saved to your account. Sign in to make one — the sample journals stay browsable without an account."
         case .editJournal, .customizeJournalCover:

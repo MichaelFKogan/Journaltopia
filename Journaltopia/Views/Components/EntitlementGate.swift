@@ -21,12 +21,15 @@ enum EntitlementRequirement: Equatable {
 enum JournaltopiaPlusRequiredAction: String, Equatable {
     case generateStoryboard
     case generateHDStoryboard
+    case customizePaper
     case buyCredits
 
     var subscriptionTitle: String {
         switch self {
         case .generateStoryboard, .generateHDStoryboard:
             return "Generate with Journaltopia+"
+        case .customizePaper:
+            return "Unlock Paper Styles"
         case .buyCredits:
             return "Journaltopia+ Required"
         }
@@ -38,6 +41,8 @@ enum JournaltopiaPlusRequiredAction: String, Equatable {
             return "Turning an entry into a graphic novel page runs on Journaltopia's servers. Journaltopia+ includes 25 credits every month — your journal itself stays free."
         case .generateHDStoryboard:
             return "HD pages are sharper and cost 2 credits. Journaltopia+ includes 25 credits every month — your journal itself stays free."
+        case .customizePaper:
+            return "Paper image styles are included with Journaltopia+. Start Journaltopia+ to use textured pages in your entries."
         case .buyCredits:
             return "Extra credit packs are for Journaltopia+ members. Start Journaltopia+ to get 25 credits a month, then top up whenever you need more."
         }
@@ -54,7 +59,7 @@ enum JournaltopiaPlusRequiredAction: String, Equatable {
         switch self {
         case .generateHDStoryboard:
             return "An HD page costs \(cost) and you have \(have) left. Switch to Standard, or add more credits to keep going."
-        case .generateStoryboard, .buyCredits:
+        case .generateStoryboard, .customizePaper, .buyCredits:
             return "This page costs \(cost) and you have \(have) left. Your next 25 arrive with your renewal, or you can add more now."
         }
     }
