@@ -99,11 +99,8 @@ struct HomeView: View {
             if contentMode.requiresSignIn {
                 signInButton
             } else {
-                HStack(spacing: 4) {
-                    creditsButton
-                    settingsButton
-                }
-                .padding(.top, 2)
+                creditsButton
+                    .padding(.top, 2)
             }
         }
     }
@@ -131,8 +128,8 @@ struct HomeView: View {
     ///
     /// Showing a free account "0" beside a sparkle reads as a balance they could spend, which is
     /// both wrong and a dead end — credits are not sold separately from Journaltopia+. The pill says
-    /// what the tap actually leads to instead. Neither variant is shown until the server has
-    /// answered, so a subscriber is never briefly invited to subscribe.
+    /// Upgrade instead. Neither variant is shown until the server has answered, so a subscriber is
+    /// never briefly invited to subscribe.
     @ViewBuilder
     private var creditsButton: some View {
         NavigationLink {
@@ -150,23 +147,8 @@ struct HomeView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            subscriptionStore.state.isSubscribed ? "Open credits" : "Learn about Journaltopia+"
+            subscriptionStore.state.isSubscribed ? "Open credits" : "Upgrade to Journaltopia+"
         )
-    }
-
-    private var settingsButton: some View {
-        NavigationLink {
-            SettingsView()
-                .enableInteractivePopGesture()
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Color.storyInk.opacity(0.65))
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open settings")
     }
 
     private var heroCard: some View {

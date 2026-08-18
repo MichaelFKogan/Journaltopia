@@ -197,7 +197,7 @@ struct ProfileView: View {
                     profileSummary
                     storyboardsSection
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
                 .padding(.top, 14)
                 .padding(.bottom, isSelecting ? 150 : 96)
             }
@@ -215,7 +215,7 @@ struct ProfileView: View {
                             Capsule()
                                 .stroke(Color.homeBorder, lineWidth: 1)
                         }
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, 16)
                         .padding(.bottom, 10)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -249,9 +249,9 @@ struct ProfileView: View {
                 .enableInteractivePopGesture()
         } label: {
             Image(systemName: "gearshape")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Color.storyInk.opacity(0.65))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.88))
+                .frame(height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
