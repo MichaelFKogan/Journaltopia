@@ -399,7 +399,7 @@ struct HomeView: View {
     }
 }
 
-private struct HomeLoopingVideoBackground: UIViewRepresentable {
+struct HomeLoopingVideoBackground: UIViewRepresentable {
     let resourceName: String
     var resourceExtension = "mp4"
 
@@ -422,7 +422,7 @@ private struct HomeLoopingVideoBackground: UIViewRepresentable {
     }
 }
 
-private final class HomeLoopingVideoPlayerView: UIView {
+final class HomeLoopingVideoPlayerView: UIView {
     private var queuePlayer: AVQueuePlayer?
     private var playerLooper: AVPlayerLooper?
     private var becomeActiveObserver: NSObjectProtocol?

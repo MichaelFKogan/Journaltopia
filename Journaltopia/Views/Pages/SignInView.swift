@@ -111,9 +111,7 @@ struct SignInView: View {
     }
 
     private func hero(height: CGFloat) -> some View {
-        Image("homepage_banner")
-            .resizable()
-            .scaledToFill()
+        HomeLoopingVideoBackground(resourceName: "homepage_banner")
             .frame(maxWidth: .infinity)
             .frame(height: height)
             .clipped()
