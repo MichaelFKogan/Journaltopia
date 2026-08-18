@@ -3273,7 +3273,7 @@ struct CreateEntryView: View {
                 createToolbarItems(
                     title: editorToolbarTitle,
                     showsCloseButton: true,
-                    showsJournalDestinationButton: true
+                    showsEditorDateTitle: true
                 )
             }
         }
@@ -3442,6 +3442,7 @@ struct CreateEntryView: View {
         title: String,
         showsCloseButton: Bool,
         showsEntryDateButton: Bool = false,
+        showsEditorDateTitle: Bool = false,
         showsJournalDestinationButton: Bool = false
     ) -> some ToolbarContent {
         if showsCloseButton {
@@ -3470,7 +3471,9 @@ struct CreateEntryView: View {
         }
 
         ToolbarItem(placement: .principal) {
-            if showsJournalDestinationButton {
+            if showsEditorDateTitle {
+                editorToolbarDateTitle
+            } else if showsJournalDestinationButton {
                 createToolbarJournalButton
             } else if showsEntryDateButton {
                 Button {
@@ -3509,6 +3512,16 @@ struct CreateEntryView: View {
             }
             .hideSharedBackgroundIfAvailable()
         }
+    }
+
+    private var editorToolbarDateTitle: some View {
+        Text(editorToolbarDateText)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(Color.storyGray.opacity(0.46))
+            .lineLimit(1)
+            .minimumScaleFactor(0.74)
+            .frame(maxWidth: 210)
+            .accessibilityLabel("Entry date, \(editorToolbarDateText)")
     }
 
     private var createToolbarJournalButton: some View {
@@ -4979,10 +4992,6 @@ struct CreateEntryView: View {
             }
 
             floatingEditorMenu
-                .overlay(alignment: .bottom) {
-                    editorBottomDateLabel
-                        .offset(y: 15)
-                }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -5282,12 +5291,13 @@ struct CreateEntryView: View {
             }
 
             floatingMenuActionButton(
-                title: "Prompts",
-                systemName: isShowingJournalPromptsSheet ? "lightbulb.fill" : "lightbulb",
-                foregroundColor: isShowingJournalPromptsSheet ? Color.storyPurple : Color.storyInk.opacity(0.82),
-                accessibilityLabel: isShowingJournalPromptsSheet ? "Close prompts panel" : "Open prompts panel"
+                title: selectedJournalShelfTitles.count == 1 ? "Journal" : "Journals",
+                systemName: selectedJournalShelfTitles.isEmpty ? "book.closed" : "book.closed.fill",
+                foregroundColor: selectedJournalShelfTitles.isEmpty ? Color.storyInk.opacity(0.82) : Color.storyPurple,
+                badgeCount: selectedJournalShelfTitles.count > 1 ? selectedJournalShelfTitles.count : nil,
+                accessibilityLabel: selectedJournalShelfTitles.isEmpty ? "Add to journal" : "\(journalShelfSummary), change journals"
             ) {
-                openJournalPromptsSheet()
+                openJournalsFromShelf()
             }
 
             if showsComposeFlowControls {
@@ -5509,7 +5519,7 @@ struct CreateEntryView: View {
                     iconWeight: .semibold,
                     shape: .circle
                 )
-                .background(Color.white, in: Circle())
+                .background(Color.white.opacity(0.88), in: Circle())
                 .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
             } else {
                 ZStack {
