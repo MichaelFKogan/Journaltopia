@@ -113,7 +113,7 @@ struct HomeView: View {
             isSettingsSheetPresented = true
         } label: {
             Text("Sign In")
-                .font(.system(size: 16, weight: .bold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.storyPurple)
                 .padding(.horizontal, 8)
                 .frame(height: 44)

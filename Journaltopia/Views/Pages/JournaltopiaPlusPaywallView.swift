@@ -16,6 +16,11 @@ struct JournaltopiaPlusPaywallView: View {
         case page
     }
 
+    private enum SelectedPlan {
+        case free
+        case plus
+    }
+
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
@@ -29,6 +34,7 @@ struct JournaltopiaPlusPaywallView: View {
     var onPlanActivated: (() -> Void)?
 
     @State private var restoreOutcome: SubscriptionRestoreOutcome?
+    @State private var selectedPlan: SelectedPlan = .free
 
     private var isSignedIn: Bool {
         authStore.userID != nil
@@ -79,12 +85,16 @@ struct JournaltopiaPlusPaywallView: View {
             // Loading the product is what makes a real price available. Safe to repeat: the store
             // keeps the first one it resolves.
             await subscriptionStore.refresh(isSignedIn: isSignedIn)
+            if subscriptionStore.state.isSubscribed {
+                selectedPlan = .plus
+            }
         }
         .onChange(of: subscriptionStore.state) { state in
             guard state.isSubscribed else {
                 return
             }
 
+            selectedPlan = .plus
             onPlanActivated?()
         }
     }
@@ -116,20 +126,20 @@ struct JournaltopiaPlusPaywallView: View {
     }
 
     private var freePlanCard: some View {
-        planCard(isHighlighted: false) {
+        planCard(isHighlighted: selectedPlan == .free) {
             VStack(alignment: .leading, spacing: 12) {
                 planHeader(
                     title: "Free",
                     subtitle: "Write your journal",
                     price: "$0",
-                    caption: nil,
-                    badge: nil
+                    caption: nil
                 )
 
                 VStack(alignment: .leading, spacing: 12) {
                     featureRow("Write journal entries", isIncluded: true)
                     featureRow("Organize with journals", isIncluded: true)
                     featureRow("Add characters & reference photos", isIncluded: true)
+                    featureRow("Use 2 paper styles", isIncluded: true)
                     featureRow("Generate storyboard images", isIncluded: false)
                     featureRow("Use credits", isIncluded: false)
                 }
@@ -139,31 +149,31 @@ struct JournaltopiaPlusPaywallView: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .onTapGesture {
+            selectedPlan = .free
             onFreePlan?()
         }
     }
 
     private var plusPlanCard: some View {
         Button {
+            selectedPlan = .plus
             startPurchase()
         } label: {
-            planCard(isHighlighted: true) {
+            planCard(isHighlighted: selectedPlan == .plus) {
                 VStack(alignment: .leading, spacing: 12) {
                     planHeader(
-                        title: "Journaltopia Plus+",
+                        title: "Journaltopia\nPlus+",
                         subtitle: "Generate storyboards",
                         price: plusPriceTitle,
-                        caption: plusPriceCaption,
-                        badge: "Most Popular"
+                        caption: plusPriceCaption
                     )
 
                     VStack(alignment: .leading, spacing: 12) {
                         featureRow("Everything in Free", isIncluded: true)
-                        featureRow("Unlock all paper styles", isIncluded: true)
                         featureRow("Generate storyboard images\n(25 credits/month)", isIncluded: true)
                         featureRow("HD storyboard quality", isIncluded: true)
                         featureRow("Use credits for Standard or HD", isIncluded: true)
-                        featureRow("Priority generation", isIncluded: true)
+                        featureRow("Unlock all paper styles", isIncluded: true)
                     }
 
                     planImage(name: "2-2", height: 118)
@@ -188,22 +198,26 @@ struct JournaltopiaPlusPaywallView: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(isHighlighted ? Color.storyPurple : Color.storyBorder.opacity(0.78), lineWidth: isHighlighted ? 1.7 : 1)
             )
+            .shadow(
+                color: isHighlighted ? Color.storyPurple.opacity(0.2) : .clear,
+                radius: isHighlighted ? 14 : 0,
+                y: isHighlighted ? 6 : 0
+            )
+            .animation(.easeInOut(duration: 0.22), value: isHighlighted)
     }
 
     private func planHeader(
         title: String,
         subtitle: String,
         price: String,
-        caption: String?,
-        badge: String?
+        caption: String?
     ) -> some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 25, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text(subtitle)
                     .font(.system(size: 14, weight: .semibold))
@@ -223,17 +237,6 @@ struct JournaltopiaPlusPaywallView: View {
                     Text(caption)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.storyPurple)
-                }
-
-                if let badge {
-                    Text(badge)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .frame(height: 24)
-                        .background(Color.storyPurple.opacity(0.76), in: Capsule())
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(.top, 6)
                 }
             }
         }
