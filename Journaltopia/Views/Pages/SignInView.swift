@@ -1,20 +1,17 @@
 import AuthenticationServices
 import SwiftUI
+import UIKit
 
 struct SignInView: View {
-    enum PresentationMode {
-        case fullScreen
-        case sheet
-    }
-
     private enum SignInProvider {
         case apple
         case google
+        case email
     }
 
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @Environment(\.dismiss) private var dismiss
 
-    let presentationMode: PresentationMode
     let promptTitle: String?
     let promptSubtitle: String?
     let onContinueBrowsing: (() -> Void)?
@@ -24,15 +21,18 @@ struct SignInView: View {
     /// distinction between signing up and signing in — the first tap creates the account — but a
     /// visitor without one still needs to see somewhere that says so.
     @State private var isCreatingAccount: Bool
+    @State private var emailAddress = ""
+    @State private var password = ""
+    @State private var isPasswordVisible = false
+    @State private var isSendingPasswordReset = false
+    @State private var passwordResetMessage: String?
 
     init(
-        presentationMode: PresentationMode,
         promptTitle: String? = nil,
         promptSubtitle: String? = nil,
         startsCreatingAccount: Bool = false,
         onContinueBrowsing: (() -> Void)? = nil
     ) {
-        self.presentationMode = presentationMode
         self.promptTitle = promptTitle
         self.promptSubtitle = promptSubtitle
         self.onContinueBrowsing = onContinueBrowsing
@@ -40,37 +40,36 @@ struct SignInView: View {
     }
 
     var body: some View {
-        ZStack {
-            WatercolorPaperPageBackground()
+        GeometryReader { proxy in
+            let heroHeight = heroHeight(for: proxy.size)
+            let overlap: CGFloat = 78
 
-            Group {
-                switch presentationMode {
-                case .fullScreen:
-                    ScrollView {
-                        content
-                            .frame(maxWidth: 430)
-                            .padding(.horizontal, 28)
-                            .padding(.vertical, 42)
-                            .frame(maxWidth: .infinity, minHeight: 620)
-                    }
-                case .sheet:
+            ZStack(alignment: .top) {
+                Color(red: 0.99, green: 0.97, blue: 0.94)
+                    .ignoresSafeArea()
+
+                hero(height: heroHeight)
+                    .ignoresSafeArea(edges: .top)
+
+                ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
-                        Capsule()
-                            .fill(Color.storyInk.opacity(0.14))
-                            .frame(width: 38, height: 5)
-                            .padding(.top, 10)
+                        Color.clear
+                            .frame(height: max(heroHeight - overlap, 170))
 
-                        content
-                            .padding(.horizontal, 26)
-                            .padding(.top, 24)
-                            .padding(.bottom, 18)
+                        authPanel
+                            .frame(maxWidth: 430)
+                            .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .frame(minHeight: proxy.size.height)
                 }
+                .ignoresSafeArea(edges: .top)
+
+                dismissButton
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.leading, 18)
+                    .padding(.top, proxy.safeAreaInsets.top + 6)
             }
         }
-        .presentationDetents(presentationMode == .sheet ? [.height(520)] : [.large])
-        .presentationDragIndicator(.hidden)
         .preferredColorScheme(.light)
         .onChange(of: authStore.status) { status in
             if status == .signedIn {
@@ -79,8 +78,8 @@ struct SignInView: View {
         }
     }
 
-    private var content: some View {
-        VStack(spacing: presentationMode == .sheet ? 18 : 24) {
+    private var authPanel: some View {
+        VStack(spacing: 24) {
             header
 
             statusContent
@@ -91,33 +90,78 @@ struct SignInView: View {
 
             continueBrowsingButton
         }
+        .padding(.horizontal, 30)
+        .padding(.top, 28)
+        .padding(.bottom, 34)
+        .background(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 28,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 28,
+                style: .continuous
+            )
+            .fill(Color(red: 1.0, green: 0.99, blue: 0.97))
+        )
+        .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -4)
+    }
+
+    private func heroHeight(for size: CGSize) -> CGFloat {
+        min(max(size.height * 0.36, 245), 320)
+    }
+
+    private func hero(height: CGFloat) -> some View {
+        Image("homepage_banner")
+            .resizable()
+            .scaledToFill()
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .clipped()
+            .overlay(alignment: .bottom) {
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0),
+                        Color.black.opacity(0.08)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 100)
+            }
+    }
+
+    private var dismissButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(Color.storyInk.opacity(0.78))
+                .frame(width: 42, height: 42)
+                .background(Color.white.opacity(0.82), in: Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.62), lineWidth: 1)
+                )
+                .shadow(color: Color.storyInk.opacity(0.12), radius: 8, y: 3)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Back")
     }
 
     private var header: some View {
-        VStack(spacing: presentationMode == .sheet ? 13 : 18) {
-            Image(systemName: headerIconName)
-                .font(.system(size: presentationMode == .sheet ? 25 : 31, weight: .semibold))
-                .foregroundStyle(Color.storyPurple)
-                .frame(width: presentationMode == .sheet ? 60 : 74, height: presentationMode == .sheet ? 60 : 74)
-                .background(Color.storyPurple.opacity(0.12), in: Circle())
-                .overlay(
-                    Circle()
-                        .stroke(Color.storyPurple.opacity(0.12), lineWidth: 1)
-                )
+        VStack(spacing: 9) {
+            Text(title)
+                .font(.system(size: 29, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+                .multilineTextAlignment(.center)
 
-            VStack(spacing: 9) {
-                Text(title)
-                    .font(.system(size: presentationMode == .sheet ? 23 : 29, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
-                    .multilineTextAlignment(.center)
-
-                Text(subtitle)
-                    .font(.system(size: presentationMode == .sheet ? 15 : 16, weight: .medium))
-                    .foregroundStyle(Color.homeMutedText)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(subtitle)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.homeMutedText)
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -136,22 +180,22 @@ struct SignInView: View {
     }
 
     private var signInOptions: some View {
-        VStack(spacing: 11) {
+        VStack(spacing: 12) {
             appleSignInButton
 
             googleSignInButton
 
-            Text("Your private journals, entries, characters, and credits stay connected to your account.")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.homeMutedText)
-                .multilineTextAlignment(.center)
-                .lineSpacing(1)
-                .padding(.top, 2)
-                .fixedSize(horizontal: false, vertical: true)
+            divider
+
+            emailPasswordFields
+
+            forgotPasswordButton
+
+            emailSignInButton
 
             accountModeToggle
         }
-        .padding(.top, presentationMode == .sheet ? 1 : 4)
+        .padding(.top, 3)
     }
 
     private var accountModeToggle: some View {
@@ -160,12 +204,17 @@ struct SignInView: View {
                 isCreatingAccount.toggle()
             }
         } label: {
-            Text(isCreatingAccount ? "Already have an account? Sign In" : "Don't have an account? Sign Up")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Color.storyPurple)
-                .frame(maxWidth: .infinity)
-                .frame(height: 34)
-                .contentShape(Rectangle())
+            HStack(spacing: 4) {
+                Text(isCreatingAccount ? "Already have an account?" : "Don't have an account?")
+                    .foregroundStyle(Color.homeMutedText)
+
+                Text(isCreatingAccount ? "Sign In" : "Create account")
+                    .foregroundStyle(Color.storyPurple)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .frame(maxWidth: .infinity)
+            .frame(height: 38)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isAuthInteractionDisabled)
@@ -174,7 +223,7 @@ struct SignInView: View {
     private var appleSignInButton: some View {
         ZStack {
             SignInWithAppleButton(
-                isCreatingAccount ? .signUp : .signIn,
+                .continue,
                 onRequest: { request in
                     signingInProvider = .apple
                     authStore.prepareSignInWithAppleRequest(request)
@@ -187,8 +236,8 @@ struct SignInView: View {
                 }
             )
             .signInWithAppleButtonStyle(.black)
-            .frame(height: 50)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .frame(height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             if signingInProvider == .apple {
                 ProgressView()
@@ -196,12 +245,162 @@ struct SignInView: View {
                     .tint(.white)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black.opacity(0.22))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
         .disabled(isAuthInteractionDisabled)
         .allowsHitTesting(!isAuthInteractionDisabled)
         .accessibilityLabel(isCreatingAccount ? "Sign up with Apple" : "Sign in with Apple")
+    }
+
+    private var emailPasswordFields: some View {
+        VStack(spacing: 9) {
+            inputField(
+                systemName: "envelope",
+                placeholder: "Email address",
+                text: $emailAddress,
+                keyboardType: .emailAddress,
+                textContentType: .emailAddress,
+                isSecure: false
+            )
+
+            inputField(
+                systemName: "lock",
+                placeholder: "Password",
+                text: $password,
+                keyboardType: .default,
+                textContentType: .password,
+                isSecure: !isPasswordVisible,
+                trailingButton: passwordVisibilityButton
+            )
+        }
+    }
+
+    private func inputField(
+        systemName: String,
+        placeholder: String,
+        text: Binding<String>,
+        keyboardType: UIKeyboardType,
+        textContentType: UITextContentType,
+        isSecure: Bool,
+        trailingButton: AnyView? = nil
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemName)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(systemName == "lock" ? Color.storyPurple : Color.homeMutedText.opacity(0.82))
+                .frame(width: 20)
+
+            Group {
+                if isSecure {
+                    SecureField(placeholder, text: text)
+                } else {
+                    TextField(placeholder, text: text)
+                }
+            }
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(Color.storyInk)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(keyboardType)
+            .textContentType(textContentType)
+            .disabled(isAuthInteractionDisabled)
+
+            if let trailingButton {
+                trailingButton
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
+    }
+
+    private var passwordVisibilityButton: AnyView {
+        AnyView(
+            Button {
+                isPasswordVisible.toggle()
+            } label: {
+                Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.homeMutedText.opacity(0.72))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(isAuthInteractionDisabled)
+            .accessibilityLabel(isPasswordVisible ? "Hide password" : "Show password")
+        )
+    }
+
+    @ViewBuilder
+    private var forgotPasswordButton: some View {
+        VStack(spacing: 5) {
+            Button {
+                sendPasswordReset()
+            } label: {
+                if isSendingPasswordReset {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Color.storyPurple)
+                        .frame(height: 20)
+                } else {
+                    Text("Forgot password?")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+                        .frame(height: 20)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isAuthInteractionDisabled || isSendingPasswordReset)
+
+            if let passwordResetMessage {
+                Text(passwordResetMessage)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.homeMutedText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private var emailSignInButton: some View {
+        Button {
+            signInWithEmail()
+        } label: {
+            HStack(spacing: 8) {
+                if signingInProvider == .email {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                }
+
+                Text(signingInProvider == .email ? "Signing In" : "Sign In")
+                    .font(.system(size: 16, weight: .bold))
+            }
+            .foregroundStyle(Color.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.46, green: 0.25, blue: 0.96),
+                        Color.storyPurple
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                ),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .shadow(color: Color.storyPurple.opacity(0.22), radius: 10, y: 5)
+        }
+        .buttonStyle(.plain)
+        .disabled(isAuthInteractionDisabled)
+        .padding(.top, 8)
+        .accessibilityLabel("Sign in with email")
     }
 
     private var googleSignInButton: some View {
@@ -210,10 +409,9 @@ struct SignInView: View {
                 if signingInProvider == .google {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(.white)
+                        .tint(Color.storyPurple)
                 } else {
-                    Image(systemName: "g.circle.fill")
-                        .font(.system(size: 21, weight: .semibold))
+                    googleMark
                 }
 
                 Text(googleButtonTitle)
@@ -221,14 +419,42 @@ struct SignInView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
             }
-            .foregroundStyle(Color.white)
+            .foregroundStyle(Color.storyInk)
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
-            .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .frame(height: 48)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
         .disabled(isAuthInteractionDisabled)
         .accessibilityLabel(isCreatingAccount ? "Sign up with Google" : "Sign in with Google")
+    }
+
+    private var googleMark: some View {
+        Image("google-icon")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 18, height: 18)
+    }
+
+    private var divider: some View {
+        HStack(spacing: 14) {
+            Rectangle()
+                .fill(Color.storyBorder.opacity(0.45))
+                .frame(height: 1)
+
+            Text("or")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.homeMutedText.opacity(0.84))
+
+            Rectangle()
+                .fill(Color.storyBorder.opacity(0.45))
+                .frame(height: 1)
+        }
+        .padding(.vertical, 7)
     }
 
     private var googleButtonTitle: String {
@@ -250,7 +476,7 @@ struct SignInView: View {
                 .foregroundStyle(Color.storyInk)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: presentationMode == .sheet ? 128 : 154)
+        .frame(height: 154)
         .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -274,7 +500,7 @@ struct SignInView: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: presentationMode == .sheet ? 136 : 164)
+        .frame(height: 164)
         .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -328,7 +554,7 @@ struct SignInView: View {
     }
 
     private var isAuthInteractionDisabled: Bool {
-        signingInProvider != nil || authStore.status == .loading
+        signingInProvider != nil || isSendingPasswordReset || authStore.status == .loading
     }
 
     private var canContinueBrowsing: Bool {
@@ -341,26 +567,13 @@ struct SignInView: View {
     }
 
     private var continueBrowsingTitle: String {
-        presentationMode == .sheet ? "Keep Browsing" : "Continue Without Signing In"
-    }
-
-    private var headerIconName: String {
-        switch authStore.status {
-        case .signedIn:
-            return "person.crop.circle.badge.checkmark"
-        case .misconfigured:
-            return "lock.trianglebadge.exclamationmark"
-        case .loading:
-            return "person.crop.circle.badge.clock"
-        case .signedOut:
-            return isCreatingAccount ? "person.crop.circle.badge.plus" : "person.badge.key"
-        }
+        "Continue Without Signing In"
     }
 
     private var title: String {
         switch authStore.status {
         case .signedIn:
-            return "Welcome Back"
+            return "Welcome back"
         case .misconfigured:
             return "Sign In Needs Setup"
         case .loading, .signedOut:
@@ -374,7 +587,7 @@ struct SignInView: View {
                 return promptTitle
             }
 
-            return presentationMode == .sheet ? "Sign In to Continue" : "Sign In to Journaltopia"
+            return "Welcome back"
         }
     }
 
@@ -388,27 +601,45 @@ struct SignInView: View {
             return "Looking for an existing account session."
         case .signedOut:
             if isCreatingAccount {
-                return "Continue with Apple or Google and Journaltopia makes the account for you — no password to remember."
+                return "Continue with Apple or Google and Journaltopia makes the account for you."
             }
 
             if let promptSubtitle {
                 return promptSubtitle
             }
 
-            switch presentationMode {
-            case .fullScreen:
-                return "Save your journals, entries, characters, and storyboard credits across devices."
-            case .sheet:
-                return "Use one account for private writing, saving, and generation."
-            }
+            return "Sign in to continue creating your storyboards."
         }
     }
 
     private func signInWithGoogle() {
         Task {
+            passwordResetMessage = nil
             signingInProvider = .google
             await authStore.signInWithGoogle()
             signingInProvider = nil
+        }
+    }
+
+    private func signInWithEmail() {
+        Task {
+            passwordResetMessage = nil
+            signingInProvider = .email
+            await authStore.signIn(email: emailAddress, password: password)
+            signingInProvider = nil
+        }
+    }
+
+    private func sendPasswordReset() {
+        Task {
+            passwordResetMessage = nil
+            isSendingPasswordReset = true
+            let didSend = await authStore.sendPasswordReset(email: emailAddress)
+            isSendingPasswordReset = false
+
+            if didSend {
+                passwordResetMessage = "Password reset email sent."
+            }
         }
     }
 }
@@ -416,27 +647,21 @@ struct SignInView: View {
 struct SignInView_Previews: PreviewProvider {
     static var previews: some View {
         Group {
-            SignInView(presentationMode: .fullScreen)
+            SignInView()
                 .environmentObject(SupabaseAuthStore.preview(status: .signedOut))
                 .previewDisplayName("Full Screen Signed Out")
 
-            SignInView(presentationMode: .sheet)
-                .environmentObject(SupabaseAuthStore.preview(status: .signedOut))
-                .frame(height: 520)
-                .previewDisplayName("Sheet Signed Out")
-
-            SignInView(presentationMode: .fullScreen)
+            SignInView()
                 .environmentObject(SupabaseAuthStore.preview(status: .loading))
                 .previewDisplayName("Loading")
 
-            SignInView(presentationMode: .sheet)
+            SignInView()
                 .environmentObject(
                     SupabaseAuthStore.preview(
                         status: .misconfigured("Missing JOURNALTOPIA_SUPABASE_URL or JOURNALTOPIA_SUPABASE_ANON_KEY."),
                         errorMessage: nil
                     )
                 )
-                .frame(height: 520)
                 .previewDisplayName("Misconfigured")
         }
     }

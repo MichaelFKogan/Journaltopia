@@ -133,7 +133,7 @@ final class SignInGate: ObservableObject {
         }
 
         // `.loading` has no answer yet and `.unavailable` has an answer signing in cannot change.
-        // Both refuse the write; only signed-out browsing gets the sign-in sheet.
+        // Both refuse the write; only signed-out browsing gets the sign-in page.
         guard mode.requiresSignIn else {
             return false
         }
@@ -154,8 +154,8 @@ final class SignInGate: ObservableObject {
     }
 }
 
-/// The sheet the gate presents. Mounted once at the app root so every screen shares it.
-struct SignInGateSheet: View {
+/// The page the gate presents. Mounted once at the app root so every screen shares it.
+struct SignInGatePage: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var signInGate: SignInGate
 
@@ -163,15 +163,14 @@ struct SignInGateSheet: View {
 
     var body: some View {
         SignInView(
-            presentationMode: .sheet,
             promptTitle: request.action.title,
             promptSubtitle: request.action.message,
-            // Deliberate Sign In has nowhere else to "keep browsing" from — dismiss by swipe.
-            // Interrupted writes still offer an explicit way out of the sheet.
+            // Deliberate Sign In has nowhere else to "keep browsing" from; interrupted writes still
+            // offer an explicit way out of the page.
             onContinueBrowsing: request.action == .signIn ? nil : { signInGate.dismiss() }
         )
         .onChange(of: authStore.status) { status in
-            // The sheet closes on the auth store's word, not on the OAuth call returning: the
+            // The page closes on the auth store's word, not on the OAuth call returning: the
             // session arrives through `authStateChanges`, which can land after the provider call
             // has already come back.
             guard status == .signedIn else {

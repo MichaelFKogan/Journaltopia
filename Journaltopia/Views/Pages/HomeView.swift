@@ -6,6 +6,7 @@ struct HomeView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
+    @EnvironmentObject private var signInGate: SignInGate
 
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
@@ -17,7 +18,6 @@ struct HomeView: View {
 
     @State private var fullScreenImageName: String?
     @State private var isLoadingHomeStoryboards = false
-    @State private var isSettingsSheetPresented = false
 
     private let homeStoryboardLoadLimit = 50
 
@@ -56,11 +56,6 @@ struct HomeView: View {
                 HomeImagePreviewSheet(imageName: fullScreenImageName) {
                     self.fullScreenImageName = nil
                 }
-            }
-        }
-        .sheet(isPresented: $isSettingsSheetPresented) {
-            NavigationStack {
-                SettingsView(presentation: .sheet)
             }
         }
         .task(id: homeStoryboardLoadID) {
@@ -107,10 +102,11 @@ struct HomeView: View {
 
     /// Signed out, both trailing icons are answers to questions nobody has asked yet: there is no
     /// balance to show and no account to configure. One word for the one thing worth doing replaces
-    /// them, and it still lands in Settings — which is where the account lives either way.
+    /// them, and it opens the same Sign In to Journaltopia sheet every other account-required
+    /// action uses.
     private var signInButton: some View {
         Button {
-            isSettingsSheetPresented = true
+            signInGate.requireAccount(for: .signIn)
         } label: {
             Text("Sign In")
                 .font(.system(size: 16, weight: .semibold))
@@ -121,7 +117,7 @@ struct HomeView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Sign in")
-        .accessibilityHint("Opens settings")
+        .accessibilityHint("Opens Sign In to Journaltopia")
     }
 
     /// A balance for subscribers, an invitation for everyone else.

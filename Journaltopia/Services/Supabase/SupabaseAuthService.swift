@@ -80,6 +80,55 @@ final class SupabaseAuthStore: ObservableObject {
         }
     }
 
+    func signIn(email: String, password: String) async {
+        errorMessage = nil
+
+        do {
+            _ = try JournaltopiaSupabaseConfig.projectURL
+            _ = try JournaltopiaSupabaseConfig.anonKey
+
+            let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedEmail.isEmpty else {
+                throw EmailPasswordSignInError.missingEmail
+            }
+            guard !password.isEmpty else {
+                throw EmailPasswordSignInError.missingPassword
+            }
+
+            let session = try await client.auth.signIn(email: trimmedEmail, password: password)
+            JournaltopiaLocalAccountScope.setActiveUserID(session.user.id)
+            currentUser = session.user
+            status = .signedIn
+        } catch {
+            status = .signedOut
+            errorMessage = userFacingMessage(for: error)
+        }
+    }
+
+    func sendPasswordReset(email: String) async -> Bool {
+        errorMessage = nil
+
+        do {
+            _ = try JournaltopiaSupabaseConfig.projectURL
+            _ = try JournaltopiaSupabaseConfig.anonKey
+
+            let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedEmail.isEmpty else {
+                throw EmailPasswordSignInError.missingResetEmail
+            }
+
+            try await client.auth.resetPasswordForEmail(
+                trimmedEmail,
+                redirectTo: JournaltopiaSupabaseConfig.redirectURL
+            )
+            return true
+        } catch {
+            status = .signedOut
+            errorMessage = userFacingMessage(for: error)
+            return false
+        }
+    }
+
     func prepareSignInWithAppleRequest(_ request: ASAuthorizationAppleIDRequest) {
         errorMessage = nil
 
@@ -269,6 +318,23 @@ private enum AppleSignInError: LocalizedError {
             return "Apple sign-in could not be verified. Please try again."
         case .nonceGenerationFailed:
             return "Journaltopia could not prepare a secure Apple sign-in request. Please try again."
+        }
+    }
+}
+
+private enum EmailPasswordSignInError: LocalizedError {
+    case missingEmail
+    case missingPassword
+    case missingResetEmail
+
+    var errorDescription: String? {
+        switch self {
+        case .missingEmail:
+            return "Enter your email address."
+        case .missingPassword:
+            return "Enter your password."
+        case .missingResetEmail:
+            return "Enter your email address first."
         }
     }
 }

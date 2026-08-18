@@ -22,7 +22,7 @@ struct SettingsView: View {
     @State private var restoreOutcome: SubscriptionRestoreOutcome?
     @State private var isRestoring = false
     @State private var isManageSubscriptionPresented = false
-    @State private var isSignInSheetPresented = false
+    @State private var isSignInPagePresented = false
     @State private var isPaywallSheetPresented = false
     @State private var showsSignedOutConfirmation = false
     @State private var signedOutConfirmationHideTask: Task<Void, Never>?
@@ -105,11 +105,10 @@ struct SettingsView: View {
         .animation(.snappy(duration: 0.22), value: showsSignedOutConfirmation)
         .preferredColorScheme(.light)
         .enableInteractivePopGesture()
-        // Presented from here rather than through the gate: the gate's sheet is mounted at the app
-        // root, and a root sheet cannot come up over the one this screen is already sitting in.
-        .sheet(isPresented: $isSignInSheetPresented) {
+        // Presented from here rather than through the gate: Settings can already be presented over
+        // the root, so it owns this page directly.
+        .fullScreenCover(isPresented: $isSignInPagePresented) {
             SignInView(
-                presentationMode: .sheet,
                 promptTitle: AccountRequiredAction.signIn.title,
                 promptSubtitle: AccountRequiredAction.signIn.message
             )
@@ -117,7 +116,7 @@ struct SettingsView: View {
                 // Closed on the auth store's word, not on the provider call returning — the session
                 // arrives through `authStateChanges`, which can land later.
                 if status == .signedIn {
-                    isSignInSheetPresented = false
+                    isSignInPagePresented = false
                 }
             }
         }
@@ -146,7 +145,7 @@ struct SettingsView: View {
         case .page:
             signInGate.requireAccount(for: .signIn)
         case .sheet:
-            isSignInSheetPresented = true
+            isSignInPagePresented = true
         }
     }
 
@@ -509,12 +508,9 @@ private struct SettingsExtraView: View {
                     accessibilityLabel: "Open create an account"
                 ) {
                     SignInView(
-                        presentationMode: .fullScreen,
                         startsCreatingAccount: true
                     )
-                    .navigationTitle("Create An Account")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar(.visible, for: .navigationBar)
+                    .toolbar(.hidden, for: .navigationBar)
                     .enableInteractivePopGesture()
                 }
 

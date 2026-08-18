@@ -16,7 +16,7 @@ struct StartYourStoryView: View {
 
     @State private var signingInProvider: SignInProvider?
     @State private var isSignInPresented = false
-    @State private var isSignInSheetPresented = false
+    @State private var isSignInPagePresented = false
 
     init(
         showsNavigationChrome: Bool = true,
@@ -62,19 +62,19 @@ struct StartYourStoryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(showsNavigationChrome ? .visible : .hidden, for: .navigationBar)
         .navigationDestination(isPresented: $isSignInPresented) {
-            SignInView(presentationMode: .fullScreen)
-                .navigationTitle("Sign In")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar(.visible, for: .navigationBar)
+            SignInView()
+                .toolbar(.hidden, for: .navigationBar)
                 .enableInteractivePopGesture()
         }
-        .sheet(isPresented: $isSignInSheetPresented) {
-            SignInView(presentationMode: .sheet)
+        .fullScreenCover(isPresented: $isSignInPagePresented) {
+            SignInView()
         }
         .preferredColorScheme(.light)
         .onChange(of: authStore.status) { status in
             if status == .signedIn {
                 signingInProvider = nil
+                isSignInPresented = false
+                isSignInPagePresented = false
                 onAuthenticated?()
             }
         }
@@ -246,7 +246,7 @@ struct StartYourStoryView: View {
             if showsNavigationChrome {
                 isSignInPresented = true
             } else {
-                isSignInSheetPresented = true
+                isSignInPagePresented = true
             }
         } label: {
             HStack(spacing: 0) {
@@ -272,9 +272,14 @@ struct StartYourStoryView: View {
                 dismiss()
             }
         } label: {
-            Text("Continue To Journaltopia")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(Color.white)
+            HStack(spacing: 8) {
+                Text("Continue To Journaltopia")
+                    .font(.system(size: 16, weight: .bold))
+
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 13, weight: .bold))
+            }
+            .foregroundStyle(Color.white)
             .frame(maxWidth: .infinity)
             .frame(height: 52)
             .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 10, style: .continuous))

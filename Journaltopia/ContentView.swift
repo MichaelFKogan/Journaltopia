@@ -94,14 +94,14 @@ struct ContentView: View {
             }
         }
         .fullScreenCover(isPresented: isInitialSignedOutSignInPresented) {
-            SignInView(presentationMode: .fullScreen) {
+            SignInView {
                 isSignedOutSignInPromptDismissed = true
             }
         }
         // Mounted at the root so any screen, sheet or pushed destination can raise it without
         // owning a presentation of its own.
-        .sheet(item: signInGateRequest) { request in
-            SignInGateSheet(request: request)
+        .fullScreenCover(item: signInGateRequest) { request in
+            SignInGatePage(request: request)
         }
         // The Journaltopia+ counterpart, mounted the same way. Two separate sheets rather than one
         // combined gate because the questions are genuinely different — "is anyone signed in" and
