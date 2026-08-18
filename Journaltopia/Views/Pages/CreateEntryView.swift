@@ -7684,11 +7684,11 @@ struct CreateEntryView: View {
     /// what it costs. `18 credits • HD costs 2`.
     private var generationCreditsStatusTitle: String {
         guard authStore.userID != nil else {
-            return "AI Credits"
+            return "Credits"
         }
 
         guard let credits = generationCreditStore.credits else {
-            return "AI Credits"
+            return "Credits"
         }
 
         let quality = selectedImageGenerationQuality

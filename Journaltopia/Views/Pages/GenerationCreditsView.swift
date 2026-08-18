@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The AI credits screen, reached from Home, Profile and Settings.
+/// The credits screen, reached from Home, Profile and Settings.
 ///
 /// One screen, three faces, because the useful thing to say differs completely by account state:
 ///
@@ -60,7 +60,7 @@ struct GenerationCreditsView: View {
             .padding(.vertical, 18)
         }
         .background(Color.homePageBackground)
-        .navigationTitle("AI Credits")
+        .navigationTitle("Credits")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(Color.homePageBackground, for: .navigationBar)
@@ -85,7 +85,7 @@ struct GenerationCreditsView: View {
                     .background(Color.homeAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("AI Credits")
+                    Text("Credits")
                         .font(.system(size: 22, weight: .bold, design: .serif))
                         .foregroundStyle(Color.storyInk)
 

@@ -292,7 +292,7 @@ struct ProfileView: View {
             HStack(spacing: 0) {
                 ProfileStat(value: "\(generatedStoryboards.count)", title: "Storyboards")
                 ProfileStat(value: "\(thisMonthStoryboardCount)", title: "This Month")
-                ProfileStat(value: generationCreditBalanceText, title: "AI Credits")
+                ProfileStat(value: generationCreditBalanceText, title: "Credits")
                 ProfileStat(value: "0", title: "Day Streak")
             }
         }

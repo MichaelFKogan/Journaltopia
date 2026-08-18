@@ -150,7 +150,7 @@ struct HomeView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            subscriptionStore.state.isSubscribed ? "Open AI credits" : "Learn about Journaltopia+"
+            subscriptionStore.state.isSubscribed ? "Open credits" : "Learn about Journaltopia+"
         )
     }
 

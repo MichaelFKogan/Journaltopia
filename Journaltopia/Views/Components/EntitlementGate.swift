@@ -35,9 +35,9 @@ enum JournaltopiaPlusRequiredAction: String, Equatable {
     var subscriptionMessage: String {
         switch self {
         case .generateStoryboard:
-            return "Turning an entry into a graphic novel page runs on Journaltopia's servers. Journaltopia+ includes 25 AI credits every month — your journal itself stays free."
+            return "Turning an entry into a graphic novel page runs on Journaltopia's servers. Journaltopia+ includes 25 credits every month — your journal itself stays free."
         case .generateHDStoryboard:
-            return "HD pages are sharper and cost 2 credits. Journaltopia+ includes 25 AI credits every month — your journal itself stays free."
+            return "HD pages are sharper and cost 2 credits. Journaltopia+ includes 25 credits every month — your journal itself stays free."
         case .buyCredits:
             return "Extra credit packs are for Journaltopia+ members. Start Journaltopia+ to get 25 credits a month, then top up whenever you need more."
         }

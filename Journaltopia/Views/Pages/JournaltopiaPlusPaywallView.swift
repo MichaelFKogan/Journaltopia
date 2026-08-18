@@ -131,7 +131,7 @@ struct JournaltopiaPlusPaywallView: View {
                     featureRow("Organize with journals", isIncluded: true)
                     featureRow("Add characters & reference photos", isIncluded: true)
                     featureRow("Generate storyboard images", isIncluded: false)
-                    featureRow("Use AI credits", isIncluded: false)
+                    featureRow("Use credits", isIncluded: false)
                 }
 
                 planImage(name: "1-1", height: 94)
@@ -150,7 +150,7 @@ struct JournaltopiaPlusPaywallView: View {
             planCard(isHighlighted: true) {
                 VStack(alignment: .leading, spacing: 12) {
                     planHeader(
-                        title: "Journaltopia Plus",
+                        title: "Journaltopia Plus+",
                         subtitle: "Generate storyboards",
                         price: plusPriceTitle,
                         caption: plusPriceCaption,
@@ -198,23 +198,11 @@ struct JournaltopiaPlusPaywallView: View {
     ) -> some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title)
-                        .font(.system(size: 25, weight: .bold, design: .serif))
-                        .foregroundStyle(Color.storyInk)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.76)
-
-                    if let badge {
-                        Text(badge)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 10)
-                            .frame(height: 24)
-                            .background(Color.storyPurple.opacity(0.76), in: Capsule())
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                }
+                Text(title)
+                    .font(.system(size: 25, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
 
                 Text(subtitle)
                     .font(.system(size: 14, weight: .semibold))
@@ -234,6 +222,17 @@ struct JournaltopiaPlusPaywallView: View {
                     Text(caption)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.storyPurple)
+                }
+
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .frame(height: 24)
+                        .background(Color.storyPurple.opacity(0.76), in: Capsule())
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.top, 6)
                 }
             }
         }
@@ -477,7 +476,7 @@ enum CreditBucketFormatting {
 enum JournaltopiaPlusFormatting {
     static func renewalCaption(for state: JournaltopiaPlusState) -> String {
         guard let periodEnd = state.currentPeriodEnd else {
-            return "Includes 25 AI credits each month."
+            return "Includes 25 credits each month."
         }
 
         return "Renews \(formatted(periodEnd)) · 25 credits each period."

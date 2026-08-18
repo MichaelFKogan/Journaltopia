@@ -63,7 +63,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section("AI Credits") {
+            Section("Credits") {
                 generationCreditsRow
             }
 
@@ -336,10 +336,10 @@ struct SettingsView: View {
 
     private var upgradeSubtitle: String {
         guard let price = subscriptionStore.localizedPrice else {
-            return "25 AI credits every month"
+            return "25 credits every month"
         }
 
-        return "\(price) per month · 25 AI credits"
+        return "\(price) per month · 25 credits"
     }
 
     private func restorePurchases() {
@@ -530,15 +530,15 @@ private struct SettingsExtraView: View {
 
                 SettingsNavigationRow(
                     systemName: "sparkle.magnifyingglass",
-                    title: "Buy AI Credits",
+                    title: "Buy Credits",
                     subtitle: "Open the credit top-up screen",
-                    accessibilityLabel: "Open buy AI credits"
+                    accessibilityLabel: "Open buy credits"
                 ) {
                     BuyCreditsView(
-                        promptTitle: "Buy AI Credits",
+                        promptTitle: "Buy Credits",
                         promptSubtitle: "Add credits for storyboard generation"
                     )
-                    .navigationTitle("Buy AI Credits")
+                    .navigationTitle("Buy Credits")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar(.visible, for: .navigationBar)
                     .enableInteractivePopGesture()
@@ -546,9 +546,9 @@ private struct SettingsExtraView: View {
 
                 SettingsNavigationRow(
                     systemName: "sparkle",
-                    title: "AI Credits",
+                    title: "Credits",
                     subtitle: "Balance, plan, and credit packs",
-                    accessibilityLabel: "Open AI credits"
+                    accessibilityLabel: "Open credits"
                 ) {
                     GenerationCreditsView()
                         .enableInteractivePopGesture()
