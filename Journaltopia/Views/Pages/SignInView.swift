@@ -44,8 +44,14 @@ struct SignInView: View {
             let heroHeight = heroHeight(for: proxy.size)
             let overlap: CGFloat = 78
 
+            let heroOverlap = max(heroHeight - overlap, 170)
+            let panelMinHeight = max(
+                0,
+                proxy.size.height - heroOverlap + proxy.safeAreaInsets.bottom
+            )
+
             ZStack(alignment: .top) {
-                Color(red: 0.99, green: 0.97, blue: 0.94)
+                Color(red: 1.0, green: 0.99, blue: 0.97)
                     .ignoresSafeArea()
 
                 hero(height: heroHeight)
@@ -54,21 +60,21 @@ struct SignInView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         Color.clear
-                            .frame(height: max(heroHeight - overlap, 170))
+                            .frame(height: heroOverlap)
 
                         authPanel
                             .frame(maxWidth: 430)
                             .frame(maxWidth: .infinity)
+                            .frame(minHeight: panelMinHeight, alignment: .top)
                     }
-                    .frame(minHeight: proxy.size.height)
                 }
-                .ignoresSafeArea(edges: .top)
-
-                dismissButton
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.leading, 18)
-                    .padding(.top, proxy.safeAreaInsets.top + 6)
+                .ignoresSafeArea(edges: [.top, .bottom])
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            dismissButton
+                .padding(.trailing, 18)
+                .padding(.top, 8)
         }
         .preferredColorScheme(.light)
         .onChange(of: authStore.status) { status in
@@ -93,7 +99,7 @@ struct SignInView: View {
         .padding(.horizontal, 30)
         .padding(.top, 28)
         .padding(.bottom, 34)
-        .background(
+        .background {
             UnevenRoundedRectangle(
                 topLeadingRadius: 28,
                 bottomLeadingRadius: 0,
@@ -102,7 +108,8 @@ struct SignInView: View {
                 style: .continuous
             )
             .fill(Color(red: 1.0, green: 0.99, blue: 0.97))
-        )
+            .ignoresSafeArea(edges: .bottom)
+        }
         .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -4)
     }
 
@@ -111,7 +118,7 @@ struct SignInView: View {
     }
 
     private func hero(height: CGFloat) -> some View {
-        HomeLoopingVideoBackground(resourceName: "homepage_banner")
+        HomeLoopingVideoBackground(resourceName: "sign-in-banner")
             .frame(maxWidth: .infinity)
             .frame(height: height)
             .clipped()
@@ -132,8 +139,8 @@ struct SignInView: View {
         Button {
             dismiss()
         } label: {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 18, weight: .bold))
+            Image(systemName: "xmark")
+                .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(Color.storyInk.opacity(0.78))
                 .frame(width: 42, height: 42)
                 .background(Color.white.opacity(0.82), in: Circle())
@@ -144,7 +151,7 @@ struct SignInView: View {
                 .shadow(color: Color.storyInk.opacity(0.12), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Back")
+        .accessibilityLabel("Close")
     }
 
     private var header: some View {
@@ -413,7 +420,7 @@ struct SignInView: View {
                 }
 
                 Text(googleButtonTitle)
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 18, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
             }

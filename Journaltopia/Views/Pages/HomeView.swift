@@ -157,24 +157,20 @@ struct HomeView: View {
                     .lineSpacing(2)
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
+                    .homeBannerTitleContrast()
 
                 Text("Write about your day\nand turn it into a storyboard.")
                     .font(.system(size: 14, weight: .medium))
                     .lineSpacing(2)
                     .foregroundStyle(.white.opacity(0.92))
+                    .homeBannerSubtitleContrast()
             }
             .padding(.horizontal, 18)
             .padding(.vertical, HomeCardLayout.verticalPadding)
             .frame(maxWidth: .infinity, minHeight: HomeCardLayout.primaryHeight, alignment: .leading)
             .background {
                 HomeLoopingVideoBackground(resourceName: "homepage_banner")
-                    .overlay(
-                        LinearGradient(
-                            colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
+                    .overlay(HomeBannerLeadingGradient())
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
@@ -200,8 +196,7 @@ struct HomeView: View {
                 subtitle: "Write, edit, and turn your\nthoughts into storyboards.",
                 backgroundImageName: "home_entries_card_bg",
                 backgroundVideoName: "home_entries_card_bg",
-                contentAlignment: .leading,
-                showsGradient: true
+                contentAlignment: .leading
             ) {
                 openEntriesPage()
             }
@@ -211,8 +206,7 @@ struct HomeView: View {
                 subtitle: "Organize your stories\ninto meaningful journals.",
                 backgroundImageName: "home_journals_card_bg",
                 backgroundVideoName: "home_journals_card_bg",
-                contentAlignment: .leading,
-                showsGradient: false
+                contentAlignment: .leading
             ) {
                 openJournalsPage()
             }
@@ -557,13 +551,41 @@ private enum HomeCardLayout {
     static let verticalPadding: CGFloat = 14
 }
 
+private extension View {
+    /// Dark halo that follows the letterforms so white type stays readable on bright video.
+    func homeBannerTitleContrast() -> some View {
+        self
+            .shadow(color: .black.opacity(0.95), radius: 1.2, x: 0, y: 0)
+            .shadow(color: .black.opacity(0.55), radius: 3, x: 0, y: 1)
+    }
+
+    func homeBannerSubtitleContrast() -> some View {
+        self
+            .shadow(color: .black.opacity(0.9), radius: 1, x: 0, y: 0)
+            .shadow(color: .black.opacity(0.45), radius: 2.5, x: 0, y: 1)
+    }
+}
+
+private struct HomeBannerLeadingGradient: View {
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black.opacity(0.30), location: 0),
+                .init(color: .clear, location: 0.55)
+            ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        .allowsHitTesting(false)
+    }
+}
+
 private struct HomeNavigationCard: View {
     let title: String
     let subtitle: String
     let backgroundImageName: String
     var backgroundVideoName: String? = nil
     let contentAlignment: HorizontalAlignment
-    var showsGradient: Bool = false
     let action: () -> Void
 
     private var isTrailingAligned: Bool {
@@ -578,14 +600,6 @@ private struct HomeNavigationCard: View {
         isTrailingAligned ? .trailing : .leading
     }
 
-    private var gradientStartPoint: UnitPoint {
-        isTrailingAligned ? .trailing : .leading
-    }
-
-    private var gradientEndPoint: UnitPoint {
-        isTrailingAligned ? .leading : .trailing
-    }
-
     var body: some View {
         Button(action: action) {
             VStack(alignment: contentAlignment, spacing: 8) {
@@ -593,7 +607,7 @@ private struct HomeNavigationCard: View {
                     .font(.system(size: 26, weight: .bold, design: .serif))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(textAlignment)
-                    .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
+                    .homeBannerTitleContrast()
 
                 Text(subtitle)
                     .font(.system(size: 13, weight: .semibold))
@@ -601,7 +615,7 @@ private struct HomeNavigationCard: View {
                     .foregroundStyle(.white.opacity(0.96))
                     .multilineTextAlignment(textAlignment)
                     .fixedSize(horizontal: false, vertical: true)
-                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
+                    .homeBannerSubtitleContrast()
             }
             .padding(.horizontal, 18)
             .padding(.vertical, HomeCardLayout.verticalPadding)
@@ -613,15 +627,7 @@ private struct HomeNavigationCard: View {
             )
             .background {
                 cardBackground
-                    .overlay {
-                        if showsGradient {
-                            LinearGradient(
-                                colors: [.black.opacity(0.66), .black.opacity(0.22), .clear],
-                                startPoint: gradientStartPoint,
-                                endPoint: gradientEndPoint
-                            )
-                        }
-                    }
+                    .overlay(HomeBannerLeadingGradient())
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
@@ -677,7 +683,7 @@ private struct HomeStorySoFarCard: View {
                         .font(.system(size: 26, weight: .bold, design: .serif))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.leading)
-                        .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
+                        .homeBannerTitleContrast()
 
                     if isLoading {
                         ProgressView()
@@ -692,7 +698,7 @@ private struct HomeStorySoFarCard: View {
                     .foregroundStyle(.white.opacity(0.96))
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    .shadow(color: .black.opacity(0.45), radius: 3, y: 2)
+                    .homeBannerSubtitleContrast()
             }
             .padding(.horizontal, 18)
             .padding(.vertical, HomeCardLayout.verticalPadding)
@@ -704,13 +710,7 @@ private struct HomeStorySoFarCard: View {
             )
             .background {
                 HomeLoopingVideoBackground(resourceName: "home_story_so_far")
-                    .overlay(
-                        LinearGradient(
-                            colors: [.black.opacity(0.68), .black.opacity(0.24), .clear],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
+                    .overlay(HomeBannerLeadingGradient())
                     .overlay(Color.black.opacity(isEnabled ? 0 : 0.18))
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
