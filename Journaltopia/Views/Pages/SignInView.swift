@@ -26,6 +26,9 @@ struct SignInView: View {
     let continueBrowsingTitle: String
     let continueBrowsingSystemImage: String?
     let onContinueBrowsing: (() -> Void)?
+    /// Extra room under the panel for a bar the page does not own — onboarding parks its dots and
+    /// its button over this page, and the panel has to end above them.
+    let bottomContentInset: CGFloat
 
     @State private var signingInProvider: SignInProvider?
     /// Which half of the same two buttons the copy is describing. Apple and Google make no
@@ -48,7 +51,8 @@ struct SignInView: View {
         foldsEmailBehindButton: Bool = false,
         continueBrowsingTitle: String = "Continue Without Signing In",
         continueBrowsingSystemImage: String? = nil,
-        onContinueBrowsing: (() -> Void)? = nil
+        onContinueBrowsing: (() -> Void)? = nil,
+        bottomContentInset: CGFloat = 0
     ) {
         self.promptTitle = promptTitle
         self.promptSubtitle = promptSubtitle
@@ -58,6 +62,7 @@ struct SignInView: View {
         self.continueBrowsingTitle = continueBrowsingTitle
         self.continueBrowsingSystemImage = continueBrowsingSystemImage
         self.onContinueBrowsing = onContinueBrowsing
+        self.bottomContentInset = bottomContentInset
         _isCreatingAccount = State(initialValue: startsCreatingAccount)
         _isEmailSectionShown = State(initialValue: !foldsEmailBehindButton)
     }
@@ -87,8 +92,10 @@ struct SignInView: View {
 
                         authPanel
                             .frame(maxWidth: 430)
-                            .frame(maxWidth: .infinity)
                             .frame(minHeight: panelMinHeight, alignment: .top)
+                            .background { panelBackground }
+                            .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -4)
+                            .frame(maxWidth: .infinity)
                     }
                 }
                 .ignoresSafeArea(edges: [.top, .bottom])
@@ -123,19 +130,23 @@ struct SignInView: View {
         }
         .padding(.horizontal, 30)
         .padding(.top, 28)
-        .padding(.bottom, 34)
-        .background {
-            UnevenRoundedRectangle(
-                topLeadingRadius: 28,
-                bottomLeadingRadius: 0,
-                bottomTrailingRadius: 0,
-                topTrailingRadius: 28,
-                style: .continuous
-            )
-            .fill(Color(red: 1.0, green: 0.99, blue: 0.97))
-            .ignoresSafeArea(edges: .bottom)
-        }
-        .shadow(color: Color.storyInk.opacity(0.12), radius: 22, y: -4)
+        .padding(.bottom, 34 + bottomContentInset)
+    }
+
+    /// The cream sheet the panel sits on. It is applied *after* the min-height frame rather than
+    /// around the content, because the frame is usually the taller of the two — painted around the
+    /// content instead, the sheet stops where the last button does and whatever is behind the page
+    /// shows through the rest.
+    private var panelBackground: some View {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 28,
+            bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0,
+            topTrailingRadius: 28,
+            style: .continuous
+        )
+        .fill(Color(red: 1.0, green: 0.99, blue: 0.97))
+        .ignoresSafeArea(edges: .bottom)
     }
 
     private func heroHeight(for size: CGSize) -> CGFloat {
