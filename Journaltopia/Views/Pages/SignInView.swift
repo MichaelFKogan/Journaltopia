@@ -14,6 +14,17 @@ struct SignInView: View {
 
     let promptTitle: String?
     let promptSubtitle: String?
+    /// Keeps the prompt copy on screen in both halves of the toggle. A page whose whole identity is
+    /// its heading — "Start your story" — should not lose that heading the moment the visitor flips
+    /// to the sign-in half and back.
+    let keepsPromptCopy: Bool
+    let showsDismissButton: Bool
+    /// Whether the email half starts folded away behind a "Continue with Email" button. The pages
+    /// that lead with providers want three equal-weight choices first; the sign-in page proper wants
+    /// the fields already there.
+    let foldsEmailBehindButton: Bool
+    let continueBrowsingTitle: String
+    let continueBrowsingSystemImage: String?
     let onContinueBrowsing: (() -> Void)?
 
     @State private var signingInProvider: SignInProvider?
@@ -24,6 +35,7 @@ struct SignInView: View {
     @State private var emailAddress = ""
     @State private var password = ""
     @State private var isPasswordVisible = false
+    @State private var isEmailSectionShown: Bool
     @State private var isSendingPasswordReset = false
     @State private var passwordResetMessage: String?
 
@@ -31,12 +43,23 @@ struct SignInView: View {
         promptTitle: String? = nil,
         promptSubtitle: String? = nil,
         startsCreatingAccount: Bool = false,
+        keepsPromptCopy: Bool = false,
+        showsDismissButton: Bool = true,
+        foldsEmailBehindButton: Bool = false,
+        continueBrowsingTitle: String = "Continue Without Signing In",
+        continueBrowsingSystemImage: String? = nil,
         onContinueBrowsing: (() -> Void)? = nil
     ) {
         self.promptTitle = promptTitle
         self.promptSubtitle = promptSubtitle
+        self.keepsPromptCopy = keepsPromptCopy
+        self.showsDismissButton = showsDismissButton
+        self.foldsEmailBehindButton = foldsEmailBehindButton
+        self.continueBrowsingTitle = continueBrowsingTitle
+        self.continueBrowsingSystemImage = continueBrowsingSystemImage
         self.onContinueBrowsing = onContinueBrowsing
         _isCreatingAccount = State(initialValue: startsCreatingAccount)
+        _isEmailSectionShown = State(initialValue: !foldsEmailBehindButton)
     }
 
     var body: some View {
@@ -72,9 +95,11 @@ struct SignInView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            dismissButton
-                .padding(.trailing, 18)
-                .padding(.top, 8)
+            if showsDismissButton {
+                dismissButton
+                    .padding(.trailing, 18)
+                    .padding(.top, 8)
+            }
         }
         .preferredColorScheme(.light)
         .onChange(of: authStore.status) { status in
@@ -190,13 +215,21 @@ struct SignInView: View {
 
             googleSignInButton
 
-            divider
+            if isEmailSectionShown {
+                divider
 
-            emailPasswordFields
+                emailPasswordFields
 
-            forgotPasswordButton
+                // A password reset is an answer to "I had an account and lost my way in"; on the
+                // create-account half there is no password to have forgotten yet.
+                if !isCreatingAccount {
+                    forgotPasswordButton
+                }
 
-            emailSignInButton
+                emailSignInButton
+            } else {
+                continueWithEmailButton
+            }
 
             accountModeToggle
         }
@@ -207,6 +240,7 @@ struct SignInView: View {
         Button {
             withAnimation(.snappy(duration: 0.2)) {
                 isCreatingAccount.toggle()
+                passwordResetMessage = nil
             }
         } label: {
             HStack(spacing: 4) {
@@ -223,6 +257,33 @@ struct SignInView: View {
         }
         .buttonStyle(.plain)
         .disabled(isAuthInteractionDisabled)
+    }
+
+    /// The folded state of the email half: one more provider-shaped choice, which unfolds into the
+    /// fields in place rather than taking the visitor to a page of their own.
+    private var continueWithEmailButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.24)) {
+                isEmailSectionShown = true
+            }
+        } label: {
+            Text("Continue with Email")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .background(
+                    Color.storyPurple.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.storyPurple.opacity(0.28), lineWidth: 1.2)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(isAuthInteractionDisabled)
+        .accessibilityLabel(isCreatingAccount ? "Continue with email to create an account" : "Continue with email to sign in")
     }
 
     private var appleSignInButton: some View {
@@ -548,13 +609,22 @@ struct SignInView: View {
     private var continueBrowsingButton: some View {
         if let onContinueBrowsing, canContinueBrowsing {
             Button(action: onContinueBrowsing) {
-                Text(continueBrowsingTitle)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.homeAccent)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
+                HStack(spacing: 7) {
+                    Text(continueBrowsingTitle)
+                        .font(.system(size: 15, weight: .bold))
+
+                    if let continueBrowsingSystemImage {
+                        Image(systemName: continueBrowsingSystemImage)
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                }
+                .foregroundStyle(Color.homeAccent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(continueBrowsingTitle)
         }
     }
 
@@ -571,10 +641,6 @@ struct SignInView: View {
         }
     }
 
-    private var continueBrowsingTitle: String {
-        "Continue Without Signing In"
-    }
-
     private var title: String {
         switch authStore.status {
         case .signedIn:
@@ -582,6 +648,10 @@ struct SignInView: View {
         case .misconfigured:
             return "Sign In Needs Setup"
         case .loading, .signedOut:
+            if let promptTitle, keepsPromptCopy {
+                return promptTitle
+            }
+
             // The create-account copy replaces the prompt: someone who has just said they have no
             // account should not still be reading why this particular action needed one.
             if isCreatingAccount {
@@ -605,6 +675,10 @@ struct SignInView: View {
         case .loading:
             return "Looking for an existing account session."
         case .signedOut:
+            if let promptSubtitle, keepsPromptCopy {
+                return promptSubtitle
+            }
+
             if isCreatingAccount {
                 return "Continue with Apple or Google and Journaltopia makes the account for you."
             }

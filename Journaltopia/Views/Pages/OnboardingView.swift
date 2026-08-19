@@ -25,7 +25,6 @@ struct OnboardingView: View {
                     }
 
                     StartYourStoryView(
-                        showsNavigationChrome: false,
                         onExploreFirst: finish,
                         onAuthenticated: finish
                     )
