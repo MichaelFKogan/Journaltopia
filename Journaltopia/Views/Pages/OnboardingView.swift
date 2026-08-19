@@ -6,10 +6,15 @@ import UIKit
 /// Pages one and two introduce the app and share one bottom bar — the dots and the Next button live
 /// here rather than inside each page so the dots always know where the flow is. The last page is the
 /// sign-in page, which brings its own buttons, so the bar steps aside for it.
+///
+/// The closing film is not a fourth page. It pushes over the whole flow as a stack, because a film
+/// is not a step you can drift back and forth across the way the pages are — see `IntroVideoView`.
 struct OnboardingView: View {
     let onComplete: () -> Void
 
     @State private var selectedPage = 0
+    /// The closing film, pushed over the flow once the visitor is on their way in.
+    @State private var isShowingIntro = false
 
     private let pageCount = 3
     private var startYourStoryIndex: Int { pageCount - 1 }
@@ -32,8 +37,8 @@ struct OnboardingView: View {
                     .tag(1)
 
                 StartYourStoryView(
-                    onExploreFirst: onComplete,
-                    onAuthenticated: onComplete,
+                    onExploreFirst: showIntro,
+                    onAuthenticated: showIntro,
                     // The shared bar below carries this page's way into the app, so the page itself
                     // stops drawing one and just leaves room for it.
                     showsContinueBrowsingButton: false,
@@ -51,6 +56,15 @@ struct OnboardingView: View {
             .ignoresSafeArea()
 
             bottomBar
+                .opacity(isShowingIntro ? 0 : 1)
+
+            if isShowingIntro {
+                // Pushed in from the trailing edge and dragged back out the same way: the film reads
+                // as somewhere the visitor went, not as a page that replaced this one.
+                IntroVideoView(onBack: dismissIntro, onFinished: onComplete)
+                    .transition(.move(edge: .trailing))
+                    .zIndex(1)
+            }
         }
         .preferredColorScheme(.light)
     }
@@ -74,14 +88,7 @@ struct OnboardingView: View {
             pageIndicator
 
             Button(action: primaryAction) {
-                HStack(spacing: 8) {
-                    Text(isLastPage ? "Continue To Journaltopia" : "Next")
-
-                    if isLastPage {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 15, weight: .bold))
-                    }
-                }
+                Text(isLastPage ? "Continue" : "Next")
                 .font(.system(size: 18, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -113,10 +120,27 @@ struct OnboardingView: View {
         .accessibilityHidden(true)
     }
 
-    /// Next on the first two pages, the way into Journaltopia on the last.
+    /// Every way past the sign-in page — its button, exploring first, signing in — leads to the film
+    /// rather than straight into the app.
+    private func showIntro() {
+        guard !isShowingIntro else { return }
+
+        withAnimation(.easeInOut(duration: 0.35)) {
+            isShowingIntro = true
+        }
+    }
+
+    /// One step back down the stack, onto the page the visitor left.
+    private func dismissIntro() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            isShowingIntro = false
+        }
+    }
+
+    /// Next through the pages, the film on the last.
     private func primaryAction() {
         guard !isLastPage else {
-            onComplete()
+            showIntro()
             return
         }
 
