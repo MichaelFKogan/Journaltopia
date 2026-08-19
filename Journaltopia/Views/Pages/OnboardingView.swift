@@ -29,7 +29,8 @@ struct OnboardingView: View {
             TabView(selection: $selectedPage) {
                 OnboardingWelcomePage(
                     topInset: topSafeAreaInset,
-                    bottomInset: bottomBarHeight
+                    bottomInset: bottomBarHeight,
+                    isActive: selectedPage == 0
                 )
                 .tag(0)
 
@@ -88,7 +89,7 @@ struct OnboardingView: View {
             pageIndicator
 
             Button(action: primaryAction) {
-                Text(isLastPage ? "Continue" : "Next")
+                Text(isLastPage ? "Skip For Now" : "Next")
                 .font(.system(size: 18, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -155,6 +156,8 @@ struct OnboardingView: View {
 private struct OnboardingWelcomePage: View {
     let topInset: CGFloat
     let bottomInset: CGFloat
+    /// The page-style TabView keeps this page alive after Next, so the film has to be told to stop.
+    let isActive: Bool
 
     /// How far the video's bottom edge dissolves into the paper.
     private let blendHeight: CGFloat = 120
@@ -174,7 +177,12 @@ private struct OnboardingWelcomePage: View {
     }
 
     private var hero: some View {
-        HomeLoopingVideoBackground(resourceName: "onboarding-1")
+        HomeLoopingVideoBackground(
+            resourceName: "intro-2",
+            resourceExtension: "mp4",
+            isMuted: false,
+            isPlaying: isActive
+        )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
             .overlay(alignment: .bottom) {

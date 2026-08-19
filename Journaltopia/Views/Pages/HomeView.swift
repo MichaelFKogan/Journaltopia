@@ -396,6 +396,11 @@ struct HomeView: View {
 struct HomeLoopingVideoBackground: UIViewRepresentable {
     let resourceName: String
     var resourceExtension = "mp4"
+    /// Home banners stay silent; the intro closing shot is the exception that keeps its soundtrack.
+    var isMuted = true
+    /// False while the view is still on screen but no longer the one being watched — a TabView
+    /// keeps neighbouring pages alive, so this is what stops their sound.
+    var isPlaying = true
 
     func makeUIView(context: Context) -> HomeLoopingVideoPlayerView {
         let view = HomeLoopingVideoPlayerView()
@@ -403,12 +408,17 @@ struct HomeLoopingVideoBackground: UIViewRepresentable {
         view.setContentHuggingPriority(.defaultLow, for: .vertical)
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        view.configure(resourceName: resourceName, resourceExtension: resourceExtension)
+        view.configure(
+            resourceName: resourceName,
+            resourceExtension: resourceExtension,
+            isMuted: isMuted,
+            isPlaying: isPlaying
+        )
         return view
     }
 
     func updateUIView(_ uiView: HomeLoopingVideoPlayerView, context: Context) {
-        uiView.playIfNeeded()
+        uiView.setPlaying(isPlaying)
     }
 
     static func dismantleUIView(_ uiView: HomeLoopingVideoPlayerView, coordinator: ()) {
@@ -420,6 +430,7 @@ final class HomeLoopingVideoPlayerView: UIView {
     private var queuePlayer: AVQueuePlayer?
     private var playerLooper: AVPlayerLooper?
     private var becomeActiveObserver: NSObjectProtocol?
+    private var shouldPlay = true
 
     override class var layerClass: AnyClass {
         AVPlayerLayer.self
@@ -445,19 +456,26 @@ final class HomeLoopingVideoPlayerView: UIView {
         stop()
     }
 
-    func configure(resourceName: String, resourceExtension: String) {
+    func configure(
+        resourceName: String,
+        resourceExtension: String,
+        isMuted: Bool = true,
+        isPlaying: Bool = true
+    ) {
+        shouldPlay = isPlaying
+
         guard queuePlayer == nil else {
-            playIfNeeded()
+            setPlaying(isPlaying)
             return
         }
 
-        guard let url = Bundle.main.url(forResource: resourceName, withExtension: resourceExtension) else {
+        guard let url = Self.resourceURL(named: resourceName, extension: resourceExtension) else {
             print("[Journaltopia] Missing bundled video: \(resourceName).\(resourceExtension)")
             return
         }
 
         let queuePlayer = AVQueuePlayer()
-        queuePlayer.isMuted = true
+        queuePlayer.isMuted = isMuted
         let templateItem = AVPlayerItem(url: url)
         playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: templateItem)
         playerLayer.player = queuePlayer
@@ -471,11 +489,21 @@ final class HomeLoopingVideoPlayerView: UIView {
             self?.playIfNeeded()
         }
 
-        playIfNeeded()
+        setPlaying(isPlaying)
+    }
+
+    func setPlaying(_ isPlaying: Bool) {
+        shouldPlay = isPlaying
+
+        if isPlaying {
+            playIfNeeded()
+        } else {
+            queuePlayer?.pause()
+        }
     }
 
     func playIfNeeded() {
-        guard let queuePlayer else {
+        guard shouldPlay, let queuePlayer else {
             return
         }
 
@@ -496,6 +524,14 @@ final class HomeLoopingVideoPlayerView: UIView {
         playerLayer.player = nil
         queuePlayer?.removeAllItems()
         queuePlayer = nil
+    }
+
+    /// Device file systems are case-sensitive; the simulator's is not. Try the given
+    /// extension, then its lower- and upper-cased forms, so `MOV` still resolves as `mov`.
+    private static func resourceURL(named name: String, extension ext: String) -> URL? {
+        Bundle.main.url(forResource: name, withExtension: ext)
+            ?? Bundle.main.url(forResource: name, withExtension: ext.lowercased())
+            ?? Bundle.main.url(forResource: name, withExtension: ext.uppercased())
     }
 }
 

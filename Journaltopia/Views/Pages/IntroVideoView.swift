@@ -163,7 +163,7 @@ struct IntroVideoView: View {
     /// The second film, looping under the closing card, with a scrim across the top so the name
     /// stays readable however bright the shot gets.
     private var closingShot: some View {
-        HomeLoopingVideoBackground(resourceName: "intro-2")
+        HomeLoopingVideoBackground(resourceName: "intro-2", resourceExtension: "mp4", isMuted: false)
             .ignoresSafeArea()
             .overlay(alignment: .top) {
                 LinearGradient(
