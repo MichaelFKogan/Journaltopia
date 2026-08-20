@@ -1777,63 +1777,23 @@ private struct DraftPageThumbnail: View {
 
 /// Layout constants for the create page chrome that sits outside the notebook paper itself.
 enum CreateEntryLayout {
-    /// Bundled loop shown as the journaling companion above the paper.
+    /// The companion video call is parked for now. Flip this to `true` to bring back the floating
+    /// window and its "Call" button on the references shelf — everything else is still wired up.
+    static let isCompanionEnabled = false
+
+    /// Bundled loop shown as the journaling companion.
     static let companionVideoName = "girl-1"
 
-    /// Aspect ratio (width / height) assumed before the loop reports its own natural size. Matching
-    /// `companionVideoName` keeps the first frame the right height; any other loop corrects itself
-    /// as soon as its video track loads.
-    static let companionVideoFallbackAspectRatio: CGFloat = 880.0 / 336.0
-
-    /// Character the loop belongs to, shown on the card and in the collapsed bar.
+    /// Character the loop belongs to, shown on the window's title bar.
     static let companionName = "Luna"
 
-    /// Inset from the screen edges to the companion card.
-    static let companionCardInset: CGFloat = 14
-    static let companionCornerRadius: CGFloat = 18
+    /// Portrait "video call" window. The loop is aspect-filled into it, so a landscape source is
+    /// centre-cropped.
+    static let companionWindowSize = CGSize(width: 156, height: 200)
+    static let companionWindowCornerRadius: CGFloat = 18
 
-    /// Warm tone of the collapsed bar, picked to sit alongside the companion artwork.
-    static let companionBarColor = Color(red: 0.655, green: 0.541, blue: 0.447)
-}
-
-/// Natural aspect ratios of bundled companion loops. Reading a video track is asynchronous, so the
-/// results are cached and every presentation after the first sizes the banner without a reflow.
-@MainActor
-private enum CompanionVideoAspectRatios {
-    private static var cache: [String: CGFloat] = [:]
-
-    static func cached(_ resourceName: String) -> CGFloat? {
-        cache[resourceName]
-    }
-
-    static func resolve(_ resourceName: String) async -> CGFloat? {
-        if let cached = cache[resourceName] {
-            return cached
-        }
-
-        guard let url = Bundle.main.url(forResource: resourceName, withExtension: "mp4")
-            ?? Bundle.main.url(forResource: resourceName, withExtension: "MP4") else {
-            return nil
-        }
-
-        guard let track = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video).first,
-              let (naturalSize, transform) = try? await track.load(.naturalSize, .preferredTransform) else {
-            return nil
-        }
-
-        // A portrait recording carries its rotation in the transform, so measure the displayed size.
-        let displaySize = naturalSize.applying(transform)
-        let width = abs(displaySize.width)
-        let height = abs(displaySize.height)
-
-        guard width > 0, height > 0 else {
-            return nil
-        }
-
-        let ratio = width / height
-        cache[resourceName] = ratio
-        return ratio
-    }
+    /// Closest the window may sit to the edges of the page.
+    static let companionWindowMargin: CGFloat = 14
 }
 
 struct CreateEntryView: View {
@@ -1995,9 +1955,11 @@ struct CreateEntryView: View {
     @State private var entryDeletionErrorMessage: String?
     @State private var activeKeyboardFormattingMode: CreateKeyboardFormattingMode?
     @State private var lastKeyboardHeight: CGFloat = 300
-    /// Width / height of the companion loop, once its video track has been read.
-    @State private var companionBannerAspectRatio: CGFloat?
-    @State private var isCompanionExpanded = true
+    /// Where the writer has dragged the companion window, relative to its top-trailing rest spot.
+    @State private var companionWindowOffset: CGSize = .zero
+    @GestureState private var companionWindowDrag: CGSize = .zero
+    @State private var isCompanionVisible = true
+    @State private var isCompanionMutedByWriter = false
     @State private var selectedKeyboardTextType: CreateKeyboardTextType = .body
     @State private var editorSelectionState = NotebookTextSelectionState()
     @State private var isKeyboardDismissInProgress = false
@@ -3331,6 +3293,7 @@ struct CreateEntryView: View {
                 createEntryContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(pageTapBackground)
+                    .overlay(floatingCompanionWindow)
             }
         }
         .background(selectedPaperSurfaceColor)
@@ -4755,9 +4718,6 @@ struct CreateEntryView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: scrollContentHeight)
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                companionVideoBanner
-            }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -4778,37 +4738,174 @@ struct CreateEntryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// Journaling companion pinned between the toolbar and the paper. It is a top safe-area inset,
-    /// so the page starts below it and scrolls behind it instead of covering it.
-    private var companionVideoBanner: some View {
-        Group {
-            if showsExpandedCompanion {
-                expandedCompanionCard
-            } else {
-                collapsedCompanionBar
+    /// Journaling companion as a floating call window: it sits above the page rather than in the
+    /// layout, so the paper keeps its full height and the window can be dragged anywhere.
+    @ViewBuilder
+    private var floatingCompanionWindow: some View {
+        if CreateEntryLayout.isCompanionEnabled && isCompanionVisible {
+            GeometryReader { proxy in
+                companionWindowCard
+                    .padding(CreateEntryLayout.companionWindowMargin)
+                    .offset(liveCompanionOffset(in: proxy.size))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .gesture(companionDragGesture(in: proxy.size))
+            }
+            .transition(.scale(scale: 0.85).combined(with: .opacity))
+            .task {
+                prepareCompanionAudioSession()
             }
         }
-        .padding(.horizontal, CreateEntryLayout.companionCardInset)
-        .padding(.top, 6)
-        .padding(.bottom, 10)
-        .frame(maxWidth: .infinity)
-        // The inset sits above the scrolling paper, so it has to paint the same surface to read as
-        // part of the page rather than a band of the app background.
-        .background(selectedPaperSurfaceColor)
-        .animation(.snappy(duration: 0.26), value: showsExpandedCompanion)
-        .animation(.snappy(duration: 0.26), value: companionBannerHeight)
-        .task {
-            prepareCompanionAudioSession()
+    }
 
-            companionBannerAspectRatio = await CompanionVideoAspectRatios
-                .resolve(CreateEntryLayout.companionVideoName)
+    private var companionWindowCard: some View {
+        HomeLoopingVideoBackground(
+            resourceName: CreateEntryLayout.companionVideoName,
+            isMuted: isCompanionMuted
+        )
+        .frame(
+            width: CreateEntryLayout.companionWindowSize.width,
+            height: CreateEntryLayout.companionWindowSize.height
+        )
+        .background(Color.black)
+        .clipShape(RoundedRectangle(cornerRadius: CreateEntryLayout.companionWindowCornerRadius, style: .continuous))
+        .overlay(alignment: .top) {
+            companionWindowTitleBar
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: CreateEntryLayout.companionWindowCornerRadius, style: .continuous)
+                .stroke(Color.black.opacity(0.28), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
+        .scaleEffect(isDraggingCompanion ? 1.04 : 1)
+        .animation(.snappy(duration: 0.18), value: isDraggingCompanion)
+    }
+
+    private var companionWindowTitleBar: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(Color(red: 0.30, green: 0.85, blue: 0.39))
+                    .frame(width: 6, height: 6)
+
+                Text(CreateEntryLayout.companionName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.42), in: Capsule())
+
+            Spacer(minLength: 4)
+
+            Menu {
+                Button {
+                    isCompanionMutedByWriter.toggle()
+                } label: {
+                    Label(
+                        isCompanionMutedByWriter ? "Unmute \(CreateEntryLayout.companionName)" : "Mute \(CreateEntryLayout.companionName)",
+                        systemImage: isCompanionMutedByWriter ? "speaker.wave.2" : "speaker.slash"
+                    )
+                }
+
+                Button {
+                    hideCompanion()
+                } label: {
+                    Label("Hide \(CreateEntryLayout.companionName)", systemImage: "eye.slash")
+                }
+            } label: {
+                companionWindowGlyph("ellipsis")
+            }
+
+            Button {
+                hideCompanion()
+            } label: {
+                companionWindowGlyph("xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close \(CreateEntryLayout.companionName)")
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
+        .background(alignment: .top) {
+            // Keeps the controls legible over whatever the loop happens to be showing.
+            LinearGradient(
+                colors: [.black.opacity(0.45), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 60)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func companionWindowGlyph(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(.black.opacity(0.42), in: Circle())
+            .contentShape(Circle())
+    }
+
+    private var isDraggingCompanion: Bool {
+        companionWindowDrag != .zero
+    }
+
+    private func companionDragGesture(in container: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .updating($companionWindowDrag) { value, state, _ in
+                state = value.translation
+            }
+            .onEnded { value in
+                companionWindowOffset = clampedCompanionOffset(
+                    CGSize(
+                        width: companionWindowOffset.width + value.translation.width,
+                        height: companionWindowOffset.height + value.translation.height
+                    ),
+                    in: container
+                )
+            }
+    }
+
+    private func liveCompanionOffset(in container: CGSize) -> CGSize {
+        clampedCompanionOffset(
+            CGSize(
+                width: companionWindowOffset.width + companionWindowDrag.width,
+                height: companionWindowOffset.height + companionWindowDrag.height
+            ),
+            in: container
+        )
+    }
+
+    /// The window rests at the top trailing corner, so it travels left along x and down along y.
+    private func clampedCompanionOffset(_ proposed: CGSize, in container: CGSize) -> CGSize {
+        let margin = CreateEntryLayout.companionWindowMargin
+        let travelX = max(0, container.width - CreateEntryLayout.companionWindowSize.width - margin * 2)
+        let travelY = max(0, container.height - CreateEntryLayout.companionWindowSize.height - margin * 2)
+
+        return CGSize(
+            width: min(0, max(-travelX, proposed.width)),
+            height: min(travelY, max(0, proposed.height))
+        )
+    }
+
+    private func hideCompanion() {
+        withAnimation(.snappy(duration: 0.24)) {
+            isCompanionVisible = false
+        }
+    }
+
+    private func toggleCompanion() {
+        withAnimation(.snappy(duration: 0.24)) {
+            isCompanionVisible.toggle()
         }
     }
 
     /// Dictation puts the mic on a `.playAndRecord` session, so the companion goes quiet while it
     /// runs rather than talking into the transcript.
     private var isCompanionMuted: Bool {
-        speechTranscriber.state.isListening
+        isCompanionMutedByWriter || speechTranscriber.state.isListening
     }
 
     /// `.ambient` keeps the companion under the ring/silent switch and mixing with whatever the
@@ -4817,132 +4914,6 @@ struct CreateEntryView: View {
         let audioSession = AVAudioSession.sharedInstance()
         try? audioSession.setCategory(.ambient, mode: .moviePlayback, options: [.mixWithOthers])
         try? audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-    }
-
-    /// Collapsed while the writer is in the editor, so typing gets the room without losing their
-    /// choice — leaving the editor restores whatever they last picked. Editing is tracked
-    /// separately from the keyboard because a hardware keyboard never raises the software one.
-    private var showsExpandedCompanion: Bool {
-        isCompanionExpanded && !isKeyboardVisible && !isBodyEditorEditing && !isTitleFocused
-    }
-
-    private var expandedCompanionCard: some View {
-        HomeLoopingVideoBackground(
-            resourceName: CreateEntryLayout.companionVideoName,
-            isMuted: isCompanionMuted
-        )
-            .frame(maxWidth: .infinity)
-            .frame(height: companionBannerHeight)
-            .clipShape(RoundedRectangle(cornerRadius: CreateEntryLayout.companionCornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: CreateEntryLayout.companionCornerRadius, style: .continuous)
-                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
-            )
-            .overlay(alignment: .topLeading) {
-                companionNameChip
-                    .padding(10)
-            }
-            .overlay(alignment: .topTrailing) {
-                Button {
-                    collapseCompanion()
-                } label: {
-                    companionGlyph("chevron.up")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Collapse companion")
-                .padding(10)
-            }
-    }
-
-    private var collapsedCompanionBar: some View {
-        Button {
-            expandCompanion()
-        } label: {
-            HStack(spacing: 10) {
-                // The loop doubles as the avatar, so the bar always shows whoever is on the card.
-                // Collapsing is how the writer asks for quiet, so the avatar stays silent.
-                HomeLoopingVideoBackground(resourceName: CreateEntryLayout.companionVideoName)
-                    .frame(width: 28, height: 28)
-                    .clipShape(Circle())
-
-                Text("\(CreateEntryLayout.companionName) is journaling with you ✨")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-
-                Spacer(minLength: 8)
-
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.92))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                CreateEntryLayout.companionBarColor,
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Expand \(CreateEntryLayout.companionName)")
-    }
-
-    /// Name badge on the card. The chevron is the hook for picking a different companion; nothing
-    /// is wired to it yet.
-    private var companionNameChip: some View {
-        HStack(spacing: 4) {
-            Text(CreateEntryLayout.companionName)
-                .font(.system(size: 13, weight: .semibold))
-
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .bold))
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.black.opacity(0.38), in: Capsule())
-    }
-
-    private func companionGlyph(_ systemName: String) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 28, height: 28)
-            .background(.black.opacity(0.38), in: Circle())
-            .contentShape(Circle())
-    }
-
-    private func collapseCompanion() {
-        withAnimation(.snappy(duration: 0.26)) {
-            isCompanionExpanded = false
-        }
-    }
-
-    private func expandCompanion() {
-        // Editing is the other thing that collapses the card, so step out of the editor first.
-        if isKeyboardVisible || isBodyEditorEditing || isTitleFocused {
-            dismissKeyboard()
-        }
-
-        withAnimation(.snappy(duration: 0.26)) {
-            isCompanionExpanded = true
-        }
-    }
-
-    /// The card spans the page width inside its inset, so its height follows the loop's own aspect
-    /// ratio rather than a fixed value that would crop the video.
-    private var companionBannerHeight: CGFloat {
-        let ratio = companionBannerAspectRatio ?? CreateEntryLayout.companionVideoFallbackAspectRatio
-
-        guard ratio > 0 else {
-            return 0
-        }
-
-        let cardWidth = UIScreen.main.bounds.width - CreateEntryLayout.companionCardInset * 2
-        return (cardWidth / ratio).rounded()
     }
 
     private var draftKeyboardInputMode: NotebookEditorInputMode {
@@ -5178,7 +5149,7 @@ struct CreateEntryView: View {
             return 22
         }
 
-        return 84
+        return 92
     }
 
     private var speechMicButton: some View {
@@ -5568,6 +5539,11 @@ struct CreateEntryView: View {
 
             charactersShelfButton
                 .padding(.leading, -8)
+
+            if CreateEntryLayout.isCompanionEnabled {
+                companionCallShelfButton
+                    .padding(.leading, -8)
+            }
         }
         .frame(maxWidth: 420, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -5583,12 +5559,12 @@ struct CreateEntryView: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: true)
 
-            if let summary {
-                Text(summary)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.storyInk.opacity(0.58))
-                    .lineLimit(1)
-            }
+            // if let summary {
+            //     Text(summary)
+            //         .font(.system(size: 9, weight: .semibold))
+            //         .foregroundStyle(Color.storyInk.opacity(0.58))
+            //         .lineLimit(1)
+            // }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
@@ -5796,6 +5772,47 @@ struct CreateEntryView: View {
             }
         }
         .frame(width: 78, height: 65)
+    }
+
+    /// Calls the companion window back after it has been closed, and hangs it up again.
+    private var companionCallShelfButton: some View {
+        Button {
+            toggleCompanion()
+        } label: {
+            VStack(spacing: 5) {
+                ZStack {
+                    Circle()
+                        .fill(isCompanionVisible ? Color.storyPurple : Color.white.opacity(0.88))
+                        .frame(width: 56, height: 56)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(
+                                    isCompanionVisible ? Color.clear : Color.storyPurple.opacity(0.45),
+                                    style: StrokeStyle(lineWidth: 1.4, dash: [4, 3])
+                                )
+                        )
+                        .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
+
+                    Image(systemName: isCompanionVisible ? "phone.down.fill" : "phone.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(isCompanionVisible ? Color.white : Color.storyPurple)
+                }
+                .frame(width: 78, height: 65)
+
+                shelfButtonCaption(
+                    title: CreateEntryLayout.companionName,
+                    summary: isCompanionVisible ? "On call" : "Call"
+                )
+            }
+            .frame(width: 82, height: 111, alignment: .bottom)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            isCompanionVisible
+                ? "Hang up on \(CreateEntryLayout.companionName)"
+                : "Call \(CreateEntryLayout.companionName)"
+        )
     }
 
     private var characterShelfSummary: String {
