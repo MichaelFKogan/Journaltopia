@@ -405,7 +405,7 @@ private struct OnboardingSeeHowItWorksPage: View {
 
     private var header: some View {
         VStack(spacing: 10) {
-            Text("See How It Works")
+            Text("How It Works")
                 .font(.system(size: 30, weight: .bold, design: .serif))
                 .foregroundStyle(Color.storyInk)
                 .lineLimit(1)

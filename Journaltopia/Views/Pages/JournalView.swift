@@ -315,6 +315,12 @@ struct JournalView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .zIndex(2)
 
+                if contentMode.requiresSignIn {
+                    SampleSignInCallout()
+                        .padding(.bottom, JournaltopiaFloatingControlMetrics.signInCalloutBottomInset)
+                        .zIndex(3)
+                }
+
                 bottomPrototypeNotice
 
             }
@@ -477,7 +483,9 @@ struct JournalView: View {
 
     @ViewBuilder
     private var journalReorderHint: some View {
-        if !chapters.isEmpty {
+        // Signed-out browsing cannot reorder someone else's sample pack, so the hint would be
+        // promising a gesture that does nothing.
+        if !chapters.isEmpty && canEditJournals {
             ReorderHintText(usesLightForeground: usesLightJournalHeader)
         }
     }
@@ -635,7 +643,7 @@ struct JournalView: View {
 
                 journalPageContent
             }
-            .padding(.bottom, showsPrototypeData ? 140 : 118)
+            .padding(.bottom, (showsPrototypeData ? 140 : 118) + signInCalloutContentInset)
         }
         .background(Color.clear)
     }
@@ -665,9 +673,15 @@ struct JournalView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
             .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: showsPrototypeData ? 140 : 118)
+                Color.clear.frame(height: (showsPrototypeData ? 140 : 118) + signInCalloutContentInset)
             }
         }
+    }
+
+    /// Extra room under the content for the floating sign-in callout, which nothing else in the
+    /// layout reserves space for.
+    private var signInCalloutContentInset: CGFloat {
+        contentMode.requiresSignIn ? JournaltopiaFloatingControlMetrics.signInCalloutContentInset : 0
     }
 
     private var journalPageChrome: some View {
@@ -730,6 +744,7 @@ struct JournalView: View {
                     isEditing: editMode == .active,
                     hidesBorder: true,
                     usesWideGridStyle: selectedJournalLayout == .grid2x2,
+                    isSample: contentMode.requiresSignIn,
                     onCustomize: { beginCustomizing(chapter) },
                     onRename: { beginRenaming(chapter) },
                     onDelete: { requestDeleteJournals([chapter]) }
@@ -845,7 +860,8 @@ struct JournalView: View {
             coverImage: chapter.remoteCover == nil ? JournalCoverStore.image(for: chapter) : nil,
             remoteCoverURL: chapter.remoteCover?.thumbnailNSURL ?? chapter.remoteCover?.imageNSURL,
             fallbackImageName: journalFallbackCoverImageName(for: chapter, at: index),
-            isEditing: false
+            isEditing: false,
+            isSample: contentMode.requiresSignIn
         )
 
         NavigationLink {
@@ -2367,6 +2383,7 @@ private struct JournalCoverCard: View {
     let isEditing: Bool
     let hidesBorder: Bool
     let usesWideGridStyle: Bool
+    var isSample = false
     let onCustomize: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
@@ -2387,6 +2404,14 @@ private struct JournalCoverCard: View {
                     journalTitleScrim
                 }
 
+            if isSample && !isEditing {
+                EntrySampleBadge()
+                    .padding(.top, 8)
+                    .padding(.leading, 26)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .allowsHitTesting(false)
+            }
+
             if isEditing {
                 if usesWideGridStyle {
                     JournalDragHandle(visibleSize: editControlVisibleSize)
@@ -2399,7 +2424,7 @@ private struct JournalCoverCard: View {
                     .padding(.leading, 8)
                     .padding(.trailing, usesWideGridStyle ? 8 : 2)
                     .padding(.bottom, 8)
-            } else {
+            } else if !isSample {
                 Menu {
                     Button(action: onCustomize) {
                         Label("Change Cover", systemImage: "photo.on.rectangle")
@@ -7471,6 +7496,12 @@ struct EntriesView: View {
                     .zIndex(2)
             }
 
+            if contentMode.requiresSignIn {
+                SampleSignInCallout()
+                    .padding(.bottom, JournaltopiaFloatingControlMetrics.signInCalloutBottomInset)
+                    .zIndex(3)
+            }
+
             selectedEntriesToolbar
 
             if let openingEntryPreview {
@@ -7510,7 +7541,7 @@ struct EntriesView: View {
 
                 entriesPageContent
             }
-            .padding(.bottom, 104)
+            .padding(.bottom, 104 + signInCalloutContentInset)
         }
         .background(Color.clear)
     }
@@ -7536,7 +7567,7 @@ struct EntriesView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
             .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: 104)
+                Color.clear.frame(height: 104 + signInCalloutContentInset)
             }
         }
     }
@@ -7578,7 +7609,15 @@ struct EntriesView: View {
         .accessibilityLabel("Write")
     }
 
-    private var entriesFloatingEditButtonBottomPadding: CGFloat { 84 }
+    private var entriesFloatingEditButtonBottomPadding: CGFloat {
+        JournaltopiaFloatingControlMetrics.bottomInset
+    }
+
+    /// Extra room under the content for the floating sign-in callout, which nothing else in the
+    /// layout reserves space for.
+    private var signInCalloutContentInset: CGFloat {
+        contentMode.requiresSignIn ? JournaltopiaFloatingControlMetrics.signInCalloutContentInset : 0
+    }
 
     private var addSelectedEntriesToJournalDestination: some View {
         AddEntryToJournalPage(
@@ -9260,8 +9299,14 @@ struct EntriesView: View {
             && !sampleEntries.isEmpty
     }
 
+    /// Signed-in accounts never borrow the sample pack, empty or not.
+    ///
+    /// This used to hold only once ``hasCompletedEntriesSamples`` was set, so a brand-new account
+    /// opened on Entries full of someone else's demo stories until its owner saved a first entry.
+    /// Journals and Profile already gated on ``JournaltopiaContentMode/showsSampleContent`` — signed
+    /// out only — so Entries was the one screen that disagreed. A new account starts empty here too.
     private var shouldSuppressSamplesForSignedInUser: Bool {
-        authStore.userID != nil && !isSampleAuthorMode && hasCompletedEntriesSamples
+        authStore.userID != nil && !isSampleAuthorMode
     }
 
     private var showsCloudLoadingPlaceholder: Bool {
@@ -11110,17 +11155,81 @@ private struct EntrySampleBadge: View {
     var body: some View {
         Text("Sample")
             .font(.system(size: 10, weight: .heavy))
-            .foregroundStyle(Color.storyInk.opacity(0.78))
+            .foregroundStyle(Color.white)
             .lineLimit(1)
-            .padding(.horizontal, 7)
+            .padding(.horizontal, 8)
             .frame(height: 20)
-            .background(Color.white.opacity(0.94), in: Capsule())
+            .background(Color.storyPurple, in: Capsule())
             .overlay(
                 Capsule()
-                    .stroke(Color.storyInk.opacity(0.12), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.34), lineWidth: 1)
             )
-            .shadow(color: Color.storyInk.opacity(0.08), radius: 3, y: 1)
+            .shadow(color: Color.storyInk.opacity(0.20), radius: 3, y: 1)
             .accessibilityLabel("Sample")
+    }
+}
+
+/// Where the floating controls sit above the tab bar, and how much room the scroll content has to
+/// leave underneath so its last row is not left permanently hidden behind them.
+private enum JournaltopiaFloatingControlMetrics {
+    static let bottomInset: CGFloat = 84
+    static let floatingButtonDiameter: CGFloat = 60
+    static let signInCalloutHeight: CGFloat = 44
+
+    /// The callout shares a row with the floating button but is the shorter of the two, so matching
+    /// their bottom edges leaves them looking misaligned. Lifting it by half the height difference
+    /// puts the two centre lines together instead.
+    static let signInCalloutBottomInset: CGFloat =
+        bottomInset + (floatingButtonDiameter - signInCalloutHeight) / 2
+
+    /// What the scroll content adds underneath so its last row clears the callout. The floating
+    /// button reaches further down the screen than this but sits against the trailing edge, where
+    /// it covers a corner rather than a whole row.
+    static let signInCalloutContentInset: CGFloat = 32
+}
+
+/// The one call to action on the signed-out browse screens, floating at the bottom centre above the
+/// tab bar.
+///
+/// The sample badges say *what* this content is; this says what to do about it. It routes through
+/// ``SignInGate`` rather than presenting `SignInView` itself so the sign-in page is still the single
+/// one mounted at the app root, and so a visitor who signs in from here lands back where they were.
+///
+/// The label is kept short on purpose. Centred, it shares a row with a floating button pinned 20pt
+/// from the trailing edge, so the pill has about 205pt to live in before the two touch on a 375pt
+/// phone — a longer sentence collides there while still looking fine on a Pro.
+private struct SampleSignInCallout: View {
+    @EnvironmentObject private var signInGate: SignInGate
+
+    var body: some View {
+        Button {
+            signInGate.requireAccount(for: .signIn)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .bold))
+
+                Text("Sign in to start")
+                    .font(.system(size: 15, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 18)
+            .frame(height: JournaltopiaFloatingControlMetrics.signInCalloutHeight)
+            .background(Color.storyPurple, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
+            )
+            // It floats over the content rather than sitting in the layout, so it carries its own
+            // separation from whatever scrolls underneath it.
+            .shadow(color: Color.black.opacity(0.28), radius: 14, y: 6)
+            .shadow(color: Color.storyPurple.opacity(0.34), radius: 6, y: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sign in to start")
+        .accessibilityHint("Opens the sign in page")
     }
 }
 
@@ -12402,6 +12511,7 @@ private struct JournalChapterListRow: View {
     let remoteCoverURL: URL?
     let fallbackImageName: String?
     var isEditing = false
+    var isSample = false
     var onDelete: () -> Void = {}
 
     var body: some View {
@@ -12428,6 +12538,11 @@ private struct JournalChapterListRow: View {
                 .layoutPriority(1)
 
             Spacer(minLength: 8)
+
+            if isSample {
+                EntrySampleBadge()
+                    .layoutPriority(1)
+            }
 
             Text("\(chapter.entries.count) \(chapter.entries.count == 1 ? "entry" : "entries")")
                 .font(.system(size: 13, weight: .regular))
