@@ -76,9 +76,14 @@ final class SupabaseAuthStore: ObservableObject {
             _ = try JournaltopiaSupabaseConfig.projectURL
             _ = try JournaltopiaSupabaseConfig.anonKey
 
+            // Without `prompt=select_account` Google silently reuses whichever account the shared
+            // Safari cookie jar is already signed into, so anyone with two Gmail addresses can
+            // never reach the second one. Asking for the chooser costs one tap and restores the
+            // choice; the session stays non-ephemeral so the picker is a tap, not a password.
             try await client.auth.signInWithOAuth(
                 provider: .google,
-                redirectTo: JournaltopiaSupabaseConfig.redirectURL
+                redirectTo: JournaltopiaSupabaseConfig.redirectURL,
+                queryParams: [("prompt", "select_account")]
             ) { session in
                 session.presentationContextProvider = AuthPresentationContextProvider.shared
                 session.prefersEphemeralWebBrowserSession = false

@@ -25,7 +25,6 @@ struct SettingsView: View {
     @State private var isSignInPagePresented = false
     @State private var isPaywallSheetPresented = false
     @State private var showsSignedOutConfirmation = false
-    @State private var signedOutConfirmationHideTask: Task<Void, Never>?
     @State private var isDeleteAccountConfirmationPresented = false
     @State private var isDeletingAccount = false
     @State private var showsAccountDeletedConfirmation = false
@@ -153,10 +152,6 @@ struct SettingsView: View {
             await authStore.refreshCurrentUser()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
-        .onDisappear {
-            signedOutConfirmationHideTask?.cancel()
-            signedOutConfirmationHideTask = nil
-        }
     }
 
     private var isSignedOut: Bool {
@@ -186,7 +181,7 @@ struct SettingsView: View {
     /// something having gone wrong.
     private var deleteAccountConfirmationMessage: String {
         let summary = """
-            This permanently deletes your Journaltopia account and everything in it             — your journals, entries, uploaded photos, and generated storyboards.
+            This permanently deletes your Journaltopia account and everything in it — your journals, entries, uploaded photos, and generated storyboards.
 
             This cannot be undone.
             """
@@ -222,56 +217,61 @@ struct SettingsView: View {
     }
 
     private func presentAccountDeletedConfirmation() {
-        signedOutConfirmationHideTask?.cancel()
         showsSignedOutConfirmation = false
         showsAccountDeletedConfirmation = true
+    }
 
-        signedOutConfirmationHideTask = Task {
-            try? await Task.sleep(nanoseconds: 2_600_000_000)
-            guard !Task.isCancelled else {
-                return
-            }
-
-            showsAccountDeletedConfirmation = false
-            signedOutConfirmationHideTask = nil
-        }
+    private func dismissAccountDeletedConfirmation() {
+        showsAccountDeletedConfirmation = false
     }
 
     private func presentSignedOutConfirmation() {
-        signedOutConfirmationHideTask?.cancel()
+        showsAccountDeletedConfirmation = false
         showsSignedOutConfirmation = true
+    }
 
-        signedOutConfirmationHideTask = Task {
-            try? await Task.sleep(nanoseconds: 2_200_000_000)
-            guard !Task.isCancelled else {
-                return
-            }
-
-            showsSignedOutConfirmation = false
-            signedOutConfirmationHideTask = nil
-        }
+    private func dismissSignedOutConfirmation() {
+        showsSignedOutConfirmation = false
     }
 
     private var signedOutConfirmationCard: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(Color.storyPurple)
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 12) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
 
-            VStack(spacing: 6) {
-                Text("Signed Out")
-                    .font(.system(size: 20, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
+                VStack(spacing: 6) {
+                    Text("Signed Out")
+                        .font(.system(size: 20, weight: .bold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
 
-                Text("This device is back in signed-out mode. Your local samples stay available to browse.")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.homeMutedText)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text("This device is back in signed-out mode. Your local samples stay available to browse.")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 26)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Signed out. This device is back in signed-out mode.")
+
+            Button {
+                dismissSignedOutConfirmation()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.55))
+                    .frame(width: 32, height: 32)
+                    .background(Color.homeInputGray.opacity(0.85), in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(10)
+            .accessibilityLabel("Close")
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 26)
         .frame(maxWidth: 300)
         .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
@@ -280,9 +280,6 @@ struct SettingsView: View {
         )
         .shadow(color: Color.storyPurple.opacity(0.14), radius: 20, y: 10)
         .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Signed out. This device is back in signed-out mode.")
-        .accessibilityAddTraits(.isStaticText)
     }
 
     /// The destructive entry point. Tapping it only opens the confirmation — nothing is deleted
@@ -318,25 +315,43 @@ struct SettingsView: View {
     }
 
     private var accountDeletedConfirmationCard: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(Color.storyPurple)
+        ZStack(alignment: .topTrailing) {
+            VStack(spacing: 12) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
 
-            VStack(spacing: 6) {
-                Text("Account Deleted")
-                    .font(.system(size: 20, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
+                VStack(spacing: 6) {
+                    Text("Account Deleted")
+                        .font(.system(size: 20, weight: .bold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
 
-                Text("Your account and its content have been permanently removed. This device is back in signed-out mode.")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.homeMutedText)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text("Your account and its content have been permanently removed. This device is back in signed-out mode.")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 26)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Account deleted. Your account and its content have been permanently removed.")
+
+            Button {
+                dismissAccountDeletedConfirmation()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.55))
+                    .frame(width: 32, height: 32)
+                    .background(Color.homeInputGray.opacity(0.85), in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(10)
+            .accessibilityLabel("Close")
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 26)
         .frame(maxWidth: 300)
         .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
@@ -345,9 +360,6 @@ struct SettingsView: View {
         )
         .shadow(color: Color.storyPurple.opacity(0.14), radius: 20, y: 10)
         .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Account deleted. Your account and its content have been permanently removed.")
-        .accessibilityAddTraits(.isStaticText)
     }
 
     private var accountStatusRow: some View {
