@@ -26,6 +26,9 @@ struct SettingsView: View {
     @State private var isPaywallSheetPresented = false
     @State private var showsSignedOutConfirmation = false
     @State private var signedOutConfirmationHideTask: Task<Void, Never>?
+    @State private var isDeleteAccountConfirmationPresented = false
+    @State private var isDeletingAccount = false
+    @State private var showsAccountDeletedConfirmation = false
 
     var body: some View {
         List {
@@ -37,6 +40,12 @@ struct SettingsView: View {
                 }
 
                 accountActionRow
+
+                // Below the sign-out row, and only for an account that exists to be deleted. Its own
+                // confirmation carries the warning; this row is a door, not the action.
+                if case .signedIn = authStore.status {
+                    deleteAccountRow
+                }
             }
 
             Section("Journaltopia+") {
@@ -97,12 +106,26 @@ struct SettingsView: View {
             }
         }
         .overlay {
-            if showsSignedOutConfirmation {
+            if showsAccountDeletedConfirmation {
+                accountDeletedConfirmationCard
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            } else if showsSignedOutConfirmation {
                 signedOutConfirmationCard
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
         }
         .animation(.snappy(duration: 0.22), value: showsSignedOutConfirmation)
+        .animation(.snappy(duration: 0.22), value: showsAccountDeletedConfirmation)
+        // The second of the two deliberate steps. Nothing has been sent when this appears: the first
+        // tap opens this, and only "Delete My Account" below starts the deletion.
+        .alert("Delete Account?", isPresented: $isDeleteAccountConfirmationPresented) {
+            Button("Delete My Account", role: .destructive) {
+                deleteAccount()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(deleteAccountConfirmationMessage)
+        }
         .preferredColorScheme(.light)
         .enableInteractivePopGesture()
         // Presented from here rather than through the gate: Settings can already be presented over
@@ -158,6 +181,62 @@ struct SettingsView: View {
         }
     }
 
+    /// Apple-linked accounts get one extra sentence, because they get one extra step: the Apple sheet
+    /// appears before anything is deleted, and an unexplained system prompt mid-deletion would read as
+    /// something having gone wrong.
+    private var deleteAccountConfirmationMessage: String {
+        let summary = """
+            This permanently deletes your Journaltopia account and everything in it             — your journals, entries, uploaded photos, and generated storyboards.
+
+            This cannot be undone.
+            """
+
+        guard authStore.hasAppleIdentity else {
+            return summary
+        }
+
+        return summary + "\n\nYou'll be asked to confirm with Apple so Journaltopia can remove its access to your Apple ID."
+    }
+
+    /// Runs the deletion, and does nothing at all if one is already running.
+    ///
+    /// `isDeletingAccount` is the guard against a double submission as well as the loading state:
+    /// the row disables itself on it, and it is set before the first `await` so a second tap landing
+    /// in the same run loop cannot get past it.
+    private func deleteAccount() {
+        guard !isDeletingAccount else {
+            return
+        }
+
+        Task {
+            isDeletingAccount = true
+            let didDelete = await authStore.deleteAccount()
+            isDeletingAccount = false
+
+            // On failure the account is untouched and still signed in; `authStore.errorMessage`
+            // already carries a retryable explanation and is rendered under the account rows.
+            if didDelete {
+                presentAccountDeletedConfirmation()
+            }
+        }
+    }
+
+    private func presentAccountDeletedConfirmation() {
+        signedOutConfirmationHideTask?.cancel()
+        showsSignedOutConfirmation = false
+        showsAccountDeletedConfirmation = true
+
+        signedOutConfirmationHideTask = Task {
+            try? await Task.sleep(nanoseconds: 2_600_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            showsAccountDeletedConfirmation = false
+            signedOutConfirmationHideTask = nil
+        }
+    }
+
     private func presentSignedOutConfirmation() {
         signedOutConfirmationHideTask?.cancel()
         showsSignedOutConfirmation = true
@@ -203,6 +282,71 @@ struct SettingsView: View {
         .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Signed out. This device is back in signed-out mode.")
+        .accessibilityAddTraits(.isStaticText)
+    }
+
+    /// The destructive entry point. Tapping it only opens the confirmation — nothing is deleted
+    /// until the alert's own destructive button is pressed.
+    private var deleteAccountRow: some View {
+        Button(role: .destructive) {
+            isDeleteAccountConfirmationPresented = true
+        } label: {
+            HStack(spacing: 12) {
+                SettingsRowContent(
+                    systemName: "trash",
+                    title: isDeletingAccount ? "Deleting Account" : "Delete Account",
+                    subtitle: isDeletingAccount
+                        ? "Removing your journals, photos, and storyboards"
+                        : "Permanently delete your account and its content",
+                    showsChevron: false,
+                    iconColor: .red
+                )
+
+                if isDeletingAccount {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        // Both halves of "no duplicate submissions": the row cannot be tapped again while a deletion
+        // is in flight, and `deleteAccount()` refuses a second run even if it were.
+        .disabled(isDeletingAccount || isSigningOut)
+        .accessibilityLabel(isDeletingAccount ? "Deleting account" : "Delete account")
+        .accessibilityHint("Asks for confirmation before permanently deleting your account")
+    }
+
+    private var accountDeletedConfirmationCard: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(Color.storyPurple)
+
+            VStack(spacing: 6) {
+                Text("Account Deleted")
+                    .font(.system(size: 20, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+
+                Text("Your account and its content have been permanently removed. This device is back in signed-out mode.")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color.homeMutedText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 26)
+        .frame(maxWidth: 300)
+        .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.storyPurple.opacity(0.16), lineWidth: 1)
+        )
+        .shadow(color: Color.storyPurple.opacity(0.14), radius: 20, y: 10)
+        .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Account deleted. Your account and its content have been permanently removed.")
         .accessibilityAddTraits(.isStaticText)
     }
 
@@ -418,7 +562,9 @@ struct SettingsView: View {
                 .padding(.vertical, 4)
             }
             .buttonStyle(.plain)
-            .disabled(isSigningOut)
+            // Also disabled mid-deletion: signing out first would strand a live account behind a
+            // signed-out screen, since the deletion only completes when the server says so.
+            .disabled(isSigningOut || isDeletingAccount)
         }
 
         if let errorMessage = authStore.errorMessage {
