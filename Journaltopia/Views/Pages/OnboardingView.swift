@@ -17,11 +17,12 @@ struct OnboardingView: View {
     /// The closing film, pushed over the flow once the visitor is on their way in.
     @State private var isShowingIntro = false
 
-    /// Page one, the story pages, the tour opener, the tour's own steps, then sign-in.
+    /// Page one, the story pages, the tour opener, the tour's own steps, the plans, then sign-in.
     private var pageCount: Int {
-        1 + OnboardingStoryPage.allPages.count + 1 + OnboardingTourStep.allSteps.count + 1
+        1 + OnboardingStoryPage.allPages.count + 1 + OnboardingTourStep.allSteps.count + 2
     }
     private var seeHowItWorksIndex: Int { 1 + OnboardingStoryPage.allPages.count }
+    private var startFreeIndex: Int { pageCount - 2 }
     private var startYourStoryIndex: Int { pageCount - 1 }
     /// What the pages leave clear at the bottom for the shared bar.
     private let bottomBarHeight: CGFloat = 108
@@ -47,7 +48,7 @@ struct OnboardingView: View {
                     .tag(index + 1)
                 }
 
-                OnboardingSeeHowItWorksPage(onContinue: primaryAction)
+                OnboardingSeeHowItWorksPage(bottomInset: bottomBarHeight)
                     .tag(seeHowItWorksIndex)
 
                 ForEach(OnboardingTourStep.allSteps.indices, id: \.self) { index in
@@ -58,6 +59,9 @@ struct OnboardingView: View {
                     )
                     .tag(seeHowItWorksIndex + 1 + index)
                 }
+
+                OnboardingStartFreePage(bottomInset: bottomBarHeight)
+                    .tag(startFreeIndex)
 
                 StartYourStoryView(
                     onExploreFirst: showIntro,
@@ -106,38 +110,37 @@ struct OnboardingView: View {
         selectedPage == startYourStoryIndex
     }
 
-    /// The tour opener carries its own way forward, down in the torn purple half, so the shared bar
-    /// keeps only the dots there.
-    private var showsBottomBarButton: Bool {
-        selectedPage != seeHowItWorksIndex
+    /// The tour opener names its own way forward; every other page just goes next.
+    private var primaryActionTitle: String {
+        if isLastPage {
+            return "Skip For Now"
+        }
+
+        return selectedPage == seeHowItWorksIndex ? "Show Me How" : "Next"
     }
 
     private var bottomBar: some View {
         VStack(spacing: 22) {
             pageIndicator
 
-            if showsBottomBarButton {
-                Button(action: primaryAction) {
-                    Text(isLastPage ? "Skip For Now" : "Next")
-                        .font(.system(size: 18, weight: .bold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .background(
-                            Color.storyPurple,
-                            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        )
-                        .shadow(color: Color.storyPurple.opacity(0.26), radius: 14, y: 6)
-                }
-                .buttonStyle(.plain)
-                .transition(.opacity)
+            Button(action: primaryAction) {
+                Text(primaryActionTitle)
+                    .font(.system(size: 18, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .background(
+                        Color.storyPurple,
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .shadow(color: Color.storyPurple.opacity(0.26), radius: 14, y: 6)
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
-        .animation(.easeInOut(duration: 0.22), value: showsBottomBarButton)
     }
 
     private var pageIndicator: some View {
@@ -370,14 +373,11 @@ private struct OnboardingTourStepView: View {
 /// The opening page of the tour: the four steps laid out on the paper half, and, below the torn
 /// edge, the invitation into the walkthrough.
 ///
-/// The purple half runs all the way off the bottom of the screen, under the shared bar's dots, so
-/// this page reserves only the dots' room rather than the whole bar's — the bar drops its own
-/// button here and this page's "Show Me How" takes its place inside the purple.
+/// The purple half runs all the way off the bottom of the screen, so the shared bar's dots and its
+/// button — named "Show Me How" while this page is up — sit on the purple rather than on the paper.
 private struct OnboardingSeeHowItWorksPage: View {
-    let onContinue: () -> Void
-
-    /// What the purple half keeps clear at the bottom for the shared bar's dots.
-    private let dotsInset: CGFloat = 46
+    /// What the purple half keeps clear at the bottom for the shared bar.
+    let bottomInset: CGFloat
     /// The torn sheet's own proportions, so it hangs at its drawn height however wide the screen is.
     private let tornSheetAspect: CGFloat = 1056.0 / 1490.0
 
@@ -450,36 +450,13 @@ private struct OnboardingSeeHowItWorksPage: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Color.storyInk.opacity(0.7))
                 .lineSpacing(3)
-
-            Button(action: onContinue) {
-                HStack(spacing: 14) {
-                    Text("Show Me How")
-                        .font(.system(size: 18, weight: .bold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 17, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 56)
-                .background(
-                    Color.storyPurple,
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                )
-                .shadow(color: Color.storyPurple.opacity(0.26), radius: 14, y: 6)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 8)
-            .padding(.horizontal, 24)
         }
         .multilineTextAlignment(.center)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity)
         // Enough to clear the ragged edge the picture tears across the top of this half.
         .padding(.top, 42)
-        .padding(.bottom, dotsInset)
+        .padding(.bottom, bottomInset)
         .background(alignment: .top) {
             // The colour runs off the bottom of the screen rather than stopping at the home
             // indicator, so the dots sit on purple like the rest of this half.
@@ -533,6 +510,230 @@ private struct OnboardingSparkle: View {
             path.closeSubpath()
             return path
         }
+    }
+}
+
+// MARK: - The plans
+
+/// Where the flow says what costs money, one page before the visitor is asked to make an account.
+///
+/// It explains rather than sells: a purchase needs an account to attach itself to — see
+/// ``SubscriptionStore.purchaseJournaltopiaPlus(isSignedIn:)`` — and there is no account yet, so
+/// there is no buy button here to disappoint anyone. The shared bar's Next carries on to sign-in,
+/// and the full plan picker is a tap away from Settings once they are in.
+///
+/// What each plan includes is read from ``JournaltopiaPlan`` rather than written again here, so this
+/// page and the plan picker can never promise different things.
+private struct OnboardingStartFreePage: View {
+    @EnvironmentObject private var subscriptionStore: SubscriptionStore
+
+    let bottomInset: CGFloat
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 13) {
+                header
+
+                planCard(
+                    JournaltopiaPlan.free,
+                    price: JournaltopiaPlan.freePrice,
+                    caption: nil,
+                    imageName: "start_free_1",
+                    bullet: .check,
+                    note: "Your journal is always yours.",
+                    noteFlourish: .heart
+                )
+
+                planCard(
+                    JournaltopiaPlan.plus,
+                    price: plusPrice,
+                    caption: plusPriceCaption,
+                    imageName: "start_free_2",
+                    bullet: .sparkle,
+                    note: "Bring your memories to life.",
+                    noteFlourish: .sparkles
+                )
+
+                Text("Make your account next, then upgrade any time.\nCancel anytime.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.homeMutedText)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(2)
+                    .padding(.top, 2)
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 16)
+            .padding(.bottom, bottomInset)
+        }
+        // StoreKit may still be fetching when the flow reaches this page; the price fills itself in.
+        .task {
+            await subscriptionStore.refresh(isSignedIn: false)
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 10) {
+            (
+                Text("Start Free.").foregroundColor(.storyInk)
+                    + Text("\nCreate More with Plus+").foregroundColor(.storyPurple)
+            )
+            .font(.system(size: 27, weight: .bold, design: .serif))
+            .lineLimit(2)
+            .minimumScaleFactor(0.7)
+
+            Text("Write and organize your life for free.\nUpgrade when you want to turn your\nstories into illustrated storyboards.")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color.homeMutedText)
+                .lineSpacing(3)
+        }
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func planCard(
+        _ plan: JournaltopiaPlan,
+        price: String,
+        caption: String?,
+        imageName: String,
+        bullet: PlanBullet,
+        note: String,
+        noteFlourish: NoteFlourish
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(plan.name.uppercased())
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer(minLength: 4)
+
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(price)
+                        .font(.system(size: 17, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+
+                    if let caption {
+                        Text(caption)
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(Color.storyPurple)
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                Image(imageName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 100, height: 100)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.white.opacity(0.74), lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(plan.features) { feature in
+                        featureRow(feature, bullet: bullet)
+                    }
+                }
+            }
+
+            handwrittenNote(note, flourish: noteFlourish)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.white.opacity(0.76),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.78), lineWidth: 1)
+        )
+    }
+
+    private func featureRow(_ feature: JournaltopiaPlan.Feature, bullet: PlanBullet) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            bulletMark(bullet, isIncluded: feature.isIncluded)
+                .frame(width: 13, height: 15)
+
+            Text(feature.text.replacingOccurrences(of: "\n", with: " "))
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(feature.isIncluded ? Color.storyInk : Color.homeMutedText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// A tick on the free plan, a little star on Plus — and the same crossed-out mark on both for
+    /// anything a plan does not include.
+    @ViewBuilder
+    private func bulletMark(_ bullet: PlanBullet, isIncluded: Bool) -> some View {
+        if !isIncluded {
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.storyGray.opacity(0.66))
+        } else {
+            switch bullet {
+            case .check:
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+            case .sparkle:
+                OnboardingSparkle(size: 11)
+            }
+        }
+    }
+
+    private func handwrittenNote(_ text: String, flourish: NoteFlourish) -> some View {
+        HStack(spacing: 6) {
+            // The trailing space is the glyphs' elbow room: Caveat's tails lean past the advance
+            // width and SwiftUI clips a Text to its measured box.
+            Text(text + " ")
+                .font(.custom("Caveat-Regular", size: 19).weight(.bold))
+                .foregroundStyle(Color.storyPurple)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            switch flourish {
+            case .heart:
+                Image(systemName: "heart")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
+            case .sparkles:
+                HStack(spacing: 3) {
+                    OnboardingSparkle(size: 11)
+                    OnboardingSparkle(size: 7)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 1)
+    }
+
+    /// The App Store's price in the visitor's own currency, or a plain wait while it loads — never a
+    /// number written down here.
+    private var plusPrice: String {
+        subscriptionStore.localizedPrice ?? "Loading"
+    }
+
+    private var plusPriceCaption: String? {
+        subscriptionStore.localizedPrice == nil ? nil : "/month"
+    }
+
+    fileprivate enum PlanBullet {
+        case check
+        case sparkle
+    }
+
+    fileprivate enum NoteFlourish {
+        case heart
+        case sparkles
     }
 }
 
@@ -628,4 +829,5 @@ extension Color {
 #Preview {
     OnboardingView {}
         .environmentObject(SupabaseAuthStore.preview(status: .signedOut))
+        .environmentObject(SubscriptionStore())
 }
