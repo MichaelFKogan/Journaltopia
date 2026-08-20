@@ -134,13 +134,6 @@ struct SettingsView: View {
                 promptTitle: AccountRequiredAction.signIn.title,
                 promptSubtitle: AccountRequiredAction.signIn.message
             )
-            .onChange(of: authStore.status) { status in
-                // Closed on the auth store's word, not on the provider call returning — the session
-                // arrives through `authStateChanges`, which can land later.
-                if status == .signedIn {
-                    isSignInPagePresented = false
-                }
-            }
         }
         .sheet(isPresented: $isPaywallSheetPresented) {
             JournaltopiaPlusPaywallView(
@@ -181,7 +174,7 @@ struct SettingsView: View {
     /// something having gone wrong.
     private var deleteAccountConfirmationMessage: String {
         let summary = """
-            This permanently deletes your Journaltopia account and everything in it — your journals, entries, uploaded photos, and generated storyboards.
+            This permanently deletes your Journaltopia account and everything in it, your journals, entries, uploaded photos, and generated storyboards.
 
             This cannot be undone.
             """

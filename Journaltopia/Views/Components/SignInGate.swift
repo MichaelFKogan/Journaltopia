@@ -110,13 +110,9 @@ final class SignInGate: ObservableObject {
             return
         }
 
+        // The request is left in place when an account arrives so the success page can stay up.
+        // Closing the page is what completes it.
         self.mode = mode
-
-        // A resolved account makes any outstanding request moot: either the user signed in and the
-        // retry has already run, or they are somewhere the request no longer applies.
-        if mode.canPersistUserContent || mode.isSampleAuthoring {
-            pendingRequest = nil
-        }
     }
 
     /// Whether there is an account behind this action.
@@ -143,10 +139,17 @@ final class SignInGate: ObservableObject {
     }
 
     func dismiss() {
+        // Closing after a successful sign-in is the moment the success page is done, so the action
+        // the user originally wanted runs then — not the instant the session lands.
+        if mode.canPersistUserContent || mode.isSampleAuthoring {
+            completePendingRequest()
+            return
+        }
+
         pendingRequest = nil
     }
 
-    /// Runs the pending retry and clears the request. Called when sign-in succeeds.
+    /// Runs the pending retry and clears the request. Called when the user closes the success page.
     func completePendingRequest() {
         let retry = pendingRequest?.retry
         pendingRequest = nil
@@ -156,7 +159,6 @@ final class SignInGate: ObservableObject {
 
 /// The page the gate presents. Mounted once at the app root so every screen shares it.
 struct SignInGatePage: View {
-    @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var signInGate: SignInGate
 
     let request: SignInGateRequest
@@ -166,18 +168,9 @@ struct SignInGatePage: View {
             promptTitle: request.action.title,
             promptSubtitle: request.action.message,
             // Deliberate Sign In has nowhere else to "keep browsing" from; interrupted writes still
-            // offer an explicit way out of the page.
+            // offer an explicit way out of the page. After a successful sign-in the same close
+            // completes the pending retry, once the user has left the success page.
             onContinueBrowsing: request.action == .signIn ? nil : { signInGate.dismiss() }
         )
-        .onChange(of: authStore.status) { status in
-            // The page closes on the auth store's word, not on the OAuth call returning: the
-            // session arrives through `authStateChanges`, which can land after the provider call
-            // has already come back.
-            guard status == .signedIn else {
-                return
-            }
-
-            signInGate.completePendingRequest()
-        }
     }
 }

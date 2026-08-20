@@ -44,16 +44,10 @@ struct StartYourStoryView: View {
             continueBrowsingTitle: "Continue To Journaltopia",
             continueBrowsingSystemImage: "arrow.right",
             onContinueBrowsing: continueBrowsingHandler,
+            allowsContinueWhenSignedIn: showsContinueBrowsingButton,
             bottomContentInset: bottomContentInset
         )
         .toolbar(.hidden, for: .navigationBar)
-        .onChange(of: authStore.status) { status in
-            // The account arrives through `authStateChanges`, so this is the signal that the page is
-            // done — not the provider call returning.
-            if status == .signedIn {
-                onAuthenticated?()
-            }
-        }
     }
 
     /// Typed on its own rather than inline: the optional-closure ternary is more than the type
@@ -64,6 +58,11 @@ struct StartYourStoryView: View {
     }
 
     private func continueToJournaltopia() {
+        if authStore.status == .signedIn, let onAuthenticated {
+            onAuthenticated()
+            return
+        }
+
         if let onExploreFirst {
             onExploreFirst()
         } else {

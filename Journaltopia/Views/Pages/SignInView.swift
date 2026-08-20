@@ -26,6 +26,9 @@ struct SignInView: View {
     let continueBrowsingTitle: String
     let continueBrowsingSystemImage: String?
     let onContinueBrowsing: (() -> Void)?
+    /// Start Your Story keeps a way into the app after the account lands; the gate and the Settings
+    /// cover do not, because their close button is already that way out.
+    let allowsContinueWhenSignedIn: Bool
     /// Extra room under the panel for a bar the page does not own — onboarding parks its dots and
     /// its button over this page, and the panel has to end above them.
     let bottomContentInset: CGFloat
@@ -53,6 +56,7 @@ struct SignInView: View {
         continueBrowsingTitle: String = "Continue Without Signing In",
         continueBrowsingSystemImage: String? = nil,
         onContinueBrowsing: (() -> Void)? = nil,
+        allowsContinueWhenSignedIn: Bool = false,
         bottomContentInset: CGFloat = 0
     ) {
         self.promptTitle = promptTitle
@@ -63,6 +67,7 @@ struct SignInView: View {
         self.continueBrowsingTitle = continueBrowsingTitle
         self.continueBrowsingSystemImage = continueBrowsingSystemImage
         self.onContinueBrowsing = onContinueBrowsing
+        self.allowsContinueWhenSignedIn = allowsContinueWhenSignedIn
         self.bottomContentInset = bottomContentInset
         _isCreatingAccount = State(initialValue: startsCreatingAccount)
         _isEmailSectionShown = State(initialValue: !foldsEmailBehindButton)
@@ -670,7 +675,9 @@ struct SignInView: View {
         switch authStore.status {
         case .signedOut, .misconfigured:
             return signingInProvider == nil
-        case .loading, .signedIn:
+        case .signedIn:
+            return allowsContinueWhenSignedIn
+        case .loading:
             return false
         }
     }

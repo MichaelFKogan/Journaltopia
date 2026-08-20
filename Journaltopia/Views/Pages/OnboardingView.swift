@@ -13,6 +13,8 @@ import UIKit
 struct OnboardingView: View {
     let onComplete: () -> Void
 
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+
     @State private var selectedPage = 0
     /// The closing film, pushed over the flow once the visitor is on their way in.
     @State private var isShowingIntro = false
@@ -113,7 +115,7 @@ struct OnboardingView: View {
     /// The tour opener names its own way forward; every other page just goes next.
     private var primaryActionTitle: String {
         if isLastPage {
-            return "Skip For Now"
+            return authStore.status == .signedIn ? "Continue" : "Skip For Now"
         }
 
         return selectedPage == seeHowItWorksIndex ? "Show Me How" : "Next"

@@ -37,6 +37,7 @@ struct ContentView: View {
     @AppStorage("JournaltopiaHasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("JournaltopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @AppStorage("JournaltopiaSignedOutSignInPromptDismissed") private var isSignedOutSignInPromptDismissed = false
+    @State private var isHoldingInitialSignInCover = false
 
     init() {
         _entryText = State(initialValue: "")
@@ -95,7 +96,11 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: isInitialSignedOutSignInPresented) {
             SignInView {
+                isHoldingInitialSignInCover = false
                 isSignedOutSignInPromptDismissed = true
+            }
+            .onAppear {
+                isHoldingInitialSignInCover = true
             }
         }
         .sheet(isPresented: passwordRecoveryBinding) {
@@ -292,10 +297,15 @@ struct ContentView: View {
     private var isInitialSignedOutSignInPresented: Binding<Bool> {
         Binding(
             get: {
-                hasCompletedOnboarding && authStore.status == .signedOut && !isSignedOutSignInPromptDismissed
+                guard hasCompletedOnboarding, !isSignedOutSignInPromptDismissed else {
+                    return false
+                }
+
+                return authStore.status == .signedOut || isHoldingInitialSignInCover
             },
             set: { isPresented in
                 if !isPresented {
+                    isHoldingInitialSignInCover = false
                     isSignedOutSignInPromptDismissed = true
                 }
             }

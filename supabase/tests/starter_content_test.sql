@@ -34,7 +34,7 @@ select is(
         from public.journals
         where user_id = 'aaaa0000-0000-4000-8000-000000000001'
     ),
-    array['Everyday Stories', 'Summer Adventures', 'Dream Log', 'People & Places'],
+    array['Daily Journal', 'Memories', 'My Life', 'My Life In 5 Years'],
     'the journals arrive in the order the templates set'
 );
 
@@ -43,9 +43,9 @@ select is(
         select cover_image_name
         from public.journals
         where user_id = 'aaaa0000-0000-4000-8000-000000000001'
-          and title = 'Everyday Stories'
+          and title = 'Daily Journal'
     ),
-    'IMG_9080',
+    'daily-journal',
     'covers are bundled asset names, so no storage work is involved'
 );
 
@@ -79,7 +79,7 @@ select is(
             on j.user_id = je.user_id and j.id = je.journal_id
         where je.user_id = 'aaaa0000-0000-4000-8000-000000000001'
     ),
-    'Everyday Stories',
+    'Daily Journal',
     'the starter entry is filed in the journal its template names'
 );
 
@@ -162,7 +162,7 @@ select is(
     (
         select count(*)::int
         from public.journals
-        where user_id = 'aaaa0000-0000-4000-8000-000000000002' and title = 'Dream Log'
+        where user_id = 'aaaa0000-0000-4000-8000-000000000002' and title = 'My Life'
     ),
     0,
     'and it is the retired journal that is missing'

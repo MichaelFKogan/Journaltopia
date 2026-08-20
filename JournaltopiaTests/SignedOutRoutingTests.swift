@@ -186,16 +186,23 @@ final class SignedOutRoutingTests: XCTestCase {
         XCTAssertNil(gate.pendingRequest)
     }
 
-    /// Signing in elsewhere — Settings, or a second gate — resolves the account, so an outstanding
-    /// request has nothing left to ask for.
-    func testResolvingAnAccountClearsAnOutstandingRequest() {
+    /// Signing in keeps the request so the success page can stay up. Closing is what runs the retry.
+    func testResolvingAnAccountKeepsTheRequestUntilDismiss() {
         let gate = SignInGate()
         gate.update(mode: .sampleBrowsing)
-        _ = gate.requireAccount(for: .createEntry)
+
+        var retried = 0
+        _ = gate.requireAccount(for: .createEntry) { retried += 1 }
         XCTAssertNotNil(gate.pendingRequest)
 
         gate.update(mode: .user)
 
+        XCTAssertNotNil(gate.pendingRequest)
+        XCTAssertEqual(retried, 0)
+
+        gate.dismiss()
+
+        XCTAssertEqual(retried, 1)
         XCTAssertNil(gate.pendingRequest)
     }
 
