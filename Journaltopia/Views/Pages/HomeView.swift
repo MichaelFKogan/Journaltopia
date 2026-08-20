@@ -418,6 +418,7 @@ struct HomeLoopingVideoBackground: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: HomeLoopingVideoPlayerView, context: Context) {
+        uiView.setMuted(isMuted)
         uiView.setPlaying(isPlaying)
     }
 
@@ -490,6 +491,10 @@ final class HomeLoopingVideoPlayerView: UIView {
         }
 
         setPlaying(isPlaying)
+    }
+
+    func setMuted(_ isMuted: Bool) {
+        queuePlayer?.isMuted = isMuted
     }
 
     func setPlaying(_ isPlaying: Bool) {
