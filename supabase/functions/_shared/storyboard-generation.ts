@@ -58,9 +58,15 @@ export function openAIKey(): string {
 }
 
 /// Builds a client that acts as the caller, so RLS and auth.uid() decide what the request can read,
-/// write, and spend. Neither function uses the service role key.
+/// write, and spend. The identity it returns comes from verifying the caller's own JWT — never from
+/// anything the request body says — which is what makes it safe for callers whose whole purpose is
+/// to act on "the account that is asking", `delete-account` above all.
+///
+/// `unauthenticatedMessage` exists because the 401 is read by a person in whichever screen they were
+/// standing in; the storyboard wording is the default only because it came first.
 export async function authenticateCaller(
   request: Request,
+  unauthenticatedMessage = "Sign in before generating a storyboard.",
 ): Promise<{ client: SupabaseClient; userID: string }> {
   const projectURL = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
@@ -70,7 +76,7 @@ export async function authenticateCaller(
 
   const authorization = request.headers.get("Authorization") ?? "";
   if (!authorization.toLowerCase().startsWith("bearer ")) {
-    throw new StoryboardFailure("Sign in before generating a storyboard.", 401);
+    throw new StoryboardFailure(unauthenticatedMessage, 401);
   }
 
   const client = createClient(projectURL, anonKey, {
@@ -80,7 +86,7 @@ export async function authenticateCaller(
 
   const { data, error } = await client.auth.getUser();
   if (error || !data?.user) {
-    throw new StoryboardFailure("Sign in before generating a storyboard.", 401);
+    throw new StoryboardFailure(unauthenticatedMessage, 401);
   }
 
   return { client, userID: data.user.id };

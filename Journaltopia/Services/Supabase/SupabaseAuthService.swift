@@ -26,6 +26,8 @@ final class SupabaseAuthStore: ObservableObject {
     @Published var errorMessage: String?
 
     private let client: SupabaseClient
+    private let accountDeletionService: AccountDeletionService
+    private let appleReauthorizationService = AppleReauthorizationService()
     private let skipsSessionRefresh: Bool
     private var authStateTask: Task<Void, Never>?
     private var currentAppleSignInNonce: String?
@@ -49,6 +51,7 @@ final class SupabaseAuthStore: ObservableObject {
         skipsSessionRefresh: Bool = false
     ) {
         self.client = client
+        self.accountDeletionService = AccountDeletionService(client: client)
         self.skipsSessionRefresh = skipsSessionRefresh
 
         if validatesConfiguration {
@@ -256,8 +259,7 @@ final class SupabaseAuthStore: ObservableObject {
         // signed out whether or not that call came back cleanly. The purge therefore runs on both
         // paths: a network error is no reason to leave one account's journals, drafts, storyboards
         // and cached images on the device for whoever signs in next.
-        LocalUserDataPurge.purgeAll()
-        JournaltopiaLocalAccountScope.setActiveUserID(nil)
+        purgeLocalAccountData()
 
         if let signOutError {
             // Auth state stays with `startListening()`, which the emitted sign-out event reaches on
@@ -268,6 +270,77 @@ final class SupabaseAuthStore: ObservableObject {
 
         currentUser = nil
         status = .signedOut
+    }
+
+    /// True when this account signed in with Apple, and so needs its Apple authorization revoked
+    /// before it can be deleted.
+    ///
+    /// Read from the linked identities rather than from how *this* session happened to start: an
+    /// account can have several providers, and one that signed in with Google today still has an
+    /// Apple authorization to revoke if Apple is among its identities.
+    var hasAppleIdentity: Bool {
+        currentUser?.identities?.contains { $0.provider == "apple" } ?? false
+    }
+
+    /// Permanently deletes this account on the server, then returns the device to signed-out.
+    ///
+    /// Returns `true` only once the server has confirmed the account is gone. The order is the point:
+    /// nothing local is thrown away, and the user is not signed out, until the deletion has actually
+    /// succeeded — so a failure leaves them signed in, looking at their own journals, able to try
+    /// again. Signing out first would strand a live account behind a signed-out screen.
+    ///
+    /// For an account linked to Apple, this begins by asking Apple to confirm. That code is what lets
+    /// the server revoke Journaltopia's authorization, which App Store Review Guideline 5.1.1(v)
+    /// requires of a deletion — and which nothing stored on this device or in our database could do,
+    /// because the app has never held an Apple refresh token. Cancelling the Apple sheet cancels the
+    /// deletion, silently: the person declined, they did not hit an error.
+    ///
+    /// The cleanup afterwards is the *same* cleanup sign-out performs, deliberately: ``LocalUserDataPurge``
+    /// is the one place that decides what leaves this device, and a second list maintained here
+    /// would be a second list to forget to update.
+    func deleteAccount() async -> Bool {
+        errorMessage = nil
+
+        var appleAuthorizationCode: String?
+        if hasAppleIdentity {
+            do {
+                appleAuthorizationCode = try await appleReauthorizationService.authorizationCode()
+            } catch AppleReauthorizationError.cancelled {
+                return false
+            } catch {
+                errorMessage = userFacingMessage(for: error)
+                return false
+            }
+        }
+
+        do {
+            try await accountDeletionService.deleteAccount(
+                appleAuthorizationCode: appleAuthorizationCode
+            )
+        } catch {
+            errorMessage = userFacingMessage(for: error)
+            return false
+        }
+
+        // The account no longer exists, so `.local` is the only scope with any meaning left — there
+        // are no other sessions to revoke, they died with the user row. The SDK ignores the 401/403/404
+        // that the logout endpoint now returns for a deleted user, and drops the local session either
+        // way; `try?` covers the offline case, where the purge below still has to run.
+        try? await client.auth.signOut(scope: .local)
+
+        purgeLocalAccountData()
+
+        // Set explicitly rather than left to `authStateChanges`, which may not deliver if the sign-out
+        // call above never reached the network. Nothing of the deleted account may stay on screen.
+        currentUser = nil
+        status = .signedOut
+        return true
+    }
+
+    /// Everything that has to leave this device when an account stops being the one signed in.
+    private func purgeLocalAccountData() {
+        LocalUserDataPurge.purgeAll()
+        JournaltopiaLocalAccountScope.setActiveUserID(nil)
     }
 
     func refreshCurrentUser() async {
