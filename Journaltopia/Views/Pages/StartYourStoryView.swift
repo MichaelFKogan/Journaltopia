@@ -12,13 +12,21 @@ struct StartYourStoryView: View {
 
     let onExploreFirst: (() -> Void)?
     let onAuthenticated: (() -> Void)?
+    /// Whether the page draws its own way into Journaltopia. Onboarding sets this false because its
+    /// shared bottom bar already carries that button, and two of them would only compete.
+    let showsContinueBrowsingButton: Bool
+    let bottomContentInset: CGFloat
 
     init(
         onExploreFirst: (() -> Void)? = nil,
-        onAuthenticated: (() -> Void)? = nil
+        onAuthenticated: (() -> Void)? = nil,
+        showsContinueBrowsingButton: Bool = true,
+        bottomContentInset: CGFloat = 0
     ) {
         self.onExploreFirst = onExploreFirst
         self.onAuthenticated = onAuthenticated
+        self.showsContinueBrowsingButton = showsContinueBrowsingButton
+        self.bottomContentInset = bottomContentInset
     }
 
     var body: some View {
@@ -35,7 +43,8 @@ struct StartYourStoryView: View {
             foldsEmailBehindButton: true,
             continueBrowsingTitle: "Continue To Journaltopia",
             continueBrowsingSystemImage: "arrow.right",
-            onContinueBrowsing: continueToJournaltopia
+            onContinueBrowsing: continueBrowsingHandler,
+            bottomContentInset: bottomContentInset
         )
         .toolbar(.hidden, for: .navigationBar)
         .onChange(of: authStore.status) { status in
@@ -45,6 +54,13 @@ struct StartYourStoryView: View {
                 onAuthenticated?()
             }
         }
+    }
+
+    /// Typed on its own rather than inline: the optional-closure ternary is more than the type
+    /// checker can untangle inside the initialiser.
+    private var continueBrowsingHandler: (() -> Void)? {
+        guard showsContinueBrowsingButton else { return nil }
+        return continueToJournaltopia
     }
 
     private func continueToJournaltopia() {

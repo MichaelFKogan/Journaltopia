@@ -1,6 +1,53 @@
 import StoreKit
 import SwiftUI
 
+/// What each plan is and what it includes, written once.
+///
+/// The paywall and the onboarding page that introduces the plans both read this, so the two can
+/// never end up promising different things. The price is deliberately absent for Plus:
+/// `SubscriptionStore.localizedPrice` carries that, in the viewer's own currency.
+struct JournaltopiaPlan {
+    struct Feature: Identifiable {
+        let text: String
+        let isIncluded: Bool
+
+        var id: String { text }
+    }
+
+    let name: String
+    let tagline: String
+    let features: [Feature]
+
+    /// The one price that is a constant everywhere, in every currency.
+    static let freePrice = "$0"
+
+    static let free = JournaltopiaPlan(
+        name: "Free",
+        tagline: "Write your journal",
+        features: [
+            Feature(text: "Write journal entries", isIncluded: true),
+            Feature(text: "Organize with journals", isIncluded: true),
+            Feature(text: "Add characters & reference photos", isIncluded: true),
+            Feature(text: "Use 2 paper styles", isIncluded: true),
+            Feature(text: "Generate storyboard images", isIncluded: false),
+            Feature(text: "Use credits", isIncluded: false)
+        ]
+    )
+
+    static let plus = JournaltopiaPlan(
+        name: "Journaltopia Plus+",
+        tagline: "Generate storyboards",
+        features: [
+            Feature(text: "Everything in Free", isIncluded: true),
+            Feature(text: "Generate storyboard images\n(25 credits/month)", isIncluded: true),
+            Feature(text: "HD storyboard quality", isIncluded: true),
+            Feature(text: "Use credits for Standard or HD", isIncluded: true),
+            Feature(text: "Unlock all paper styles", isIncluded: true)
+        ]
+    )
+}
+
+
 /// The Journaltopia+ plan picker.
 ///
 /// Presented as a sheet by ``EntitlementGate``, and pushed as a page from Settings and the credits
@@ -129,19 +176,16 @@ struct JournaltopiaPlusPaywallView: View {
         planCard(isHighlighted: selectedPlan == .free) {
             VStack(alignment: .leading, spacing: 12) {
                 planHeader(
-                    title: "Free",
-                    subtitle: "Write your journal",
-                    price: "$0",
+                    title: JournaltopiaPlan.free.name,
+                    subtitle: JournaltopiaPlan.free.tagline,
+                    price: JournaltopiaPlan.freePrice,
                     caption: nil
                 )
 
                 VStack(alignment: .leading, spacing: 12) {
-                    featureRow("Write journal entries", isIncluded: true)
-                    featureRow("Organize with journals", isIncluded: true)
-                    featureRow("Add characters & reference photos", isIncluded: true)
-                    featureRow("Use 2 paper styles", isIncluded: true)
-                    featureRow("Generate storyboard images", isIncluded: false)
-                    featureRow("Use credits", isIncluded: false)
+                    ForEach(JournaltopiaPlan.free.features) { feature in
+                        featureRow(feature.text, isIncluded: feature.isIncluded)
+                    }
                 }
 
                 planImage(name: "1-1", height: 94)
@@ -163,17 +207,15 @@ struct JournaltopiaPlusPaywallView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     planHeader(
                         title: "Journaltopia\nPlus+",
-                        subtitle: "Generate storyboards",
+                        subtitle: JournaltopiaPlan.plus.tagline,
                         price: plusPriceTitle,
                         caption: plusPriceCaption
                     )
 
                     VStack(alignment: .leading, spacing: 12) {
-                        featureRow("Everything in Free", isIncluded: true)
-                        featureRow("Generate storyboard images\n(25 credits/month)", isIncluded: true)
-                        featureRow("HD storyboard quality", isIncluded: true)
-                        featureRow("Use credits for Standard or HD", isIncluded: true)
-                        featureRow("Unlock all paper styles", isIncluded: true)
+                        ForEach(JournaltopiaPlan.plus.features) { feature in
+                            featureRow(feature.text, isIncluded: feature.isIncluded)
+                        }
                     }
 
                     planImage(name: "2-2", height: 118)
