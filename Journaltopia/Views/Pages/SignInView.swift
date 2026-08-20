@@ -41,6 +41,7 @@ struct SignInView: View {
     @State private var isEmailSectionShown: Bool
     @State private var isSendingPasswordReset = false
     @State private var passwordResetMessage: String?
+    @State private var accountMessage: String?
 
     init(
         promptTitle: String? = nil,
@@ -124,6 +125,10 @@ struct SignInView: View {
 
             if let errorMessage = authStore.errorMessage {
                 errorText(errorMessage)
+            }
+
+            if let accountMessage {
+                noticeText(accountMessage)
             }
 
             continueBrowsingButton
@@ -251,6 +256,7 @@ struct SignInView: View {
         Button {
             withAnimation(.snappy(duration: 0.2)) {
                 isCreatingAccount.toggle()
+                accountMessage = nil
                 passwordResetMessage = nil
             }
         } label: {
@@ -346,7 +352,7 @@ struct SignInView: View {
                 placeholder: "Password",
                 text: $password,
                 keyboardType: .default,
-                textContentType: .password,
+                textContentType: isCreatingAccount ? .newPassword : .password,
                 isSecure: !isPasswordVisible,
                 trailingButton: passwordVisibilityButton
             )
@@ -446,7 +452,7 @@ struct SignInView: View {
 
     private var emailSignInButton: some View {
         Button {
-            signInWithEmail()
+            authenticateWithEmail()
         } label: {
             HStack(spacing: 8) {
                 if signingInProvider == .email {
@@ -455,7 +461,7 @@ struct SignInView: View {
                         .tint(.white)
                 }
 
-                Text(signingInProvider == .email ? "Signing In" : "Sign In")
+                Text(emailButtonTitle)
                     .font(.system(size: 16, weight: .bold))
             }
             .foregroundStyle(Color.white)
@@ -477,7 +483,7 @@ struct SignInView: View {
         .buttonStyle(.plain)
         .disabled(isAuthInteractionDisabled)
         .padding(.top, 8)
-        .accessibilityLabel("Sign in with email")
+        .accessibilityLabel(isCreatingAccount ? "Create account with email" : "Sign in with email")
     }
 
     private var googleSignInButton: some View {
@@ -540,6 +546,14 @@ struct SignInView: View {
         }
 
         return isCreatingAccount ? "Sign Up with Google" : "Sign In with Google"
+    }
+
+    private var emailButtonTitle: String {
+        if signingInProvider == .email {
+            return isCreatingAccount ? "Creating Account" : "Signing In"
+        }
+
+        return isCreatingAccount ? "Create Account" : "Sign In"
     }
 
     private var loadingState: some View {
@@ -611,6 +625,15 @@ struct SignInView: View {
         Text(message)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(Color.red)
+            .multilineTextAlignment(.center)
+            .lineSpacing(1)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func noticeText(_ message: String) -> some View {
+        Text(message)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.homeMutedText)
             .multilineTextAlignment(.center)
             .lineSpacing(1)
             .fixedSize(horizontal: false, vertical: true)
@@ -691,7 +714,7 @@ struct SignInView: View {
             }
 
             if isCreatingAccount {
-                return "Continue with Apple or Google and Journaltopia makes the account for you."
+                return "Continue with Apple, Google, or email and Journaltopia makes the account for you."
             }
 
             if let promptSubtitle {
@@ -704,6 +727,7 @@ struct SignInView: View {
 
     private func signInWithGoogle() {
         Task {
+            accountMessage = nil
             passwordResetMessage = nil
             signingInProvider = .google
             await authStore.signInWithGoogle()
@@ -711,24 +735,178 @@ struct SignInView: View {
         }
     }
 
-    private func signInWithEmail() {
+    private func authenticateWithEmail() {
         Task {
+            accountMessage = nil
             passwordResetMessage = nil
             signingInProvider = .email
-            await authStore.signIn(email: emailAddress, password: password)
+
+            if isCreatingAccount {
+                let result = await authStore.createAccount(email: emailAddress, password: password)
+                if result == .confirmationEmailSent {
+                    accountMessage = "Check your email to confirm your Journaltopia account."
+                }
+            } else {
+                await authStore.signIn(email: emailAddress, password: password)
+            }
+
             signingInProvider = nil
         }
     }
 
     private func sendPasswordReset() {
         Task {
+            accountMessage = nil
             passwordResetMessage = nil
             isSendingPasswordReset = true
             let didSend = await authStore.sendPasswordReset(email: emailAddress)
             isSendingPasswordReset = false
 
             if didSend {
-                passwordResetMessage = "Password reset email sent."
+                passwordResetMessage = "Password reset email sent. Open the link, then choose a new password here."
+            }
+        }
+    }
+}
+
+struct PasswordResetView: View {
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var password = ""
+    @State private var confirmation = ""
+    @State private var isPasswordVisible = false
+    @State private var isSaving = false
+    @State private var didSave = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 18) {
+                VStack(spacing: 8) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(Color.storyPurple)
+
+                    Text("Choose a New Password")
+                        .font(.system(size: 24, weight: .bold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
+
+                    Text("Enter a new password for your Journaltopia account.")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText)
+                        .multilineTextAlignment(.center)
+                }
+
+                VStack(spacing: 10) {
+                    passwordField("New password", text: $password)
+                    passwordField("Confirm password", text: $confirmation)
+                }
+
+                if let errorMessage = authStore.errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                Button {
+                    savePassword()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSaving {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        }
+
+                        Text(isSaving ? "Saving" : "Save Password")
+                            .font(.system(size: 16, weight: .bold))
+                    }
+                    .foregroundStyle(Color.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSaving)
+
+                if didSave {
+                    Text("Your password has been updated.")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 30)
+            .frame(maxWidth: 430)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(WatercolorPaperPageBackground())
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        authStore.dismissPasswordRecovery()
+                        dismiss()
+                    }
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Color.storyPurple)
+                }
+            }
+        }
+        .preferredColorScheme(.light)
+    }
+
+    private func passwordField(_ placeholder: String, text: Binding<String>) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(Color.storyPurple)
+                .frame(width: 20)
+
+            Group {
+                if isPasswordVisible {
+                    TextField(placeholder, text: text)
+                } else {
+                    SecureField(placeholder, text: text)
+                }
+            }
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(Color.storyInk)
+            .textContentType(.newPassword)
+            .disabled(isSaving)
+
+            Button {
+                isPasswordVisible.toggle()
+            } label: {
+                Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.homeMutedText.opacity(0.72))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(isSaving)
+            .accessibilityLabel(isPasswordVisible ? "Hide password" : "Show password")
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
+    }
+
+    private func savePassword() {
+        Task {
+            didSave = false
+            isSaving = true
+            let saved = await authStore.updatePassword(password, confirmation: confirmation)
+            isSaving = false
+
+            if saved {
+                didSave = true
+                password = ""
+                confirmation = ""
             }
         }
     }

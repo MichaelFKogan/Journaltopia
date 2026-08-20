@@ -15,8 +15,14 @@ final class SupabaseAuthStore: ObservableObject {
         case misconfigured(String)
     }
 
+    enum EmailSignUpResult: Equatable {
+        case signedIn
+        case confirmationEmailSent
+    }
+
     @Published private(set) var status: AuthStatus = .loading
     @Published private(set) var currentUser: User?
+    @Published private(set) var isPasswordRecoveryPresented = false
     @Published var errorMessage: String?
 
     private let client: SupabaseClient
@@ -87,13 +93,8 @@ final class SupabaseAuthStore: ObservableObject {
             _ = try JournaltopiaSupabaseConfig.projectURL
             _ = try JournaltopiaSupabaseConfig.anonKey
 
-            let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedEmail.isEmpty else {
-                throw EmailPasswordSignInError.missingEmail
-            }
-            guard !password.isEmpty else {
-                throw EmailPasswordSignInError.missingPassword
-            }
+            let trimmedEmail = try normalizedEmail(email)
+            try validatePassword(password, enforcesMinimumLength: false)
 
             let session = try await client.auth.signIn(email: trimmedEmail, password: password)
             JournaltopiaLocalAccountScope.setActiveUserID(session.user.id)
@@ -105,6 +106,38 @@ final class SupabaseAuthStore: ObservableObject {
         }
     }
 
+    func createAccount(email: String, password: String) async -> EmailSignUpResult? {
+        errorMessage = nil
+
+        do {
+            _ = try JournaltopiaSupabaseConfig.projectURL
+            _ = try JournaltopiaSupabaseConfig.anonKey
+
+            let trimmedEmail = try normalizedEmail(email)
+            try validatePassword(password, enforcesMinimumLength: true)
+
+            let response = try await client.auth.signUp(
+                email: trimmedEmail,
+                password: password,
+                redirectTo: JournaltopiaSupabaseConfig.redirectURL
+            )
+
+            if let session = response.session {
+                JournaltopiaLocalAccountScope.setActiveUserID(session.user.id)
+                currentUser = session.user
+                status = .signedIn
+                return .signedIn
+            }
+
+            status = .signedOut
+            return .confirmationEmailSent
+        } catch {
+            status = .signedOut
+            errorMessage = userFacingMessage(for: error)
+            return nil
+        }
+    }
+
     func sendPasswordReset(email: String) async -> Bool {
         errorMessage = nil
 
@@ -112,10 +145,7 @@ final class SupabaseAuthStore: ObservableObject {
             _ = try JournaltopiaSupabaseConfig.projectURL
             _ = try JournaltopiaSupabaseConfig.anonKey
 
-            let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedEmail.isEmpty else {
-                throw EmailPasswordSignInError.missingResetEmail
-            }
+            let trimmedEmail = try normalizedResetEmail(email)
 
             try await client.auth.resetPasswordForEmail(
                 trimmedEmail,
@@ -127,6 +157,29 @@ final class SupabaseAuthStore: ObservableObject {
             errorMessage = userFacingMessage(for: error)
             return false
         }
+    }
+
+    func updatePassword(_ password: String, confirmation: String) async -> Bool {
+        errorMessage = nil
+
+        do {
+            try validatePassword(password, enforcesMinimumLength: true)
+            guard password == confirmation else {
+                throw EmailPasswordSignInError.passwordsDoNotMatch
+            }
+
+            currentUser = try await client.auth.update(user: UserAttributes(password: password))
+            isPasswordRecoveryPresented = false
+            status = .signedIn
+            return true
+        } catch {
+            errorMessage = userFacingMessage(for: error)
+            return false
+        }
+    }
+
+    func dismissPasswordRecovery() {
+        isPasswordRecoveryPresented = false
     }
 
     func prepareSignInWithAppleRequest(_ request: ASAuthorizationAppleIDRequest) {
@@ -256,7 +309,7 @@ final class SupabaseAuthStore: ObservableObject {
         authStateTask = Task { [weak self] in
             guard let self else { return }
 
-            for await (_, session) in await client.auth.authStateChanges {
+            for await (event, session) in await client.auth.authStateChanges {
                 await MainActor.run {
                     if case .misconfigured = self.status {
                         return
@@ -265,8 +318,40 @@ final class SupabaseAuthStore: ObservableObject {
                     JournaltopiaLocalAccountScope.setActiveUserID(session?.user.id)
                     self.currentUser = session?.user
                     self.status = session == nil ? .signedOut : .signedIn
+
+                    if event == .passwordRecovery {
+                        self.isPasswordRecoveryPresented = true
+                    }
                 }
             }
+        }
+    }
+
+    private func normalizedEmail(_ email: String) throws -> String {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty else {
+            throw EmailPasswordSignInError.missingEmail
+        }
+
+        return trimmedEmail
+    }
+
+    private func normalizedResetEmail(_ email: String) throws -> String {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty else {
+            throw EmailPasswordSignInError.missingResetEmail
+        }
+
+        return trimmedEmail
+    }
+
+    private func validatePassword(_ password: String, enforcesMinimumLength: Bool) throws {
+        guard !password.isEmpty else {
+            throw EmailPasswordSignInError.missingPassword
+        }
+
+        guard !enforcesMinimumLength || password.count >= 6 else {
+            throw EmailPasswordSignInError.passwordTooShort
         }
     }
 
@@ -326,6 +411,8 @@ private enum EmailPasswordSignInError: LocalizedError {
     case missingEmail
     case missingPassword
     case missingResetEmail
+    case passwordTooShort
+    case passwordsDoNotMatch
 
     var errorDescription: String? {
         switch self {
@@ -335,6 +422,10 @@ private enum EmailPasswordSignInError: LocalizedError {
             return "Enter your password."
         case .missingResetEmail:
             return "Enter your email address first."
+        case .passwordTooShort:
+            return "Use at least 6 characters for your password."
+        case .passwordsDoNotMatch:
+            return "The passwords do not match."
         }
     }
 }

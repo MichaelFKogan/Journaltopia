@@ -98,6 +98,9 @@ struct ContentView: View {
                 isSignedOutSignInPromptDismissed = true
             }
         }
+        .sheet(isPresented: passwordRecoveryBinding) {
+            PasswordResetView()
+        }
         // Mounted at the root so any screen, sheet or pushed destination can raise it without
         // owning a presentation of its own.
         .fullScreenCover(item: signInGateRequest) { request in
@@ -237,6 +240,17 @@ struct ContentView: View {
             set: { request in
                 if request == nil {
                     signInGate.dismiss()
+                }
+            }
+        )
+    }
+
+    private var passwordRecoveryBinding: Binding<Bool> {
+        Binding(
+            get: { authStore.isPasswordRecoveryPresented },
+            set: { isPresented in
+                if !isPresented {
+                    authStore.dismissPasswordRecovery()
                 }
             }
         )
