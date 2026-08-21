@@ -544,7 +544,7 @@ struct SupabaseEntryCharacterService {
 
             return EntryCharacterRules.orderedCharacters(characters)
         } catch {
-            throw SupabaseEntryCharacterError.syncFailed
+            throw SupabaseEntryCharacterError.mapped(from: error, context: "Entry character load")
         }
     }
 
@@ -561,7 +561,7 @@ struct SupabaseEntryCharacterService {
 
             return try await loadCharacters(from: rows)
         } catch {
-            throw SupabaseEntryCharacterError.syncFailed
+            throw SupabaseEntryCharacterError.mapped(from: error, context: "Character library load")
         }
     }
 
@@ -694,17 +694,27 @@ struct SupabaseEntryCharacterService {
             .value
     }
 
+    /// Downloads each character photo independently so one unreadable object cannot hide
+    /// the whole library. Only a run where every row failed is reported as a load failure.
     private func loadCharacters(from rows: [EntryCharacterPhoto]) async throws -> [EntryCharacter] {
         var characters: [EntryCharacter] = []
+        var lastDownloadFailure: Error?
+
         for row in rows {
             let data: Data
             if let cachedData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: row.storagePath) {
                 data = cachedData
             } else {
-                data = try await client.storage
-                    .from(bucketName)
-                    .download(path: row.storagePath)
-                SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: row.storagePath)
+                do {
+                    data = try await client.storage
+                        .from(bucketName)
+                        .download(path: row.storagePath)
+                    SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: row.storagePath)
+                } catch {
+                    print("[Journaltopia] Character photo download failed for \(row.storagePath): \(error.localizedDescription)")
+                    lastDownloadFailure = error
+                    continue
+                }
             }
             guard let image = UIImage(data: data) else {
                 continue
@@ -721,6 +731,10 @@ struct SupabaseEntryCharacterService {
                     librarySortOrder: row.librarySortOrder
                 )
             )
+        }
+
+        if characters.isEmpty, let lastDownloadFailure {
+            throw lastDownloadFailure
         }
 
         return characters

@@ -47,3 +47,6 @@ supabase/functions/.env.local
 
 # Xcode project recovery backups
 *.deleted-target-backup
+
+# Local media recovery artifacts and storage snapshots
+media-repair/

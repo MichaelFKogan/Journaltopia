@@ -9457,9 +9457,15 @@ struct CreateEntryView: View {
                     isLoadingReusableCharacters = false
                 }
             } catch {
+                print("[Journaltopia] My Characters load failed: \(error.localizedDescription)")
+                let isOffline = (error as? TransientCloudFailure)?.isTransientCloudFailure ?? false
                 await MainActor.run {
                     reusableCharacters = localCharacters
-                    reusableCharactersErrorMessage = localCharacters.isEmpty ? "Could not load your saved characters." : nil
+                    reusableCharactersErrorMessage = localCharacters.isEmpty
+                        ? (isOffline
+                            ? "Could not reach Journaltopia cloud. Check your connection, then tap refresh."
+                            : "Could not load your saved characters.")
+                        : nil
                     isLoadingReusableCharacters = false
                 }
             }
