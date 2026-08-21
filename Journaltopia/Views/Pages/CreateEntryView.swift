@@ -1461,6 +1461,37 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     var bodyLineHeight: CGFloat? {
         showsRuledLines ? NotebookMetrics.ruleSpacing : nil
     }
+
+    var editorPlaceholderColor: Color {
+        switch self {
+        case .pastelSkyline:
+            .white.opacity(0.78)
+        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .japaneseInkWave:
+            Color.storyGray.opacity(0.46)
+        }
+    }
+
+    /// Image papers whose page is dark enough that toolbar chrome should use light text.
+    var usesLightEditorChrome: Bool {
+        switch self {
+        case .pastelSkyline:
+            true
+        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .japaneseInkWave:
+            false
+        }
+    }
+
+    func editorPlaceholderColor(for textStyle: NotebookTextStyle) -> Color {
+        if showsPaperColorOptions {
+            return textStyle.color.opacity(0.46)
+        }
+
+        if TexturedPaperTextEffect.shouldMultiplyBlend(textStyle.uiColor) {
+            return editorPlaceholderColor
+        }
+
+        return textStyle.color.opacity(0.78)
+    }
 }
 
 private struct CreateColorOption {
@@ -1479,8 +1510,28 @@ private enum CreateFormattingPalette {
         CreateColorOption(color: Color(red: 0.46, green: 0.16, blue: 0.27), uiColor: UIColor(red: 0.46, green: 0.16, blue: 0.27, alpha: 1)),
         CreateColorOption(color: Color(red: 0.34, green: 0.20, blue: 0.17), uiColor: UIColor(red: 0.34, green: 0.20, blue: 0.17, alpha: 1)),
         CreateColorOption(color: Color(red: 0.55, green: 0.34, blue: 0.10), uiColor: UIColor(red: 0.55, green: 0.34, blue: 0.10, alpha: 1)),
-        CreateColorOption(color: Color(red: 0.42, green: 0.42, blue: 0.49), uiColor: UIColor(red: 0.42, green: 0.42, blue: 0.49, alpha: 1))
+        CreateColorOption(color: Color(red: 0.42, green: 0.42, blue: 0.49), uiColor: UIColor(red: 0.42, green: 0.42, blue: 0.49, alpha: 1)),
+        CreateColorOption(color: .white, uiColor: .white),
+        CreateColorOption(color: Color(red: 0.72, green: 0.73, blue: 0.78), uiColor: UIColor(red: 0.72, green: 0.73, blue: 0.78, alpha: 1)),
+        CreateColorOption(color: Color(red: 0.97, green: 0.94, blue: 0.86), uiColor: UIColor(red: 0.97, green: 0.94, blue: 0.86, alpha: 1)),
+        CreateColorOption(color: Color(red: 0.98, green: 0.89, blue: 0.66), uiColor: UIColor(red: 0.98, green: 0.89, blue: 0.66, alpha: 1)),
+        CreateColorOption(color: Color(red: 0.96, green: 0.78, blue: 0.81), uiColor: UIColor(red: 0.96, green: 0.78, blue: 0.81, alpha: 1)),
+        CreateColorOption(color: Color(red: 0.72, green: 0.85, blue: 0.95), uiColor: UIColor(red: 0.72, green: 0.85, blue: 0.95, alpha: 1)),
+        CreateColorOption(color: Color(red: 0.73, green: 0.89, blue: 0.79), uiColor: UIColor(red: 0.73, green: 0.89, blue: 0.79, alpha: 1)),
+        CreateColorOption(color: Color(red: 0.83, green: 0.79, blue: 0.95), uiColor: UIColor(red: 0.83, green: 0.79, blue: 0.95, alpha: 1))
     ]
+
+    static var textColorDisplayIndices: [Int] {
+        var indices = Array(textColors.indices)
+        guard let whiteIndex = textColors.firstIndex(where: { $0.uiColor == .white }),
+              whiteIndex != 1 else {
+            return indices
+        }
+
+        indices.remove(at: whiteIndex)
+        indices.insert(whiteIndex, at: min(1, indices.count))
+        return indices
+    }
 
     static let paperColors: [Color] = [
         Color.white,
@@ -1489,8 +1540,24 @@ private enum CreateFormattingPalette {
         Color(red: 1.0, green: 0.95, blue: 0.75),
         Color(red: 0.86, green: 0.93, blue: 0.97),
         Color(red: 0.86, green: 0.94, blue: 0.86),
-        Color(red: 0.88, green: 0.83, blue: 0.95)
+        Color(red: 0.88, green: 0.83, blue: 0.95),
+        Color(red: 0.10, green: 0.10, blue: 0.12),
+        Color(red: 0.16, green: 0.16, blue: 0.22),
+        Color(red: 0.28, green: 0.18, blue: 0.12),
+        Color(red: 0.32, green: 0.24, blue: 0.10),
+        Color(red: 0.10, green: 0.16, blue: 0.28),
+        Color(red: 0.12, green: 0.22, blue: 0.16),
+        Color(red: 0.22, green: 0.14, blue: 0.28)
     ]
+
+    static let paperColorRowLength = 7
+
+    static var paperColorRowIndices: [[Int]] {
+        let rowLength = paperColorRowLength
+        return stride(from: 0, to: paperColors.count, by: rowLength).map { start in
+            Array(start ..< min(start + rowLength, paperColors.count))
+        }
+    }
 }
 
 private enum CreateEntryTextSize {
@@ -1979,7 +2046,7 @@ struct CreateEntryView: View {
     @State private var isShowingEntryOptionsPage = false
     @State private var loadedDraftSnapshot: LoadedCreateEntryDraftSnapshot?
     @State private var didResetForFreshCreatePresentation = false
-    @FocusState private var isTitleFocused: Bool
+    @State private var isTitleFocused = false
     @State private var editorFocusRequestID = 0
     @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
     @State private var dictationTranscriptRequestID = 0
@@ -1989,6 +2056,8 @@ struct CreateEntryView: View {
     @State private var isKeyboardVisible = false
     @State private var isBodyEditorEditing = false
     @State private var isMovingFocusToBodyEditor = false
+    /// Color tapped in the text color panel, which can differ from the page color while a selection is styled.
+    @State private var lastPickedTextColorIndex: Int?
     @State private var isKeyboardMoreToolbarVisible = false
     @State private var toolbarSavedSnapshot: LoadedCreateEntryDraftSnapshot?
     @State private var toolbarSavedJournalEntryID: UUID?
@@ -2110,9 +2179,19 @@ struct CreateEntryView: View {
         ].color
     }
 
+    private var activeTextColorIndex: Int {
+        min(
+            max(lastPickedTextColorIndex ?? selectedTextColorIndex, 0),
+            CreateFormattingPalette.textColors.count - 1
+        )
+    }
+
     private func applyKeyboardTextColor(_ index: Int) {
         let clampedIndex = min(max(index, 0), CreateFormattingPalette.textColors.count - 1)
-        guard editorSelectionState.hasSelection else {
+        lastPickedTextColorIndex = clampedIndex
+
+        // The title has no per-run colors, so picking a color there sets the page text color.
+        guard !isTitleFocused, editorSelectionState.hasSelection else {
             selectedTextColorIndex = clampedIndex
             return
         }
@@ -2124,12 +2203,39 @@ struct CreateEntryView: View {
         sendTextFormattingCommand(.textColor(hexString))
     }
 
+    private func applyTextColorToAllText() {
+        let index = activeTextColorIndex
+        lastPickedTextColorIndex = index
+        selectedTextColorIndex = index
+        sendTextFormattingCommand(.resetTextColors, preservesTitleFocus: true)
+    }
+
+    private var createChromeFill: Color {
+        Color.white.opacity(0.88)
+    }
+
     private var selectedPaperSurfaceColor: Color {
         usesPaperImageBackground ? .clear : selectedPageBackgroundColor
     }
 
     private var usesPaperImageBackground: Bool {
         selectedPaperStyleChoice.fillsBackgroundWithPaperImage
+    }
+
+    private var usesLightEditorChrome: Bool {
+        if selectedPaperStyleChoice.usesLightEditorChrome {
+            return true
+        }
+
+        guard selectedPaperStyleChoice.showsPaperColorOptions else {
+            return false
+        }
+
+        return TexturedPaperTextEffect.shouldMultiplyBlend(UIColor(selectedPaperColor))
+    }
+
+    private var editorDateForeground: Color {
+        usesLightEditorChrome ? Color.white.opacity(0.86) : Color.storyGray.opacity(0.46)
     }
 
     private var opensExistingEntryReadMode: Bool {
@@ -3447,6 +3553,7 @@ struct CreateEntryView: View {
                         scrollsInternally: false,
                         pageHeight: scrollContentHeight,
                         textStyle: selectedTextStyle,
+                        placeholderColor: selectedPaperStyleChoice.editorPlaceholderColor(for: selectedTextStyle),
                         showsTitleRule: selectedPaperStyleChoice.showsNotebookChrome,
                         leadingContentPadding: selectedPaperStyleChoice.leadingContentPadding,
                         leadingTextPadding: selectedPaperStyleChoice.leadingTextPadding,
@@ -3547,7 +3654,7 @@ struct CreateEntryView: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(Color.storyInk.opacity(0.72))
                         .frame(width: 40, height: 38)
-                        .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
@@ -3610,7 +3717,7 @@ struct CreateEntryView: View {
     private var editorToolbarDateTitle: some View {
         Text(editorToolbarDateText)
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(Color.storyGray.opacity(0.46))
+            .foregroundStyle(editorDateForeground)
             .lineLimit(1)
             .minimumScaleFactor(0.74)
             .frame(maxWidth: 210)
@@ -3658,7 +3765,7 @@ struct CreateEntryView: View {
             }
             .frame(width: 82, height: 38)
             .foregroundStyle(toolbarSaveButtonColor)
-            .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
@@ -3696,6 +3803,11 @@ struct CreateEntryView: View {
     }
 
     private func focusBodyEditor() {
+        if isTitleFocused {
+            // A panel opened for the title shouldn't stand in for the keyboard once writing resumes.
+            activeKeyboardFormattingMode = nil
+        }
+
         isMovingFocusToBodyEditor = true
         isBodyEditorEditing = true
         if !LinedTextView.becomeActiveFirstResponder() {
@@ -4764,6 +4876,7 @@ struct CreateEntryView: View {
                             scrollsInternally: false,
                             pageHeight: scrollContentHeight,
                             textStyle: selectedTextStyle,
+                            placeholderColor: selectedPaperStyleChoice.editorPlaceholderColor(for: selectedTextStyle),
                             showsTitleRule: selectedPaperStyleChoice.showsNotebookChrome,
                             leadingContentPadding: selectedPaperStyleChoice.leadingContentPadding,
                             leadingTextPadding: selectedPaperStyleChoice.leadingTextPadding,
@@ -4772,6 +4885,8 @@ struct CreateEntryView: View {
                             keyboardAccessoryContent: AnyView(entryDraftKeyboardAccessory),
                             keyboardPanelContent: AnyView(keyboardFormattingPanelContent),
                             titleKeyboardAccessoryContent: AnyView(titleDraftKeyboardAccessory),
+                            titleKeyboardInputMode: titleKeyboardInputMode,
+                            titleKeyboardPanelContent: AnyView(keyboardFormattingPanelContent),
                             usesTexturedPaperEffect: selectedPaperStyleChoice.usesTexturedPaperTextEffect,
                             onBodyTap: {
                                 handleBodyEditorTap()
@@ -5005,6 +5120,11 @@ struct CreateEntryView: View {
             return .formattingPanel(activeKeyboardFormattingMode)
         }
         return .systemKeyboard
+    }
+
+    /// Color is the only panel reachable from the title, so other modes keep the system keyboard.
+    private var titleKeyboardInputMode: NotebookEditorInputMode {
+        activeKeyboardFormattingMode == .color ? .formattingPanel(.color) : .systemKeyboard
     }
 
     @ViewBuilder
@@ -5298,7 +5418,7 @@ struct CreateEntryView: View {
     private var editorBottomDateLabel: some View {
         Text(editorToolbarDateText)
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Color.storyInk.opacity(0.48))
+            .foregroundStyle(editorDateForeground)
             .lineLimit(1)
             .minimumScaleFactor(0.78)
             .frame(maxWidth: .infinity)
@@ -5609,7 +5729,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(createChromeFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.62), lineWidth: 1)
@@ -5825,7 +5945,7 @@ struct CreateEntryView: View {
                     iconWeight: .semibold,
                     shape: .circle
                 )
-                .background(Color.white.opacity(0.88), in: Circle())
+                .background(createChromeFill, in: Circle())
                 .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
             } else {
                 ZStack {
@@ -6440,8 +6560,10 @@ struct CreateEntryView: View {
     }
 
     private var titleDraftKeyboardAccessory: some View {
-        HStack {
+        HStack(spacing: 8) {
             Spacer(minLength: 0)
+
+            keyboardColorButton
 
             keyboardToolButton(
                 systemName: "keyboard.chevron.compact.down",
@@ -6645,13 +6767,18 @@ struct CreateEntryView: View {
             return editorSelectionState.hasSelection && editorSelectionState.isUnderlined
         case .strikethrough:
             return editorSelectionState.hasSelection && editorSelectionState.isStrikethrough
-        case .bulletList, .indent, .outdent, .textColor, .textStyle:
+        case .bulletList, .indent, .outdent, .textColor, .resetTextColors, .textStyle:
             return false
         }
     }
 
-    private func sendTextFormattingCommand(_ command: NotebookTextFormattingCommand) {
-        isTitleFocused = false
+    private func sendTextFormattingCommand(
+        _ command: NotebookTextFormattingCommand,
+        preservesTitleFocus: Bool = false
+    ) {
+        if !preservesTitleFocus {
+            isTitleFocused = false
+        }
         textFormattingRequestID += 1
         textFormattingRequest = NotebookTextFormattingRequest(
             id: textFormattingRequestID,
@@ -6660,15 +6787,19 @@ struct CreateEntryView: View {
     }
 
     private func showKeyboardFormattingPanel(_ mode: CreateKeyboardFormattingMode) {
-        isTitleFocused = false
         isKeyboardMoreToolbarVisible = false
         activeKeyboardFormattingMode = mode
     }
 
+    /// Panels attach to whichever field owns the keyboard, so title focus is left alone here.
     private func toggleKeyboardFormattingPanel(_ mode: CreateKeyboardFormattingMode) {
-        isTitleFocused = false
         isKeyboardMoreToolbarVisible = false
-        activeKeyboardFormattingMode = activeKeyboardFormattingMode == mode ? nil : mode
+        let opensPanel = activeKeyboardFormattingMode != mode
+        activeKeyboardFormattingMode = opensPanel ? mode : nil
+
+        if opensPanel, mode == .color {
+            lastPickedTextColorIndex = nil
+        }
     }
 
     private func showKeyboardMoreToolbar() {
@@ -6694,6 +6825,7 @@ struct CreateEntryView: View {
     private func resetKeyboardFormattingState() {
         isKeyboardMoreToolbarVisible = false
         activeKeyboardFormattingMode = nil
+        lastPickedTextColorIndex = nil
     }
 
     private func keyboardPanelChip(
@@ -6910,30 +7042,21 @@ struct CreateEntryView: View {
     private var keyboardColorPanel: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 22) {
-                keyboardPanelSectionTitle("Text color")
+                HStack(spacing: 12) {
+                    keyboardPanelSectionTitle("Text color")
 
-                LazyVGrid(columns: keyboardColorColumns, spacing: 14) {
-                    ForEach(CreateFormattingPalette.textColors.indices, id: \.self) { index in
-                        keyboardColorSwatch(
-                            color: CreateFormattingPalette.textColors[index].color,
-                            isSelected: selectedTextColorIndex == index
-                        ) {
-                            applyKeyboardTextColor(index)
-                        }
-                    }
+                    Spacer(minLength: 8)
+
+                    applyTextColorToAllButton
                 }
 
-                if selectedPaperStyleChoice.showsPaperColorOptions {
-                    keyboardPanelSectionTitle("Background color")
-
-                    LazyVGrid(columns: keyboardColorColumns, spacing: 14) {
-                        ForEach(CreateFormattingPalette.paperColors.indices, id: \.self) { index in
-                            keyboardColorSwatch(
-                                color: CreateFormattingPalette.paperColors[index],
-                                isSelected: selectedPaperColorIndex == index
-                            ) {
-                                selectedPaperColorIndex = index
-                            }
+                LazyVGrid(columns: keyboardColorColumns, spacing: 14) {
+                    ForEach(CreateFormattingPalette.textColorDisplayIndices, id: \.self) { index in
+                        keyboardColorSwatch(
+                            color: CreateFormattingPalette.textColors[index].color,
+                            isSelected: activeTextColorIndex == index
+                        ) {
+                            applyKeyboardTextColor(index)
                         }
                     }
                 }
@@ -7017,6 +7140,26 @@ struct CreateEntryView: View {
             .foregroundStyle(Color.storyInk.opacity(0.48))
     }
 
+    private var applyTextColorToAllButton: some View {
+        Button {
+            applyTextColorToAllText()
+        } label: {
+            Text("Apply to All")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+                .lineLimit(1)
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .background(Color.white.opacity(0.72), in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.storyPurple.opacity(0.42), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Apply text color to all text on the page")
+    }
+
     private func keyboardColorSwatch(
         color: Color,
         isSelected: Bool,
@@ -7029,6 +7172,11 @@ struct CreateEntryView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(color)
+                        // Keeps pale swatches such as white readable against the tile.
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(Color.storyInk.opacity(0.16), lineWidth: 1)
+                        )
                         .padding(10)
                 )
                 .overlay(
@@ -12350,12 +12498,13 @@ struct ExpandedEntryEditor: View {
     private var paperImageName: String?
     private var fitsPaperImageToWidth = false
     private var illustratedPaperConfiguration: IllustratedPaperConfiguration?
+    private var paperStyleChoice: CreatePaperStyleChoice = .defaultChoice
     private var showsRuledLines = true
     private var showsNotebookChrome = true
     private var leadingContentPadding = NotebookMetrics.marginLeading
     private var leadingTextPadding = NotebookMetrics.textLeadingInset
 
-    @FocusState private var isTitleFocused: Bool
+    @State private var isTitleFocused = false
     @State private var editorFocusRequestID = 0
     @State private var dictationTranscriptRequest: NotebookDictationTranscriptRequest?
     @State private var dictationTranscriptRequestID = 0
@@ -12392,6 +12541,7 @@ struct ExpandedEntryEditor: View {
         self.paperImageName = paperStyle.backgroundImageName
         self.fitsPaperImageToWidth = paperStyle.fitsPaperImageToWidth
         self.illustratedPaperConfiguration = paperStyle.illustratedPaperConfiguration
+        self.paperStyleChoice = paperStyle
         self.showsRuledLines = paperStyle.showsRuledLines
         self.showsNotebookChrome = paperStyle.showsNotebookChrome
         self.leadingContentPadding = paperStyle.leadingContentPadding
@@ -12426,6 +12576,7 @@ struct ExpandedEntryEditor: View {
                         scrollsInternally: false,
                         pageHeight: proxy.size.height,
                         textStyle: textStyle,
+                        placeholderColor: paperStyleChoice.editorPlaceholderColor(for: textStyle),
                         showsTitleRule: showsNotebookChrome,
                         leadingContentPadding: leadingContentPadding,
                         leadingTextPadding: leadingTextPadding,
@@ -12942,6 +13093,8 @@ private struct CreateFormattingSheet: View {
 
     private var fontStyleContent: some View {
         VStack(alignment: .leading, spacing: 22) {
+            fontColorPicker
+
             fontSizeControl
 
             LazyVGrid(
@@ -12960,6 +13113,27 @@ private struct CreateFormattingSheet: View {
                 }
             }
             .padding(.top, 1)
+        }
+    }
+
+    private var fontColorPicker: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sheetSectionTitle("Font Color")
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 40), spacing: 8)],
+                spacing: 8
+            ) {
+                ForEach(CreateFormattingPalette.textColorDisplayIndices, id: \.self) { index in
+                    CreatePaletteSwatch(
+                        color: CreateFormattingPalette.textColors[index].color,
+                        isSelected: selectedTextColorIndex == index,
+                        accessibilityLabel: "Font color"
+                    ) {
+                        selectedTextColorIndex = index
+                    }
+                }
+            }
         }
     }
 
@@ -13039,34 +13213,64 @@ private struct CreateFormattingSheet: View {
     }
 
     private var paperStyleContent: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
-            alignment: .center,
-            spacing: 24
-        ) {
-            ForEach(CreatePaperStyleChoice.allCases) { paperStyle in
-                let isLocked = paperStyle.requiresPremiumPaperAccess && !canUsePremiumPaperImages
+        VStack(alignment: .leading, spacing: 22) {
+            if selectedPaperStyle.showsPaperColorOptions {
+                paperBackgroundColorPicker
+            }
 
-                Button {
-                    if isLocked {
-                        onLockedPaperStyleSelected()
-                    } else {
-                        selectedPaperStyle = paperStyle
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+                alignment: .center,
+                spacing: 24
+            ) {
+                ForEach(CreatePaperStyleChoice.allCases) { paperStyle in
+                    let isLocked = paperStyle.requiresPremiumPaperAccess && !canUsePremiumPaperImages
+
+                    Button {
+                        if isLocked {
+                            onLockedPaperStyleSelected()
+                        } else {
+                            withAnimation(.snappy(duration: 0.18)) {
+                                selectedPaperStyle = paperStyle
+                            }
+                        }
+                    } label: {
+                        CreatePaperStyleOption(
+                            style: paperStyle,
+                            paperColor: CreateFormattingPalette.paperColors[selectedPaperColorIndex],
+                            isSelected: selectedPaperStyle == paperStyle,
+                            isLocked: isLocked
+                        )
                     }
-                } label: {
-                    CreatePaperStyleOption(
-                        style: paperStyle,
-                        paperColor: CreateFormattingPalette.paperColors[selectedPaperColorIndex],
-                        isSelected: selectedPaperStyle == paperStyle,
-                        isLocked: isLocked
-                    )
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isLocked ? "\(paperStyle.title), Journaltopia Plus required" : paperStyle.title)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isLocked ? "\(paperStyle.title), Journaltopia Plus required" : paperStyle.title)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.top, 2)
+    }
+
+    private var paperBackgroundColorPicker: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sheetSectionTitle("Background Color")
+
+            VStack(spacing: 8) {
+                ForEach(CreateFormattingPalette.paperColorRowIndices, id: \.self) { row in
+                    HStack(spacing: 8) {
+                        ForEach(row, id: \.self) { index in
+                            CreatePaletteSwatch(
+                                color: CreateFormattingPalette.paperColors[index],
+                                isSelected: selectedPaperColorIndex == index,
+                                accessibilityLabel: "Background color"
+                            ) {
+                                selectedPaperColorIndex = index
+                            }
+                        }
+                    }
+                }
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 2)
     }
 
     private var formattingPreview: some View {
@@ -13091,6 +13295,37 @@ private struct CreateFormattingSheet: View {
         Text(title)
             .font(.system(size: 16, weight: .bold))
             .foregroundStyle(Color.storyInk.opacity(0.92))
+    }
+}
+
+private struct CreatePaletteSwatch: View {
+    let color: Color
+    let isSelected: Bool
+    var accessibilityLabel: String = "Color"
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.72))
+                .aspectRatio(1, contentMode: .fit)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(color)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(Color.storyInk.opacity(0.16), lineWidth: 1)
+                        )
+                        .padding(6)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isSelected ? Color.storyPurple : Color.storyBorder.opacity(0.46), lineWidth: isSelected ? 1.8 : 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

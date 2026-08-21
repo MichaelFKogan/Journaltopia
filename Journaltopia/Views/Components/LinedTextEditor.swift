@@ -17,6 +17,8 @@ enum NotebookTextFormattingCommand: Equatable {
     case indent
     case outdent
     case textColor(String)
+    /// Drops per-run colors so every run falls back to the page's text color.
+    case resetTextColors
     case textStyle(NotebookTextRunStyle)
 }
 
@@ -1279,6 +1281,11 @@ final class LinedTextView: UITextView {
             return
         }
 
+        if command == .resetTextColors {
+            removeAllTextColorRuns()
+            return
+        }
+
         if case .textStyle(let textRunStyle) = command {
             applyTextRunStyleToCurrentParagraph(textRunStyle)
             return
@@ -1325,7 +1332,7 @@ final class LinedTextView: UITextView {
             break
         case .textColor(let hexString):
             mutableText.applyNotebookForegroundColor(hexString, in: range)
-        case .textStyle:
+        case .resetTextColors, .textStyle:
             break
         }
 
@@ -1339,6 +1346,30 @@ final class LinedTextView: UITextView {
 
     func richTextDocument() -> NotebookRichTextDocument {
         storedRichTextDocument.normalized(for: text ?? "")
+    }
+
+    private func removeAllTextColorRuns() {
+        guard let attributedText, attributedText.length > 0 else {
+            refreshTypingAttributes()
+            return
+        }
+
+        let selection = selectedRange
+        let fullRange = NSRange(location: 0, length: attributedText.length)
+        let mutableText = NSMutableAttributedString(attributedString: attributedText)
+        mutableText.removeAttribute(.notebookForegroundColorHex, range: fullRange)
+        mutableText.addAttribute(
+            .foregroundColor,
+            value: usesTexturedPaperEffect ? UIColor.clear : notebookTextStyle.uiColor,
+            range: fullRange
+        )
+
+        self.attributedText = mutableText
+        updateStoredRichTextDocument()
+        selectedRange = Self.clampedSelection(selection, textLength: mutableText.length)
+        refreshTypingAttributes()
+        notifyTextDidChange()
+        setNeedsDisplay()
     }
 
     private func applyTextRunStyleToCurrentParagraph(_ textRunStyle: NotebookTextRunStyle) {
@@ -1704,7 +1735,7 @@ final class LinedTextView: UITextView {
             isTypingBold.toggle()
         case .italic:
             isTypingItalic.toggle()
-        case .underline, .strikethrough, .bulletList, .indent, .outdent, .textColor, .textStyle:
+        case .underline, .strikethrough, .bulletList, .indent, .outdent, .textColor, .resetTextColors, .textStyle:
             return
         }
 
@@ -2712,10 +2743,22 @@ private struct TexturedPaperBodyTextOverlay: UIViewRepresentable {
 
 private final class NotebookTitleFieldView: UITextField {
     private let toolbarHost = NotebookAnyViewInputHost(fixedHeight: NotebookAnyViewInputHost.toolbarHeight)
+    private let panelHost = NotebookAnyViewInputHost(fixedHeight: nil)
+    private lazy var panelInputView = NotebookInputPanelView(contentHost: panelHost)
 
     var showsKeyboardAccessory = false {
         didSet {
             guard oldValue != showsKeyboardAccessory else {
+                return
+            }
+
+            applyInputViews(reloadIfNeeded: true)
+        }
+    }
+
+    var keyboardInputMode: NotebookEditorInputMode = .systemKeyboard {
+        didSet {
+            guard oldValue != keyboardInputMode else {
                 return
             }
 
@@ -2744,9 +2787,14 @@ private final class NotebookTitleFieldView: UITextField {
         toolbarHost.setRootView(view)
     }
 
+    func setKeyboardPanelContent(_ view: AnyView) {
+        panelHost.setRootView(view)
+    }
+
     func releaseKeyboardChrome() {
         let wasFirstResponder = isFirstResponder
         inputAccessoryView = nil
+        inputView = nil
         if wasFirstResponder {
             reloadInputViews()
         }
@@ -2754,6 +2802,14 @@ private final class NotebookTitleFieldView: UITextField {
 
     private func applyInputViews(reloadIfNeeded: Bool) {
         inputAccessoryView = showsKeyboardAccessory ? toolbarHost : nil
+
+        switch keyboardInputMode {
+        case .systemKeyboard:
+            inputView = nil
+        case .formattingPanel:
+            inputView = panelInputView
+        }
+
         toolbarHost.invalidateIntrinsicContentSize()
         if reloadIfNeeded, isFirstResponder {
             reloadInputViews()
@@ -2763,10 +2819,13 @@ private final class NotebookTitleFieldView: UITextField {
 
 private struct NotebookTitleTextField: UIViewRepresentable {
     @Binding var text: String
-    var isFocused: FocusState<Bool>.Binding
+    @Binding var isFocused: Bool
     var textStyle: NotebookTextStyle
+    var placeholderUIColor = UIColor(red: 0.39, green: 0.39, blue: 0.46, alpha: 0.46)
     var showsKeyboardAccessory: Bool
     var keyboardAccessoryContent: AnyView?
+    var keyboardInputMode: NotebookEditorInputMode = .systemKeyboard
+    var keyboardPanelContent: AnyView?
     var onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -2782,17 +2841,19 @@ private struct NotebookTitleTextField: UIViewRepresentable {
         if let keyboardAccessoryContent {
             field.setKeyboardAccessoryContent(keyboardAccessoryContent)
         }
+        if let keyboardPanelContent {
+            field.setKeyboardPanelContent(keyboardPanelContent)
+        }
         field.showsKeyboardAccessory = showsKeyboardAccessory
-        context.coordinator.onTextChange = { text = $0 }
-        context.coordinator.onSubmit = onSubmit
-        context.coordinator.onFocusChange = { isFocused.wrappedValue = $0 }
+        field.keyboardInputMode = keyboardInputMode
+        bindCallbacks(to: context.coordinator)
+        context.coordinator.lastRequestedFocus = isFocused
         return field
     }
 
     func updateUIView(_ field: NotebookTitleFieldView, context: Context) {
-        context.coordinator.onTextChange = { text = $0 }
-        context.coordinator.onSubmit = onSubmit
-        context.coordinator.onFocusChange = { isFocused.wrappedValue = $0 }
+        let coordinator = context.coordinator
+        bindCallbacks(to: coordinator)
 
         if field.text != text {
             field.text = text
@@ -2804,25 +2865,42 @@ private struct NotebookTitleTextField: UIViewRepresentable {
             field.setKeyboardAccessoryContent(keyboardAccessoryContent)
         }
 
+        if let keyboardPanelContent {
+            field.setKeyboardPanelContent(keyboardPanelContent)
+        }
+
         if field.showsKeyboardAccessory != showsKeyboardAccessory {
             field.showsKeyboardAccessory = showsKeyboardAccessory
         }
 
-        if isFocused.wrappedValue {
+        if field.keyboardInputMode != keyboardInputMode {
+            field.keyboardInputMode = keyboardInputMode
+        }
+
+        // Focus is only pushed into UIKit on a change of the binding. Comparing against the
+        // responder state instead would fight the field's own tap-to-focus handling.
+        guard coordinator.lastRequestedFocus != isFocused else {
+            return
+        }
+
+        coordinator.lastRequestedFocus = isFocused
+
+        if isFocused {
             if !field.isFirstResponder {
-                DispatchQueue.main.async {
-                    guard isFocused.wrappedValue, !field.isFirstResponder else {
-                        return
-                    }
-                    field.becomeFirstResponder()
-                }
+                field.becomeFirstResponder()
             }
         } else if field.isFirstResponder {
-            DispatchQueue.main.async {
-                guard !isFocused.wrappedValue, field.isFirstResponder else {
-                    return
-                }
-                field.resignFirstResponder()
+            field.resignFirstResponder()
+        }
+    }
+
+    private func bindCallbacks(to coordinator: Coordinator) {
+        coordinator.onTextChange = { text = $0 }
+        coordinator.onSubmit = onSubmit
+        coordinator.onFocusChange = { isEditing in
+            coordinator.lastRequestedFocus = isEditing
+            if isFocused != isEditing {
+                isFocused = isEditing
             }
         }
     }
@@ -2845,7 +2923,7 @@ private struct NotebookTitleTextField: UIViewRepresentable {
             string: "Add a title",
             attributes: [
                 .font: font,
-                .foregroundColor: UIColor(red: 0.39, green: 0.39, blue: 0.46, alpha: 0.46)
+                .foregroundColor: placeholderUIColor
             ]
         )
     }
@@ -2854,6 +2932,7 @@ private struct NotebookTitleTextField: UIViewRepresentable {
         var onTextChange: ((String) -> Void)?
         var onSubmit: (() -> Void)?
         var onFocusChange: ((Bool) -> Void)?
+        var lastRequestedFocus = false
 
         func textFieldDidBeginEditing(_ textField: UITextField) {
             onFocusChange?(true)
@@ -2878,7 +2957,7 @@ struct NotebookEditorContent: View {
     @Binding var storyTitle: String
     @Binding var entryText: String
     var entryRichText: Binding<NotebookRichTextDocument?>? = nil
-    @FocusState.Binding var isTitleFocused: Bool
+    @Binding var isTitleFocused: Bool
     var editorFocusRequestID: Int
     var editorBlurRequestID: Int = 0
     var formattingRequest: NotebookTextFormattingRequest? = nil
@@ -2889,6 +2968,7 @@ struct NotebookEditorContent: View {
     var scrollsInternally: Bool = true
     var pageHeight: CGFloat?
     var textStyle: NotebookTextStyle = .default
+    var placeholderColor = Color.storyGray.opacity(0.46)
     var showsTitleRule = true
     var leadingContentPadding = NotebookMetrics.marginLeading
     var leadingTextPadding = NotebookMetrics.textLeadingInset
@@ -2897,6 +2977,8 @@ struct NotebookEditorContent: View {
     var keyboardAccessoryContent: AnyView? = nil
     var keyboardPanelContent: AnyView? = nil
     var titleKeyboardAccessoryContent: AnyView? = nil
+    var titleKeyboardInputMode: NotebookEditorInputMode = .systemKeyboard
+    var titleKeyboardPanelContent: AnyView? = nil
     var usesTexturedPaperEffect = false
     var onBodyTap: (() -> Void)? = nil
     var onSelectionStateChange: ((NotebookTextSelectionState) -> Void)? = nil
@@ -2947,8 +3029,11 @@ struct NotebookEditorContent: View {
                 text: $storyTitle,
                 isFocused: $isTitleFocused,
                 textStyle: textStyle,
+                placeholderUIColor: UIColor(placeholderColor),
                 showsKeyboardAccessory: titleKeyboardAccessoryContent != nil,
                 keyboardAccessoryContent: titleKeyboardAccessoryContent,
+                keyboardInputMode: titleKeyboardInputMode,
+                keyboardPanelContent: titleKeyboardPanelContent,
                 onSubmit: onTitleSubmit
             )
             .shadow(
@@ -2964,6 +3049,11 @@ struct NotebookEditorContent: View {
             )
             .padding(.leading, leadingTextPadding)
             .padding(.top, NotebookMetrics.titleLineTextTopInset)
+            .contentShape(Rectangle())
+            // Claims the tap so an enclosing page tap can't treat it as a dismiss.
+            .onTapGesture {
+                isTitleFocused = true
+            }
         }
         .frame(height: NotebookMetrics.ruleSpacing)
     }
@@ -3011,7 +3101,7 @@ struct NotebookEditorContent: View {
             if entryText.isEmpty {
                 Text(bodyPlaceholder)
                     .font(NotebookMetrics.bodyPlaceholderFont(for: textStyle))
-                    .foregroundStyle(Color.storyGray.opacity(0.46))
+                    .foregroundStyle(placeholderColor)
                     .padding(.leading, leadingTextPadding)
                     .padding(.top, NotebookMetrics.firstLineTextTopInset(for: textStyle))
                     .allowsHitTesting(false)
