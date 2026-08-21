@@ -3037,13 +3037,19 @@ struct NotebookEditorContent: View {
                 onSubmit: onTitleSubmit
             )
             .shadow(
-                color: usesTexturedPaperEffect ? TexturedPaperTextEffect.titleShadowColor(for: textStyle.uiColor) : .clear,
+                color: usesTexturedPaperEffect
+                    && TexturedPaperTextEffect.shouldMultiplyBlend(textStyle.uiColor)
+                    && TexturedPaperTextEffect.shouldMultiplyBlend(UIColor(placeholderColor))
+                    ? TexturedPaperTextEffect.titleShadowColor(for: textStyle.uiColor)
+                    : .clear,
                 radius: usesTexturedPaperEffect ? 0.45 : 0,
                 x: 0,
                 y: usesTexturedPaperEffect ? -0.45 : 0
             )
             .blendMode(
-                usesTexturedPaperEffect && TexturedPaperTextEffect.shouldMultiplyBlend(textStyle.uiColor)
+                usesTexturedPaperEffect
+                    && TexturedPaperTextEffect.shouldMultiplyBlend(textStyle.uiColor)
+                    && TexturedPaperTextEffect.shouldMultiplyBlend(UIColor(placeholderColor))
                     ? .multiply
                     : .normal
             )
