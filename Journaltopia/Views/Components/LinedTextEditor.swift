@@ -666,6 +666,22 @@ enum TexturedPaperTextEffect {
 final class LinedTextView: UITextView {
     private static let bulletPrefix = "• "
     private static let indentPrefix = "    "
+    private static weak var attachedInstance: LinedTextView?
+
+    @discardableResult
+    static func becomeActiveFirstResponder() -> Bool {
+        attachedInstance?.becomeFirstResponder() ?? false
+    }
+
+    func attachAsActiveEditor() {
+        Self.attachedInstance = self
+    }
+
+    func detachIfActive() {
+        if Self.attachedInstance === self {
+            Self.attachedInstance = nil
+        }
+    }
 
     var ruleSpacing: CGFloat = NotebookMetrics.ruleSpacing
     var notebookTextStyle: NotebookTextStyle = .default {
@@ -1904,6 +1920,7 @@ struct LinedTextEditor: UIViewRepresentable {
             textView.setKeyboardPanelContent(keyboardPanelContent)
         }
         textView.setNotebookText(text, richText: richText?.wrappedValue)
+        textView.attachAsActiveEditor()
         context.coordinator.currentRichTextDocument = textView.richTextDocument()
         context.coordinator.onSelectionStateChange = onSelectionStateChange
         context.coordinator.onEditingEnded = onEditingEnded
@@ -2044,11 +2061,14 @@ struct LinedTextEditor: UIViewRepresentable {
         if focusRequestID != coordinator.handledFocusRequestID {
             coordinator.handledFocusRequestID = focusRequestID
             if !didHandleBlurRequest, !textView.isFirstResponder {
-                DispatchQueue.main.async {
-                    guard !textView.isFirstResponder else {
-                        return
+                textView.attachAsActiveEditor()
+                if !textView.becomeFirstResponder() {
+                    DispatchQueue.main.async {
+                        guard !textView.isFirstResponder else {
+                            return
+                        }
+                        textView.becomeFirstResponder()
                     }
-                    textView.becomeFirstResponder()
                 }
             }
         }
@@ -2081,6 +2101,7 @@ struct LinedTextEditor: UIViewRepresentable {
         uiView.setDictating(false)
         uiView.resignFirstResponder()
         uiView.releaseKeyboardChrome()
+        uiView.detachIfActive()
         uiView.delegate = nil
         uiView.onEditingEnded = nil
     }
@@ -2689,6 +2710,170 @@ private struct TexturedPaperBodyTextOverlay: UIViewRepresentable {
     }
 }
 
+private final class NotebookTitleFieldView: UITextField {
+    private let toolbarHost = NotebookAnyViewInputHost(fixedHeight: NotebookAnyViewInputHost.toolbarHeight)
+
+    var showsKeyboardAccessory = false {
+        didSet {
+            guard oldValue != showsKeyboardAccessory else {
+                return
+            }
+
+            applyInputViews(reloadIfNeeded: true)
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        borderStyle = .none
+        backgroundColor = .clear
+        returnKeyType = .next
+        autocorrectionType = .yes
+        autocapitalizationType = .sentences
+        spellCheckingType = .yes
+        clearButtonMode = .never
+        applyInputViews(reloadIfNeeded: false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setKeyboardAccessoryContent(_ view: AnyView) {
+        toolbarHost.setRootView(view)
+    }
+
+    func releaseKeyboardChrome() {
+        let wasFirstResponder = isFirstResponder
+        inputAccessoryView = nil
+        if wasFirstResponder {
+            reloadInputViews()
+        }
+    }
+
+    private func applyInputViews(reloadIfNeeded: Bool) {
+        inputAccessoryView = showsKeyboardAccessory ? toolbarHost : nil
+        toolbarHost.invalidateIntrinsicContentSize()
+        if reloadIfNeeded, isFirstResponder {
+            reloadInputViews()
+        }
+    }
+}
+
+private struct NotebookTitleTextField: UIViewRepresentable {
+    @Binding var text: String
+    var isFocused: FocusState<Bool>.Binding
+    var textStyle: NotebookTextStyle
+    var showsKeyboardAccessory: Bool
+    var keyboardAccessoryContent: AnyView?
+    var onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> NotebookTitleFieldView {
+        let field = NotebookTitleFieldView()
+        field.delegate = context.coordinator
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        applyStyle(to: field)
+        field.text = text
+        if let keyboardAccessoryContent {
+            field.setKeyboardAccessoryContent(keyboardAccessoryContent)
+        }
+        field.showsKeyboardAccessory = showsKeyboardAccessory
+        context.coordinator.onTextChange = { text = $0 }
+        context.coordinator.onSubmit = onSubmit
+        context.coordinator.onFocusChange = { isFocused.wrappedValue = $0 }
+        return field
+    }
+
+    func updateUIView(_ field: NotebookTitleFieldView, context: Context) {
+        context.coordinator.onTextChange = { text = $0 }
+        context.coordinator.onSubmit = onSubmit
+        context.coordinator.onFocusChange = { isFocused.wrappedValue = $0 }
+
+        if field.text != text {
+            field.text = text
+        }
+
+        applyStyle(to: field)
+
+        if let keyboardAccessoryContent {
+            field.setKeyboardAccessoryContent(keyboardAccessoryContent)
+        }
+
+        if field.showsKeyboardAccessory != showsKeyboardAccessory {
+            field.showsKeyboardAccessory = showsKeyboardAccessory
+        }
+
+        if isFocused.wrappedValue {
+            if !field.isFirstResponder {
+                DispatchQueue.main.async {
+                    guard isFocused.wrappedValue, !field.isFirstResponder else {
+                        return
+                    }
+                    field.becomeFirstResponder()
+                }
+            }
+        } else if field.isFirstResponder {
+            DispatchQueue.main.async {
+                guard !isFocused.wrappedValue, field.isFirstResponder else {
+                    return
+                }
+                field.resignFirstResponder()
+            }
+        }
+    }
+
+    static func dismantleUIView(_ uiView: NotebookTitleFieldView, coordinator: Coordinator) {
+        uiView.releaseKeyboardChrome()
+        uiView.delegate = nil
+    }
+
+    private func applyStyle(to field: NotebookTitleFieldView) {
+        let font = NotebookMetrics.uiFont(for: textStyle, size: textStyle.titleFontSize, isBold: true, isItalic: false)
+        if field.font != font {
+            field.font = font
+        }
+        if field.textColor != textStyle.uiColor {
+            field.textColor = textStyle.uiColor
+        }
+        field.tintColor = textStyle.uiColor
+        field.attributedPlaceholder = NSAttributedString(
+            string: "Add a title",
+            attributes: [
+                .font: font,
+                .foregroundColor: UIColor(red: 0.39, green: 0.39, blue: 0.46, alpha: 0.46)
+            ]
+        )
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var onTextChange: ((String) -> Void)?
+        var onSubmit: (() -> Void)?
+        var onFocusChange: ((Bool) -> Void)?
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            onFocusChange?(true)
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            onFocusChange?(false)
+        }
+
+        func textFieldDidChangeSelection(_ textField: UITextField) {
+            onTextChange?(textField.text ?? "")
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            onSubmit?()
+            return false
+        }
+    }
+}
+
 struct NotebookEditorContent: View {
     @Binding var storyTitle: String
     @Binding var entryText: String
@@ -2711,6 +2896,7 @@ struct NotebookEditorContent: View {
     var keyboardInputMode: NotebookEditorInputMode = .systemKeyboard
     var keyboardAccessoryContent: AnyView? = nil
     var keyboardPanelContent: AnyView? = nil
+    var titleKeyboardAccessoryContent: AnyView? = nil
     var usesTexturedPaperEffect = false
     var onBodyTap: (() -> Void)? = nil
     var onSelectionStateChange: ((NotebookTextSelectionState) -> Void)? = nil
@@ -2757,14 +2943,14 @@ struct NotebookEditorContent: View {
                 }
             }
 
-            TextField(
-                "",
+            NotebookTitleTextField(
                 text: $storyTitle,
-                prompt: Text("Add a title")
-                    .foregroundColor(Color.storyGray.opacity(0.46))
+                isFocused: $isTitleFocused,
+                textStyle: textStyle,
+                showsKeyboardAccessory: titleKeyboardAccessoryContent != nil,
+                keyboardAccessoryContent: titleKeyboardAccessoryContent,
+                onSubmit: onTitleSubmit
             )
-            .font(NotebookMetrics.titleFont(for: textStyle))
-            .foregroundStyle(textStyle.color)
             .shadow(
                 color: usesTexturedPaperEffect ? TexturedPaperTextEffect.titleShadowColor(for: textStyle.uiColor) : .clear,
                 radius: usesTexturedPaperEffect ? 0.45 : 0,
@@ -2776,12 +2962,8 @@ struct NotebookEditorContent: View {
                     ? .multiply
                     : .normal
             )
-            .focused($isTitleFocused)
-            .textFieldStyle(.plain)
-            .submitLabel(.next)
             .padding(.leading, leadingTextPadding)
             .padding(.top, NotebookMetrics.titleLineTextTopInset)
-            .onSubmit(onTitleSubmit)
         }
         .frame(height: NotebookMetrics.ruleSpacing)
     }

@@ -1343,6 +1343,8 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case recycledPaper
     case kawaiiGridPaper
     case pressedFlowers
+    case pastelSkyline
+    case japaneseInkWave
 
     static let defaultChoice: CreatePaperStyleChoice = .collegeRuled
 
@@ -1364,6 +1366,10 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Kawaii Grid"
         case .pressedFlowers:
             "Pressed Flowers"
+        case .pastelSkyline:
+            "Pastel Skyline"
+        case .japaneseInkWave:
+            "Japanese Ink Wave"
         }
     }
 
@@ -1406,7 +1412,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             .kawaiiGrid
         case .pressedFlowers:
             .pressedFlowers
-        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper:
+        case .japaneseInkWave:
+            .japaneseInkWave
+        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .pastelSkyline:
             nil
         }
     }
@@ -1422,7 +1430,11 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         case .kawaiiGridPaper:
             "Kawaii Grid Paper Doodle Stationery"
         case .pressedFlowers:
-            "paper"
+            "Pressed Flowers/paper"
+        case .pastelSkyline:
+            "pastel skyline"
+        case .japaneseInkWave:
+            "Japanese Ink Wave/paper"
         case .collegeRuled, .blank:
             nil
         }
@@ -1432,7 +1444,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .collegeRuled:
             NotebookMetrics.marginLeading
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers:
+        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .pastelSkyline, .japaneseInkWave:
             18
         }
     }
@@ -1441,7 +1453,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .collegeRuled:
             NotebookMetrics.textLeadingInset
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers:
+        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .pastelSkyline, .japaneseInkWave:
             0
         }
     }
@@ -1976,6 +1988,7 @@ struct CreateEntryView: View {
     @State private var editorBlurRequestID = 0
     @State private var isKeyboardVisible = false
     @State private var isBodyEditorEditing = false
+    @State private var isMovingFocusToBodyEditor = false
     @State private var isKeyboardMoreToolbarVisible = false
     @State private var toolbarSavedSnapshot: LoadedCreateEntryDraftSnapshot?
     @State private var toolbarSavedJournalEntryID: UUID?
@@ -2019,6 +2032,7 @@ struct CreateEntryView: View {
 
     private func dismissKeyboard() {
         isKeyboardDismissInProgress = true
+        isMovingFocusToBodyEditor = false
         isTitleFocused = false
         editorBlurRequestID += 1
         endWindowEditing()
@@ -3438,12 +3452,11 @@ struct CreateEntryView: View {
                         leadingTextPadding: selectedPaperStyleChoice.leadingTextPadding,
                         usesTexturedPaperEffect: selectedPaperStyleChoice.usesTexturedPaperTextEffect,
                         onBodyTap: {
-                            isTitleFocused = false
-                            editorFocusRequestID += 1
+                            focusBodyEditor()
                         },
                         onSelectionStateChange: updateEditorSelectionState,
                         onTitleSubmit: {
-                            editorFocusRequestID += 1
+                            focusBodyEditor()
                         }
                     )
                 }
@@ -3670,12 +3683,25 @@ struct CreateEntryView: View {
     }
 
     private func handleEditorPageTap() {
+        if isTitleFocused || isMovingFocusToBodyEditor {
+            focusBodyEditor()
+            return
+        }
+
         dismissKeyboard()
     }
 
     private func handleBodyEditorTap() {
+        focusBodyEditor()
+    }
+
+    private func focusBodyEditor() {
+        isMovingFocusToBodyEditor = true
+        isBodyEditorEditing = true
+        if !LinedTextView.becomeActiveFirstResponder() {
+            editorFocusRequestID += 1
+        }
         isTitleFocused = false
-        editorFocusRequestID += 1
     }
 
     private var canUseToolbarSaveButton: Bool {
@@ -4581,6 +4607,7 @@ struct CreateEntryView: View {
         linkedJournalTitles = []
         resetKeyboardFormattingState()
         isBodyEditorEditing = false
+        isMovingFocusToBodyEditor = false
         isKeyboardVisible = false
     }
 
@@ -4744,6 +4771,7 @@ struct CreateEntryView: View {
                             keyboardInputMode: draftKeyboardInputMode,
                             keyboardAccessoryContent: AnyView(entryDraftKeyboardAccessory),
                             keyboardPanelContent: AnyView(keyboardFormattingPanelContent),
+                            titleKeyboardAccessoryContent: AnyView(titleDraftKeyboardAccessory),
                             usesTexturedPaperEffect: selectedPaperStyleChoice.usesTexturedPaperTextEffect,
                             onBodyTap: {
                                 handleBodyEditorTap()
@@ -4755,13 +4783,15 @@ struct CreateEntryView: View {
                                 }
 
                                 isBodyEditorEditing = false
+                                isMovingFocusToBodyEditor = false
                                 resetKeyboardFormattingState()
                             },
                             onEditingBegan: {
                                 isBodyEditorEditing = true
+                                isMovingFocusToBodyEditor = false
                             },
                             onTitleSubmit: {
-                                editorFocusRequestID += 1
+                                focusBodyEditor()
                             }
                         )
                     }
@@ -6409,6 +6439,29 @@ struct CreateEntryView: View {
         }
     }
 
+    private var titleDraftKeyboardAccessory: some View {
+        HStack {
+            Spacer(minLength: 0)
+
+            keyboardToolButton(
+                systemName: "keyboard.chevron.compact.down",
+                accessibilityLabel: "Close keyboard",
+                isSelected: false,
+                action: dismissKeyboard
+            )
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity)
+        .frame(height: NotebookAnyViewInputHost.toolbarHeight)
+        .background(Color.homePageBackground)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.storyBorder.opacity(0.45))
+                .frame(height: 0.5)
+        }
+    }
+
     @ViewBuilder
     private var keyboardFormattingPanelContent: some View {
         if activeKeyboardFormattingMode != nil {
@@ -6752,32 +6805,77 @@ struct CreateEntryView: View {
         }
     }
 
+    private var snappingPreviewTextSize: Binding<Double> {
+        Binding(
+            get: { previewTextSize },
+            set: { previewTextSize = CreateEntryTextSize.snappedSliderValue(for: $0) }
+        )
+    }
+
     private var keyboardFontPanel: some View {
-        ScrollView(showsIndicators: false) {
-            LazyVGrid(columns: keyboardPanelColumns, spacing: 12) {
-                ForEach(CreateFontChoice.allCases) { font in
-                    Button {
-                        selectedFontChoice = font
-                    } label: {
-                        keyboardPanelTile(isSelected: selectedFontChoice == font) {
-                            Text(font.title)
-                                .font(font.swiftUIBodyFont(size: 16))
-                                .foregroundStyle(Color.storyInk)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.72)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 16) {
+            keyboardFontSizeControl
+                .padding(.horizontal, 16)
+
+            ScrollView(showsIndicators: false) {
+                LazyVGrid(columns: keyboardPanelColumns, spacing: 12) {
+                    ForEach(CreateFontChoice.allCases) { font in
+                        Button {
+                            selectedFontChoice = font
+                        } label: {
+                            keyboardPanelTile(isSelected: selectedFontChoice == font) {
+                                Text(font.title)
+                                    .font(font.swiftUIBodyFont(size: 16))
+                                    .foregroundStyle(Color.storyInk)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.72)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(font.title)
+                        .accessibilityAddTraits(selectedFontChoice == font ? .isSelected : [])
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(font.title)
-                    .accessibilityAddTraits(selectedFontChoice == font ? .isSelected : [])
                 }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 30)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 20)
-            .padding(.bottom, 30)
         }
+        .padding(.top, 8)
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var keyboardFontSizeControl: some View {
+        HStack(spacing: 14) {
+            Text("A")
+                .font(selectedFontChoice.swiftUIFont(size: 17, weight: .bold))
+                .foregroundStyle(Color.storyInk.opacity(0.68))
+                .frame(width: 18, alignment: .center)
+
+            ZStack {
+                Slider(value: snappingPreviewTextSize, in: 0...1)
+                    .tint(Color.storyPurple)
+                    .accessibilityLabel("Font Size")
+
+                Rectangle()
+                    .fill(Color.storyPurple.opacity(0.52))
+                    .frame(width: 2, height: 18)
+                    .clipShape(Capsule())
+                    .allowsHitTesting(false)
+            }
+
+            Text("A")
+                .font(selectedFontChoice.swiftUIFont(size: 31, weight: .bold))
+                .foregroundStyle(Color.storyInk.opacity(0.82))
+                .frame(width: 28, alignment: .center)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 56)
+        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.46), lineWidth: 1)
+        )
     }
 
     private var keyboardTextTypePanel: some View {
@@ -12333,11 +12431,16 @@ struct ExpandedEntryEditor: View {
                         leadingTextPadding: leadingTextPadding,
                         usesTexturedPaperEffect: paperImageName != nil,
                         onBodyTap: {
+                            if !LinedTextView.becomeActiveFirstResponder() {
+                                editorFocusRequestID += 1
+                            }
                             isTitleFocused = false
-                            editorFocusRequestID += 1
                         },
                         onTitleSubmit: {
-                            editorFocusRequestID += 1
+                            if !LinedTextView.becomeActiveFirstResponder() {
+                                editorFocusRequestID += 1
+                            }
+                            isTitleFocused = false
                         }
                     )
                 }
@@ -12505,7 +12608,7 @@ struct IllustratedPaperConfiguration {
     static let pressedFlowers = IllustratedPaperConfiguration(
         decorations: [
             IllustratedPaperDecoration(
-                imageName: "tape",
+                imageName: "Pressed Flowers/tape",
                 widthRatio: 0.18,
                 xRatio: 0.08,
                 y: 75,
@@ -12515,13 +12618,27 @@ struct IllustratedPaperConfiguration {
                 compactY: 2
             ),
             IllustratedPaperDecoration(
-                imageName: "flowers",
+                imageName: "Pressed Flowers/flowers",
                 widthRatio: 0.24,
                 xRatio: 0.88,
                 y: 475,
                 compactWidthRatio: 0.34,
                 compactXRatio: 0.80,
                 compactY: 0
+            )
+        ]
+    )
+
+    static let japaneseInkWave = IllustratedPaperConfiguration(
+        decorations: [
+            IllustratedPaperDecoration(
+                imageName: "Japanese Ink Wave/wave-left",
+                widthRatio: 0.42,
+                xRatio: 0.90,
+                y: 300,
+                compactWidthRatio: 0.46,
+                compactXRatio: 0.92,
+                compactY: 18
             )
         ]
     )
@@ -13080,7 +13197,7 @@ private struct CreatePaperPreview: View {
                     marginLine(in: proxy.size)
                 case .blank:
                     EmptyView()
-                case .watercolorPaper, .cottonPaper, .recycledPaper:
+                case .watercolorPaper, .cottonPaper, .recycledPaper, .pastelSkyline:
                     if let backgroundImageName = style.backgroundImageName {
                         Image(backgroundImageName)
                             .resizable()
@@ -13088,7 +13205,7 @@ private struct CreatePaperPreview: View {
                             .frame(width: proxy.size.width, height: proxy.size.height)
                             .clipped()
                     }
-                case .kawaiiGridPaper, .pressedFlowers:
+                case .kawaiiGridPaper, .pressedFlowers, .japaneseInkWave:
                     if let backgroundImageName = style.backgroundImageName {
                         Image(backgroundImageName)
                             .resizable()
