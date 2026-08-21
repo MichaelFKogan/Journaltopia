@@ -7278,7 +7278,7 @@ struct EntriesView: View {
         contentMode.isSampleAuthoring
     }
 
-    private let thumbnailRendererVersion = 12
+    private let thumbnailRendererVersion = 14
     private let thumbnailRendererVersionKey = "JournaltopiaEntryThumbnailRendererVersion"
 
     // Seeded from the last session snapshot rather than starting empty. These are `@State`
@@ -7535,15 +7535,18 @@ struct EntriesView: View {
     }
 
     private var entriesScrollableContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                entriesPageChrome
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    entriesPageChrome
 
-                entriesPageContent
+                    entriesPageContent
+                }
+                .padding(.bottom, 104 + signInCalloutContentInset)
+                .frame(width: geometry.size.width, alignment: .leading)
             }
-            .padding(.bottom, 104 + signInCalloutContentInset)
+            .background(Color.clear)
         }
-        .background(Color.clear)
     }
 
     private var entriesListContent: some View {
@@ -8064,6 +8067,7 @@ struct EntriesView: View {
                     .lineSpacing(2)
                     .foregroundStyle(Color.homeMutedText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 Spacer(minLength: 6)
 
@@ -8082,6 +8086,7 @@ struct EntriesView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -8338,7 +8343,7 @@ struct EntriesView: View {
 
     private var entryGridColumns: [GridItem] {
         Array(
-            repeating: GridItem(.flexible(), spacing: 14),
+            repeating: GridItem(.flexible(minimum: 0), spacing: 14),
             count: selectedEntryLayout.gridColumnCount
         )
     }
@@ -11636,7 +11641,7 @@ private struct EntryGridPreviewCard: View {
             ZStack(alignment: .topTrailing) {
                 previewImage
                     .aspectRatio(260.0 / 340.0, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
+                    .frame(minWidth: 0, maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
                     .overlay(alignment: .top) {
@@ -11738,6 +11743,8 @@ private struct EntryGridPreviewCard: View {
             Image(uiImage: thumbnail)
                 .resizable()
                 .scaledToFill()
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .clipped()
         } else {
             ZStack {
                 Color(red: 0.985, green: 0.978, blue: 0.955)
@@ -11904,7 +11911,7 @@ private struct CompletedEntryGridCard: View {
                 }
             }
                 .aspectRatio(260.0 / 340.0, contentMode: .fit)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 0, maxWidth: .infinity)
                 .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
 
             EntryPreviewDateBlock(entry: entry, sortOption: sortOption, pageLabel: pageLabel)
@@ -11949,6 +11956,8 @@ private struct CompletedEntryGridCard: View {
             Image(uiImage: thumbnail)
                 .resizable()
                 .scaledToFill()
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .clipped()
         } else {
             ZStack {
                 Color(red: 0.985, green: 0.978, blue: 0.955)
@@ -12025,6 +12034,7 @@ private struct CompletedEntryGridCard: View {
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFit()
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         case .loading:
             ZStack {
                 Color.white
@@ -14882,7 +14892,7 @@ private struct JournalDetailSheetScrollOffsetRestorer: UIViewRepresentable {
                 minimumOffsetY,
                 scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
             )
-            let restoredOffsetY = min(max(requestedOffsetY, minimumOffsetY), maximumOffsetY)
+            let restoredOffsetY = min(max(offsetY, minimumOffsetY), maximumOffsetY)
 
             if abs(scrollView.contentOffset.y - restoredOffsetY) > 0.5 {
                 scrollView.setContentOffset(

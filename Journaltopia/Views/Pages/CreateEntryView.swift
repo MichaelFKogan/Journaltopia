@@ -1341,6 +1341,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case watercolorPaper
     case cottonPaper
     case recycledPaper
+    case kawaiiGridPaper
 
     static let defaultChoice: CreatePaperStyleChoice = .collegeRuled
 
@@ -1358,6 +1359,8 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Cotton Paper"
         case .recycledPaper:
             "Recycled Paper"
+        case .kawaiiGridPaper:
+            "Kawaii Grid"
         }
     }
 
@@ -1381,6 +1384,19 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         backgroundImageName != nil
     }
 
+    /// Sheets that stay proportional to the page width, then tile downward to fill the paper.
+    var fitsPaperImageToWidth: Bool {
+        self == .kawaiiGridPaper
+    }
+
+    var fillsBackgroundWithPaperImage: Bool {
+        backgroundImageName != nil
+    }
+
+    var showsPaperDecorations: Bool {
+        self == .kawaiiGridPaper
+    }
+
     var backgroundImageName: String? {
         switch self {
         case .watercolorPaper:
@@ -1389,6 +1405,8 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "cotton-paper"
         case .recycledPaper:
             "recycled-paper"
+        case .kawaiiGridPaper:
+            "Kawaii Grid Paper Doodle Stationery"
         case .collegeRuled, .blank:
             nil
         }
@@ -1398,7 +1416,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .collegeRuled:
             NotebookMetrics.marginLeading
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper:
+        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper:
             18
         }
     }
@@ -1407,7 +1425,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .collegeRuled:
             NotebookMetrics.textLeadingInset
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper:
+        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper:
             0
         }
     }
@@ -1653,6 +1671,9 @@ private struct DraftPageThumbnail: View {
                 NotebookPaperBackground(
                     paperColor: paperStyle.backgroundImageName == nil ? paperColor : .homePageBackground,
                     paperImageName: paperStyle.backgroundImageName,
+                    fitsPaperImageToWidth: false,
+                    expandsFittedPaperToScreen: false,
+                    showsPaperDecorations: paperStyle.showsPaperDecorations,
                     showsPaperWash: false,
                     showsRuledLines: paperStyle.showsRuledLines,
                     showsNotebookChrome: paperStyle.showsNotebookChrome,
@@ -2077,7 +2098,7 @@ struct CreateEntryView: View {
     }
 
     private var usesPaperImageBackground: Bool {
-        selectedPaperStyleChoice.backgroundImageName != nil
+        selectedPaperStyleChoice.fillsBackgroundWithPaperImage
     }
 
     private var opensExistingEntryReadMode: Bool {
@@ -3371,6 +3392,9 @@ struct CreateEntryView: View {
                     NotebookPaperBackground(
                         paperColor: selectedPaperSurfaceColor,
                         paperImageName: selectedPaperStyleChoice.backgroundImageName,
+                        fitsPaperImageToWidth: selectedPaperStyleChoice.fitsPaperImageToWidth,
+                        drawsTiledPaperImage: true,
+                        showsPaperDecorations: selectedPaperStyleChoice.showsPaperDecorations,
                         showsPaperWash: false,
                         showsRuledLines: selectedPaperStyleChoice.showsRuledLines,
                         showsNotebookChrome: selectedPaperStyleChoice.showsNotebookChrome,
@@ -3406,7 +3430,7 @@ struct CreateEntryView: View {
                         }
                     )
                 }
-                .frame(maxWidth: .infinity)
+                .frame(width: proxy.size.width, alignment: .topLeading)
                 .frame(minHeight: scrollContentHeight)
             }
             .scrollDismissesKeyboard(.interactively)
@@ -3455,16 +3479,24 @@ struct CreateEntryView: View {
 
     @ViewBuilder
     private var pageBackground: some View {
-        if let paperImageName = selectedPaperStyleChoice.backgroundImageName {
+        if let paperImageName = selectedPaperStyleChoice.backgroundImageName,
+           usesPaperImageBackground {
             GeometryReader { proxy in
+                let size = CGSize(
+                    width: max(proxy.size.width, UIScreen.main.bounds.width),
+                    height: max(proxy.size.height, UIScreen.main.bounds.height)
+                )
+
                 Image(paperImageName)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .frame(width: size.width, height: size.height)
                     .clipped()
             }
+            .ignoresSafeArea()
         } else {
             Color.homePageBackground
+                .ignoresSafeArea()
         }
     }
 
@@ -4663,6 +4695,9 @@ struct CreateEntryView: View {
                     NotebookPaperBackground(
                         paperColor: selectedPaperSurfaceColor,
                         paperImageName: selectedPaperStyleChoice.backgroundImageName,
+                        fitsPaperImageToWidth: selectedPaperStyleChoice.fitsPaperImageToWidth,
+                        drawsTiledPaperImage: true,
+                        showsPaperDecorations: selectedPaperStyleChoice.showsPaperDecorations,
                         showsPaperWash: false,
                         showsRuledLines: selectedPaperStyleChoice.showsRuledLines,
                         showsNotebookChrome: selectedPaperStyleChoice.showsNotebookChrome,
@@ -4716,7 +4751,8 @@ struct CreateEntryView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
                 }
-                .frame(maxWidth: .infinity, minHeight: scrollContentHeight)
+                .frame(width: proxy.size.width, alignment: .topLeading)
+                .frame(minHeight: scrollContentHeight)
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
@@ -12049,6 +12085,8 @@ struct ExpandedEntryEditor: View {
     var textStyle: NotebookTextStyle = .default
     var paperColor: Color = .homePageBackground
     private var paperImageName: String?
+    private var fitsPaperImageToWidth = false
+    private var showsPaperDecorations = false
     private var showsRuledLines = true
     private var showsNotebookChrome = true
     private var leadingContentPadding = NotebookMetrics.marginLeading
@@ -12089,6 +12127,8 @@ struct ExpandedEntryEditor: View {
         self.textStyle = textStyle
         self.paperColor = paperColor
         self.paperImageName = paperStyle.backgroundImageName
+        self.fitsPaperImageToWidth = paperStyle.fitsPaperImageToWidth
+        self.showsPaperDecorations = paperStyle.showsPaperDecorations
         self.showsRuledLines = paperStyle.showsRuledLines
         self.showsNotebookChrome = paperStyle.showsNotebookChrome
         self.leadingContentPadding = paperStyle.leadingContentPadding
@@ -12102,6 +12142,8 @@ struct ExpandedEntryEditor: View {
                     NotebookPaperBackground(
                         paperColor: paperColor,
                         paperImageName: paperImageName,
+                        fitsPaperImageToWidth: fitsPaperImageToWidth,
+                        showsPaperDecorations: showsPaperDecorations,
                         showsPaperWash: false,
                         showsRuledLines: showsRuledLines,
                         showsNotebookChrome: showsNotebookChrome,
@@ -12134,7 +12176,7 @@ struct ExpandedEntryEditor: View {
                         }
                     )
                 }
-                .frame(maxWidth: .infinity)
+                .frame(width: proxy.size.width, alignment: .topLeading)
                 .frame(minHeight: proxy.size.height)
             }
             .scrollDismissesKeyboard(.interactively)
@@ -12216,9 +12258,93 @@ struct ExpandedEntryEditor: View {
     }
 }
 
+private struct WidthTiledPaperImage: View {
+    let imageName: String
+    let size: CGSize
+
+    var body: some View {
+        let tileHeight = Self.tileHeight(for: imageName, width: size.width)
+        let tileCount = max(1, Int(ceil(size.height / max(tileHeight, 1))))
+
+        VStack(spacing: 0) {
+            ForEach(0..<tileCount, id: \.self) { _ in
+                Image(imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size.width)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .clipped()
+    }
+
+    fileprivate static func tileHeight(for imageName: String, width: CGFloat) -> CGFloat {
+        guard let image = UIImage(named: imageName), image.size.width > 0 else {
+            return width
+        }
+
+        return width * (image.size.height / image.size.width)
+    }
+}
+
+private struct KawaiiGridPaperDecorations: View {
+    let pageSize: CGSize
+    var showsBottomDecorations = true
+
+    var body: some View {
+        let decorationHeight = pageSize.height
+
+        ZStack {
+            doodle("cat", widthRatio: showsBottomDecorations ? 0.24 : 0.36)
+                .padding(.leading, showsBottomDecorations ? 8 : 4)
+                .padding(.top, showsBottomDecorations ? 150 : 4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            doodle("planet", widthRatio: showsBottomDecorations ? 0.22 : 0.34)
+                .padding(.trailing, showsBottomDecorations ? 8 : 4)
+                .padding(.top, showsBottomDecorations ? 430 : 4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+
+            if showsBottomDecorations {
+                HStack(alignment: .bottom, spacing: 2) {
+                    doodle("tree", widthRatio: 0.17)
+                }
+                .padding(.leading, 10)
+                .padding(.bottom, 520)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+
+                doodle("stars", widthRatio: 0.16)
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 310)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+
+                doodle("ipod", widthRatio: 0.30)
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 80)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            }
+        }
+        .frame(width: pageSize.width, height: decorationHeight)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .allowsHitTesting(false)
+    }
+
+    private func doodle(_ imageName: String, widthRatio: CGFloat) -> some View {
+        Image(imageName)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: pageSize.width * widthRatio)
+    }
+}
+
 struct NotebookPaperBackground: View {
     var paperColor = Color.homePageBackground
     var paperImageName: String?
+    var fitsPaperImageToWidth = false
+    var drawsTiledPaperImage = true
+    var expandsFittedPaperToScreen = true
+    var showsPaperDecorations = false
     var showsPaperWash = true
     var showsRuledLines = true
     var showsNotebookChrome = true
@@ -12226,15 +12352,46 @@ struct NotebookPaperBackground: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let paperSize = fitsPaperImageToWidth
+                ? CGSize(
+                    width: expandsFittedPaperToScreen
+                        ? max(proxy.size.width, UIScreen.main.bounds.width)
+                        : proxy.size.width,
+                    height: proxy.size.height
+                )
+                : proxy.size
+            let paperXOffset = fitsPaperImageToWidth && expandsFittedPaperToScreen
+                ? -max((paperSize.width - proxy.size.width) / 2, 0)
+                : 0
+
             ZStack(alignment: .topLeading) {
+                if paperImageName != nil {
+                    paperColor
+                }
+
                 if let paperImageName {
-                    Image(paperImageName)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .clipped()
+                    if fitsPaperImageToWidth {
+                        if drawsTiledPaperImage {
+                            WidthTiledPaperImage(imageName: paperImageName, size: paperSize)
+                                .offset(x: paperXOffset)
+                        }
+                    } else {
+                        Image(paperImageName)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                    }
                 } else {
                     paperColor
+                }
+
+                if showsPaperDecorations {
+                    KawaiiGridPaperDecorations(
+                        pageSize: paperSize,
+                        showsBottomDecorations: proxy.size.height > 220
+                    )
+                    .offset(x: paperXOffset)
                 }
 
                 if showsPaperWash {
@@ -12666,6 +12823,21 @@ private struct CreatePaperPreview: View {
                             .scaledToFill()
                             .frame(width: proxy.size.width, height: proxy.size.height)
                             .clipped()
+                    }
+                case .kawaiiGridPaper:
+                    if let backgroundImageName = style.backgroundImageName {
+                        Image(backgroundImageName)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                    }
+
+                    if style.showsPaperDecorations {
+                        KawaiiGridPaperDecorations(
+                            pageSize: proxy.size,
+                            showsBottomDecorations: false
+                        )
                     }
                 }
             }
