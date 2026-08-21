@@ -7686,7 +7686,9 @@ struct EntriesView: View {
             dismissAnyKeyboard()
             openingEntryPreview = nil
             isFinishingEntryOpening = false
-            selectedEntryTab = .all
+            if !(newPage == .create && isOpeningEntryFromEntries) {
+                selectedEntryTab = .all
+            }
         }
 
         if newPage == .entries {
@@ -12972,6 +12974,8 @@ private struct PrototypeChapterDetailView: View {
     @State private var displayedMediaStoryboardCount: Int
     @State private var cachedHeroCoverImage: UIImage?
     @State private var cachedHeroCoverStorageKey: String?
+    @State private var journalDetailSheetScrollOffsetY: CGFloat = 0
+    @State private var pendingJournalDetailSheetScrollOffsetY: CGFloat?
 
     private var sections: [String] {
         ["Pages", "Media"]
@@ -13577,6 +13581,8 @@ private struct PrototypeChapterDetailView: View {
 
         return ScrollView(showsIndicators: false) {
             LazyVStack(spacing: 0) {
+                journalDetailSheetScrollOffsetMarker
+
                 journalHeroSpacerTapTargets(height: sheetTopOffset, proxy: proxy)
 
                 journalDetailSheetTopChrome
@@ -13662,11 +13668,32 @@ private struct PrototypeChapterDetailView: View {
             }
         }
         .coordinateSpace(name: JournalDetailScrollCoordinate.spaceName)
+        .onPreferenceChange(JournalDetailSheetScrollOffsetKey.self) { offsetY in
+            journalDetailSheetScrollOffsetY = offsetY
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .transaction { transaction in
             transaction.animation = nil
         }
         .ignoresSafeArea(edges: .top)
+    }
+
+    private var journalDetailSheetScrollOffsetMarker: some View {
+        Color.clear
+            .frame(height: 0)
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: JournalDetailSheetScrollOffsetKey.self,
+                        value: max(0, -geo.frame(in: .named(JournalDetailScrollCoordinate.spaceName)).minY)
+                    )
+                }
+            }
+            .background(
+                JournalDetailSheetScrollOffsetRestorer(
+                    requestedOffsetY: $pendingJournalDetailSheetScrollOffsetY
+                )
+            )
     }
 
     private var journalDetailSheetTopChrome: some View {
@@ -14127,6 +14154,7 @@ private struct PrototypeChapterDetailView: View {
         HStack(spacing: 0) {
             ForEach(sections, id: \.self) { section in
                 Button {
+                    pendingJournalDetailSheetScrollOffsetY = journalDetailSheetScrollOffsetY
                     selectedSection = section
                 } label: {
                     VStack(spacing: 8) {
@@ -14778,6 +14806,143 @@ private struct JournalDetailScrollOffsetKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private struct JournalDetailSheetScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct JournalDetailSheetScrollOffsetRestorer: UIViewRepresentable {
+    @Binding var requestedOffsetY: CGFloat?
+
+    func makeUIView(context: Context) -> UIView {
+        UIView(frame: .zero)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        guard let requestedOffsetY else {
+            return
+        }
+
+        context.coordinator.restore(
+            requestedOffsetY,
+            from: view,
+            requestedOffsetY: $requestedOffsetY
+        )
+    }
+
+    final class Coordinator {
+        private var restoreID = UUID()
+
+        func restore(_ offsetY: CGFloat, from view: UIView, requestedOffsetY: Binding<CGFloat?>) {
+            let restoreID = UUID()
+            self.restoreID = restoreID
+            applyRestore(
+                restoreID: restoreID,
+                offsetY: offsetY,
+                from: view,
+                requestedOffsetY: requestedOffsetY,
+                attempt: 0
+            )
+        }
+
+        private func applyRestore(
+            restoreID: UUID,
+            offsetY: CGFloat,
+            from view: UIView,
+            requestedOffsetY: Binding<CGFloat?>,
+            attempt: Int
+        ) {
+            guard restoreID == self.restoreID else {
+                return
+            }
+
+            guard let scrollView = view.journalDetailEnclosingScrollView else {
+                scheduleNextRestore(
+                    restoreID: restoreID,
+                    offsetY: offsetY,
+                    from: view,
+                    requestedOffsetY: requestedOffsetY,
+                    attempt: attempt
+                )
+                return
+            }
+
+            let minimumOffsetY = -scrollView.adjustedContentInset.top
+            let maximumOffsetY = max(
+                minimumOffsetY,
+                scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
+            )
+            let restoredOffsetY = min(max(requestedOffsetY, minimumOffsetY), maximumOffsetY)
+
+            if abs(scrollView.contentOffset.y - restoredOffsetY) > 0.5 {
+                scrollView.setContentOffset(
+                    CGPoint(x: scrollView.contentOffset.x, y: restoredOffsetY),
+                    animated: false
+                )
+            }
+
+            scheduleNextRestore(
+                restoreID: restoreID,
+                offsetY: offsetY,
+                from: view,
+                requestedOffsetY: requestedOffsetY,
+                attempt: attempt
+            )
+        }
+
+        private func scheduleNextRestore(
+            restoreID: UUID,
+            offsetY: CGFloat,
+            from view: UIView,
+            requestedOffsetY: Binding<CGFloat?>,
+            attempt: Int
+        ) {
+            guard attempt < 8 else {
+                if restoreID == self.restoreID {
+                    requestedOffsetY.wrappedValue = nil
+                }
+                return
+            }
+
+            let delay = min(0.02 * Double(attempt + 1), 0.08)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak view] in
+                guard let self, let view else {
+                    return
+                }
+
+                self.applyRestore(
+                    restoreID: restoreID,
+                    offsetY: offsetY,
+                    from: view,
+                    requestedOffsetY: requestedOffsetY,
+                    attempt: attempt + 1
+                )
+            }
+        }
+    }
+}
+
+private extension UIView {
+    var journalDetailEnclosingScrollView: UIScrollView? {
+        var candidate = superview
+        while let view = candidate {
+            if let scrollView = view as? UIScrollView {
+                return scrollView
+            }
+            candidate = view.superview
+        }
+
+        return nil
     }
 }
 

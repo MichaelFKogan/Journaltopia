@@ -732,7 +732,11 @@ struct SupabaseStoryboardService {
         }
     }
 
-    func loadCompletedJournalStoryboards(limit: Int = 9, offset: Int = 0) async throws -> [EntryStoryboard] {
+    /// Every completed storyboard belonging to a completed entry, newest first and unpaged.
+    ///
+    /// Metadata only — no images are downloaded — so callers that need the whole set (a total count,
+    /// say) can have it without paying for one download per storyboard.
+    func loadCompletedJournalStoryboardRows() async throws -> [EntryStoryboard] {
         do {
             let completedEntries: [CompletedEntryReference] = try await client
                 .from("entries")
@@ -748,22 +752,21 @@ struct SupabaseStoryboardService {
                 return []
             }
 
-            let rows = try await loadStoryboards()
-
-            return Array(
-                rows
-                    .filter {
-                        completedClientEntryIDs.contains($0.clientEntryID)
-                            && $0.generationStatus == "completed"
-                    }
-                    .sorted { $0.createdAt > $1.createdAt }
-                    .dropFirst(offset)
-                    .prefix(limit)
-            )
+            return try await loadStoryboards()
+                .filter {
+                    completedClientEntryIDs.contains($0.clientEntryID)
+                        && $0.generationStatus == "completed"
+                }
+                .sorted { $0.createdAt > $1.createdAt }
         } catch {
             print("[Journaltopia] Completed profile storyboards metadata load failed: \(error.localizedDescription)")
             throw SupabaseStoryboardError.syncFailed
         }
+    }
+
+    func loadCompletedJournalStoryboards(limit: Int = 9, offset: Int = 0) async throws -> [EntryStoryboard] {
+        let rows = try await loadCompletedJournalStoryboardRows()
+        return Array(rows.dropFirst(offset).prefix(limit))
     }
 
     func loadCompletedJournalStoryboardImages(limit: Int = 9, offset: Int = 0) async throws -> [GeneratedStoryboard] {

@@ -635,12 +635,27 @@ struct SettingsView: View {
 
 private struct SettingsExtraView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var subscriptionStore: SubscriptionStore
+    @EnvironmentObject private var entitlementGate: EntitlementGate
 
     @AppStorage("JournaltopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @State private var isOnboardingPreviewPresented = false
 
     var body: some View {
         List {
+            Section("Plan Testing") {
+                Toggle(isOn: debugPlusPlanBinding) {
+                    SettingsRowContent(
+                        systemName: subscriptionStore.state.isSubscribed ? "crown.fill" : "crown",
+                        title: "Journaltopia+ Test Plan",
+                        subtitle: debugPlanSubtitle,
+                        showsChevron: false,
+                        iconColor: subscriptionStore.state.isSubscribed ? Color.storyPurple : Color.homeAccent
+                    )
+                    .padding(.vertical, 4)
+                }
+            }
+
             Section("Pages") {
                 SettingsNavigationRow(
                     systemName: "book.pages",
@@ -743,6 +758,27 @@ private struct SettingsExtraView: View {
             OnboardingView {
                 isOnboardingPreviewPresented = false
             }
+        }
+    }
+
+    private var debugPlusPlanBinding: Binding<Bool> {
+        Binding(
+            get: { subscriptionStore.state.isSubscribed },
+            set: { isActive in
+                subscriptionStore.setDebugPlusPlanActive(isActive)
+                entitlementGate.update(state: subscriptionStore.state)
+            }
+        )
+    }
+
+    private var debugPlanSubtitle: String {
+        let planName = subscriptionStore.state.isSubscribed ? "Journaltopia Plus" : "Free"
+
+        switch subscriptionStore.debugPlanOverride {
+        case .free, .plus:
+            return "\(planName) active for local feature testing"
+        case nil:
+            return "\(planName) active from current account state"
         }
     }
 

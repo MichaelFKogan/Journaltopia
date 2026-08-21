@@ -21,6 +21,11 @@ import StoreKit
 /// complete a purchase while the paywall is gone, while the app is backgrounded, or between launches.
 @MainActor
 final class SubscriptionStore: ObservableObject {
+    enum DebugPlanOverride: String {
+        case free
+        case plus
+    }
+
     enum PurchasePhase: Equatable {
         case idle
         case purchasing
@@ -32,6 +37,13 @@ final class SubscriptionStore: ObservableObject {
 
     /// The server's answer about this account. See ``JournaltopiaPlusState``.
     @Published private(set) var state: JournaltopiaPlusState = .unresolved
+    @Published private(set) var debugPlanOverride: DebugPlanOverride? = {
+        guard let rawValue = UserDefaults.standard.string(forKey: SubscriptionStore.debugPlanOverrideKey) else {
+            return nil
+        }
+
+        return DebugPlanOverride(rawValue: rawValue)
+    }()
     @Published private(set) var product: Product?
     /// Consumable credit packs, loaded for display only. See ``creditPackPurchasing`` — there is no
     /// verified server path to redeem one yet, so nothing here can be bought.
@@ -54,6 +66,7 @@ final class SubscriptionStore: ObservableObject {
     private let syncService: AppleSubscriptionSyncService
     private let redemptionService: CreditPackRedemptionService
     private let entitlementService: JournaltopiaPlusEntitlementService
+    private static let debugPlanOverrideKey = "JournaltopiaDebugPlanOverride"
     private var listenerTask: Task<Void, Never>?
     private weak var creditStore: GenerationCreditStore?
 
@@ -110,6 +123,10 @@ final class SubscriptionStore: ObservableObject {
     func refresh(isSignedIn: Bool) async {
         await loadProduct()
 
+        if applyDebugPlanOverride() {
+            return
+        }
+
         guard isSignedIn else {
             resetLocalState()
             return
@@ -133,6 +150,10 @@ final class SubscriptionStore: ObservableObject {
     ///
     /// Must be called before any `await`, or the window it closes simply moves.
     func prepareForAccountChange() {
+        if applyDebugPlanOverride() {
+            return
+        }
+
         state = .unresolved
         purchasePhase = .idle
         errorMessage = nil
@@ -148,6 +169,14 @@ final class SubscriptionStore: ObservableObject {
         purchasePhase = .idle
         isReconciling = false
         errorMessage = nil
+    }
+
+    /// Testing-only entitlement override, driven from Settings > Extra. It changes local gating and
+    /// presentation state only; it never buys, restores, syncs, or edits the server entitlement.
+    func setDebugPlusPlanActive(_ isActive: Bool) {
+        debugPlanOverride = isActive ? .plus : .free
+        UserDefaults.standard.set(debugPlanOverride?.rawValue, forKey: Self.debugPlanOverrideKey)
+        applyDebugPlanOverride()
     }
 
     // MARK: - Purchasing
@@ -412,6 +441,10 @@ final class SubscriptionStore: ObservableObject {
 
     /// Reads the server's answer, which is the only one that governs generation.
     func refreshServerEntitlement() async {
+        if applyDebugPlanOverride() {
+            return
+        }
+
         do {
             state = try await entitlementService.fetchEntitlement()
         } catch {
@@ -420,6 +453,23 @@ final class SubscriptionStore: ObservableObject {
             // paying subscriber.
             print("[Journaltopia] Journaltopia+ entitlement refresh failed: \(error.localizedDescription)")
         }
+    }
+
+    @discardableResult
+    private func applyDebugPlanOverride() -> Bool {
+        guard let debugPlanOverride else {
+            return false
+        }
+
+        state = debugPlanOverride == .plus
+            ? .subscribed(
+                productID: JournaltopiaProducts.journaltopiaPlusMonthly,
+                currentPeriodEnd: Calendar.current.date(byAdding: .month, value: 1, to: Date())
+            )
+            : .notSubscribed
+        purchasePhase = .idle
+        errorMessage = nil
+        return true
     }
 
     // MARK: - Internals
