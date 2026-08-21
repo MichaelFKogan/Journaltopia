@@ -1394,7 +1394,16 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     }
 
     var showsPaperDecorations: Bool {
-        self == .kawaiiGridPaper
+        illustratedPaperConfiguration != nil
+    }
+
+    var illustratedPaperConfiguration: IllustratedPaperConfiguration? {
+        switch self {
+        case .kawaiiGridPaper:
+            .kawaiiGrid
+        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper:
+            nil
+        }
     }
 
     var backgroundImageName: String? {
@@ -1673,7 +1682,7 @@ private struct DraftPageThumbnail: View {
                     paperImageName: paperStyle.backgroundImageName,
                     fitsPaperImageToWidth: false,
                     expandsFittedPaperToScreen: false,
-                    showsPaperDecorations: paperStyle.showsPaperDecorations,
+                    illustratedPaperConfiguration: paperStyle.illustratedPaperConfiguration,
                     showsPaperWash: false,
                     showsRuledLines: paperStyle.showsRuledLines,
                     showsNotebookChrome: paperStyle.showsNotebookChrome,
@@ -1911,6 +1920,7 @@ struct CreateEntryView: View {
     @State private var addedJournalTitle: String?
     @State private var sampleAuthorJournals: [PrototypeChapter] = []
     @State private var isShowingAddToJournalPage = false
+    @State private var isShowingJournalsPanel = false
     @State private var linkedJournalTitle: String?
     @State private var linkedJournalTitles: Set<String> = []
     @State private var storyLocation = ""
@@ -3394,7 +3404,7 @@ struct CreateEntryView: View {
                         paperImageName: selectedPaperStyleChoice.backgroundImageName,
                         fitsPaperImageToWidth: selectedPaperStyleChoice.fitsPaperImageToWidth,
                         drawsTiledPaperImage: true,
-                        showsPaperDecorations: selectedPaperStyleChoice.showsPaperDecorations,
+                        illustratedPaperConfiguration: selectedPaperStyleChoice.illustratedPaperConfiguration,
                         showsPaperWash: false,
                         showsRuledLines: selectedPaperStyleChoice.showsRuledLines,
                         showsNotebookChrome: selectedPaperStyleChoice.showsNotebookChrome,
@@ -4697,7 +4707,7 @@ struct CreateEntryView: View {
                         paperImageName: selectedPaperStyleChoice.backgroundImageName,
                         fitsPaperImageToWidth: selectedPaperStyleChoice.fitsPaperImageToWidth,
                         drawsTiledPaperImage: true,
-                        showsPaperDecorations: selectedPaperStyleChoice.showsPaperDecorations,
+                        illustratedPaperConfiguration: selectedPaperStyleChoice.illustratedPaperConfiguration,
                         showsPaperWash: false,
                         showsRuledLines: selectedPaperStyleChoice.showsRuledLines,
                         showsNotebookChrome: selectedPaperStyleChoice.showsNotebookChrome,
@@ -4769,6 +4779,7 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: hasStoryboardPhotos)
             .animation(.snappy(duration: 0.22), value: isPhotosPanelVisible)
             .animation(.snappy(duration: 0.22), value: isShowingCustomizeSheet)
+            .animation(.snappy(duration: 0.22), value: isShowingJournalsPanel)
             .animation(.snappy(duration: 0.22), value: isShowingJournalPromptsSheet)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -5174,6 +5185,7 @@ struct CreateEntryView: View {
             && !isPhotosPanelVisible
             && !isShowingCustomizeSheet
             && !isShowingJournalPromptsSheet
+            && !isShowingJournalsPanel
     }
 
     private var speechMicBottomPadding: CGFloat {
@@ -5222,6 +5234,11 @@ struct CreateEntryView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 10)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if isShowingJournalsPanel {
+                journalsOptionsPanel
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             } else if isShowingJournalPromptsSheet {
                 promptsOptionsPanel
                     .padding(.horizontal, 16)
@@ -5229,7 +5246,7 @@ struct CreateEntryView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if !isPhotosPanelVisible {
+            if !isPhotosPanelVisible && !isShowingCustomizeSheet && !isShowingJournalsPanel && !isShowingJournalPromptsSheet {
                 entryReferencesShelf
                     .padding(.horizontal, 18)
                     .padding(.bottom, 8)
@@ -5538,9 +5555,11 @@ struct CreateEntryView: View {
             floatingMenuActionButton(
                 title: selectedJournalShelfTitles.count == 1 ? "Journal" : "Journals",
                 systemName: selectedJournalShelfTitles.isEmpty ? "book.closed" : "book.closed.fill",
-                foregroundColor: selectedJournalShelfTitles.isEmpty ? Color.storyInk.opacity(0.82) : Color.storyPurple,
+                foregroundColor: isShowingJournalsPanel || !selectedJournalShelfTitles.isEmpty ? Color.storyPurple : Color.storyInk.opacity(0.82),
                 badgeCount: selectedJournalShelfTitles.count > 1 ? selectedJournalShelfTitles.count : nil,
-                accessibilityLabel: selectedJournalShelfTitles.isEmpty ? "Add to journal" : "\(journalShelfSummary), change journals"
+                accessibilityLabel: isShowingJournalsPanel
+                    ? "Close journals panel"
+                    : (selectedJournalShelfTitles.isEmpty ? "Add to journal" : "\(journalShelfSummary), change journals")
             ) {
                 openJournalsFromShelf()
             }
@@ -6085,6 +6104,25 @@ struct CreateEntryView: View {
         .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
     }
 
+    private var journalsOptionsPanel: some View {
+        AddEntryToJournalPage(
+            selectedJournalTitle: $selectedCustomJournalTitle,
+            selectedJournalTitles: $selectedCustomJournalTitles,
+            contentMode: contentMode,
+            onSelect: addEditedEntryToJournal,
+            onSaveSelection: saveEditedEntryJournalSelection,
+            onClose: closeJournalsPanel,
+            showsNavigationChrome: false
+        )
+        .frame(maxHeight: journalsPanelMaxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
+
     private var promptsOptionsPanel: some View {
         JournalEntryPromptsSheet(
             onSelect: { prompt in
@@ -6103,6 +6141,10 @@ struct CreateEntryView: View {
     }
 
     private var customizePanelMaxHeight: CGFloat {
+        min(UIScreen.main.bounds.height * 0.62, 560)
+    }
+
+    private var journalsPanelMaxHeight: CGFloat {
         min(UIScreen.main.bounds.height * 0.62, 560)
     }
 
@@ -6258,6 +6300,7 @@ struct CreateEntryView: View {
         withAnimation(.snappy(duration: 0.2)) {
             isShowingReferencePhotosSheet = true
             isShowingCustomizeSheet = false
+            isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
         }
@@ -6269,18 +6312,21 @@ struct CreateEntryView: View {
             isShowingEntryCharactersSheet = true
             isEntryCharacterAddChoicesVisible = entryCharacters.isEmpty
             isShowingCustomizeSheet = false
+            isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
         }
     }
 
     private func openJournalsFromShelf() {
+        dismissKeyboard()
+        prepareJournalSelection()
         withAnimation(.snappy(duration: 0.2)) {
+            isShowingJournalsPanel.toggle()
             isShowingCustomizeSheet = false
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
         }
-        openAddToJournalPage()
     }
 
     private func presentCameraFromReferencePhotosSheet() {
@@ -6316,6 +6362,7 @@ struct CreateEntryView: View {
         withAnimation(.snappy(duration: 0.2)) {
             isShowingJournalPromptsSheet.toggle()
             isShowingCustomizeSheet = false
+            isShowingJournalsPanel = false
             isPhotosPanelVisible = false
         }
     }
@@ -6963,12 +7010,19 @@ struct CreateEntryView: View {
                 isShowingCustomizeSheet = true
             }
             isShowingJournalPromptsSheet = false
+            isShowingJournalsPanel = false
             isPhotosPanelVisible = false
         }
     }
 
     private func openAddToJournalPage() {
         dismissKeyboard()
+        prepareJournalSelection()
+        isShowingJournalsPanel = false
+        isShowingAddToJournalPage = true
+    }
+
+    private func prepareJournalSelection() {
         var journalTitles = linkedJournalTitles.union(selectedCustomJournalTitles)
         if let currentEntry = currentJournalEntry() {
             journalTitles.formUnion(StoryEntryStore.journalTitles(containing: currentEntry))
@@ -6983,7 +7037,6 @@ struct CreateEntryView: View {
 
         selectedCustomJournalTitles = journalTitles
         selectedCustomJournalTitle = journalTitles.sorted().first
-        isShowingAddToJournalPage = true
     }
 
     private func openEntryDateSheet() {
@@ -7266,7 +7319,7 @@ struct CreateEntryView: View {
         if let linkedDraftID {
             EntryJournalLinkStore.save(journalTitle: journalTitle, journalEntryID: entry.id, for: linkedDraftID)
         }
-        isShowingAddToJournalPage = false
+        closeJournalsSelectionUI()
 
         withAnimation(.snappy(duration: 0.24)) {
             addedJournalTitle = journalTitle
@@ -7305,7 +7358,7 @@ struct CreateEntryView: View {
         selectedCustomJournalTitle = selectedCustomJournalTitles.sorted().first
         linkedJournalTitle = linkedJournalTitles.sorted().first
         addedJournalTitle = nil
-        isShowingAddToJournalPage = false
+        closeJournalsSelectionUI()
     }
 
     private func saveEditedEntryJournalSelection(_ journalTitles: Set<String>) {
@@ -7369,7 +7422,7 @@ struct CreateEntryView: View {
             self.addedJournalTitle = nil
         }
 
-        isShowingAddToJournalPage = false
+        closeJournalsSelectionUI()
     }
 
     private func addedToJournalToast(journalTitle: String) -> some View {
@@ -8779,6 +8832,7 @@ struct CreateEntryView: View {
         withAnimation(.snappy(duration: 0.2)) {
             isPhotosPanelVisible.toggle()
             isShowingCustomizeSheet = false
+            isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
         }
     }
@@ -8798,6 +8852,19 @@ struct CreateEntryView: View {
     private func closePromptsPanel() {
         withAnimation(.snappy(duration: 0.2)) {
             isShowingJournalPromptsSheet = false
+        }
+    }
+
+    private func closeJournalsPanel() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingJournalsPanel = false
+        }
+    }
+
+    private func closeJournalsSelectionUI() {
+        isShowingAddToJournalPage = false
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingJournalsPanel = false
         }
     }
 
@@ -11036,6 +11103,8 @@ struct AddEntryToJournalPage: View {
     let contentMode: JournaltopiaContentMode
     let onSelect: (String) -> Void
     let onSaveSelection: (Set<String>) -> Void
+    let onClose: (() -> Void)?
+    let showsNavigationChrome: Bool
 
     @EnvironmentObject private var signInGate: SignInGate
     @Environment(\.dismiss) private var dismiss
@@ -11049,13 +11118,17 @@ struct AddEntryToJournalPage: View {
         selectedJournalTitles: Binding<Set<String>>,
         contentMode: JournaltopiaContentMode = .user,
         onSelect: @escaping (String) -> Void,
-        onSaveSelection: @escaping (Set<String>) -> Void
+        onSaveSelection: @escaping (Set<String>) -> Void,
+        onClose: (() -> Void)? = nil,
+        showsNavigationChrome: Bool = true
     ) {
         _selectedJournalTitle = selectedJournalTitle
         _selectedJournalTitles = selectedJournalTitles
         self.contentMode = contentMode
         self.onSelect = onSelect
         self.onSaveSelection = onSaveSelection
+        self.onClose = onClose
+        self.showsNavigationChrome = showsNavigationChrome
     }
 
     private var authoringMode: CreateEntryAuthoringMode {
@@ -11073,73 +11146,12 @@ struct AddEntryToJournalPage: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(journals) { journal in
-                        Button {
-                            if pendingJournalTitles.contains(journal.title) {
-                                pendingJournalTitles.remove(journal.title)
-                            } else {
-                                pendingJournalTitles.insert(journal.title)
-                            }
-                        } label: {
-                            journalRow(journal)
-                        }
-                        .buttonStyle(.plain)
-
-                        if journal.id != journals.last?.id {
-                            Divider()
-                                .padding(.leading, 90)
-                        }
-                    }
-                }
-                .padding(.top, 12)
-                .padding(.horizontal, 16)
+        Group {
+            if showsNavigationChrome {
+                sheetContent
+            } else {
+                panelContent
             }
-        }
-        .background(Color.homePageBackground)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(Color.storyPurple)
-            }
-            .hideSharedBackgroundIfAvailable()
-
-            ToolbarItem(placement: .principal) {
-                Text("Add to Journal")
-                    .font(.system(size: 18, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
-            }
-
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Save") {
-                    onSaveSelection(pendingJournalTitles)
-                    selectedJournalTitles = pendingJournalTitles
-                    selectedJournalTitle = pendingJournalTitles.sorted().first
-                    dismiss()
-                }
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(canUseDoneButton ? Color.storyPurple : Color.storyGray.opacity(0.42))
-                .disabled(!canUseDoneButton)
-            }
-            .hideSharedBackgroundIfAvailable()
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            createNewJournalButton
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
-                .background(Color.homePageBackground)
-                .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(Color.homeBorder.opacity(0.7))
-                        .frame(height: 0.5)
-                }
         }
         .alert("Create New Journal", isPresented: $isCreateJournalAlertPresented) {
             TextField("Journal name", text: $newJournalName)
@@ -11165,8 +11177,154 @@ struct AddEntryToJournalPage: View {
         }
     }
 
+    private var sheetContent: some View {
+        VStack(spacing: 0) {
+            journalList
+        }
+        .background(Color.homePageBackground)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") {
+                    closePage()
+                }
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.storyPurple)
+            }
+            .hideSharedBackgroundIfAvailable()
+
+            ToolbarItem(placement: .principal) {
+                Text("Add to Journal")
+                    .font(.system(size: 18, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Save") {
+                    saveSelection()
+                }
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(canUseDoneButton ? Color.storyPurple : Color.storyGray.opacity(0.42))
+                .disabled(!canUseDoneButton)
+            }
+            .hideSharedBackgroundIfAvailable()
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            createNewJournalButton
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+                .background(Color.homePageBackground)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Color.homeBorder.opacity(0.7))
+                        .frame(height: 0.5)
+                }
+        }
+    }
+
+    private var panelContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Spacer()
+
+                Button {
+                    closePage()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+                        .frame(width: 44, height: 44)
+                        .background(Color.homeInputGray.opacity(0.85), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close journals panel")
+            }
+            .overlay {
+                HStack(spacing: 7) {
+                    Image(systemName: "book.closed.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.storyPurple)
+
+                    Text("Journals")
+                        .font(.system(size: 19, weight: .bold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+
+            journalList
+
+            HStack(spacing: 12) {
+                createNewJournalButton
+
+                Button {
+                    saveSelection()
+                } label: {
+                    Text("Save")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(canUseDoneButton ? Color.white : Color.storyInk.opacity(0.38))
+                        .frame(width: 78, height: 40)
+                        .background(
+                            canUseDoneButton ? Color.storyPurple : Color.homeInputGray.opacity(0.85),
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canUseDoneButton)
+                .accessibilityLabel("Save journal selection")
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .padding(.bottom, 16)
+        }
+        .background(Color.white)
+    }
+
+    private var journalList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(journals) { journal in
+                    Button {
+                        if pendingJournalTitles.contains(journal.title) {
+                            pendingJournalTitles.remove(journal.title)
+                        } else {
+                            pendingJournalTitles.insert(journal.title)
+                        }
+                    } label: {
+                        journalRow(journal)
+                    }
+                    .buttonStyle(.plain)
+
+                    if journal.id != journals.last?.id {
+                        Divider()
+                            .padding(.leading, 90)
+                    }
+                }
+            }
+            .padding(.top, 12)
+            .padding(.horizontal, 16)
+        }
+    }
+
     private var canUseDoneButton: Bool {
         pendingJournalTitles != selectedJournalTitles
+    }
+
+    private func saveSelection() {
+        onSaveSelection(pendingJournalTitles)
+        selectedJournalTitles = pendingJournalTitles
+        selectedJournalTitle = pendingJournalTitles.sorted().first
+        closePage()
+    }
+
+    private func closePage() {
+        if let onClose {
+            onClose()
+        } else {
+            dismiss()
+        }
     }
 
     private func journalRow(_ journal: PrototypeChapter) -> some View {
@@ -11259,7 +11417,7 @@ struct AddEntryToJournalPage: View {
         pendingJournalTitles.insert(journal.title)
         newJournalName = ""
         onSelect(journal.title)
-        dismiss()
+        closePage()
     }
 
     private func createSampleJournalAndAddEntry() {
@@ -11276,7 +11434,7 @@ struct AddEntryToJournalPage: View {
                     pendingJournalTitles.insert(title)
                     newJournalName = ""
                     onSelect(title)
-                    dismiss()
+                    closePage()
                 }
             } catch {
                 await MainActor.run {
@@ -12086,7 +12244,7 @@ struct ExpandedEntryEditor: View {
     var paperColor: Color = .homePageBackground
     private var paperImageName: String?
     private var fitsPaperImageToWidth = false
-    private var showsPaperDecorations = false
+    private var illustratedPaperConfiguration: IllustratedPaperConfiguration?
     private var showsRuledLines = true
     private var showsNotebookChrome = true
     private var leadingContentPadding = NotebookMetrics.marginLeading
@@ -12128,7 +12286,7 @@ struct ExpandedEntryEditor: View {
         self.paperColor = paperColor
         self.paperImageName = paperStyle.backgroundImageName
         self.fitsPaperImageToWidth = paperStyle.fitsPaperImageToWidth
-        self.showsPaperDecorations = paperStyle.showsPaperDecorations
+        self.illustratedPaperConfiguration = paperStyle.illustratedPaperConfiguration
         self.showsRuledLines = paperStyle.showsRuledLines
         self.showsNotebookChrome = paperStyle.showsNotebookChrome
         self.leadingContentPadding = paperStyle.leadingContentPadding
@@ -12143,7 +12301,7 @@ struct ExpandedEntryEditor: View {
                         paperColor: paperColor,
                         paperImageName: paperImageName,
                         fitsPaperImageToWidth: fitsPaperImageToWidth,
-                        showsPaperDecorations: showsPaperDecorations,
+                        illustratedPaperConfiguration: illustratedPaperConfiguration,
                         showsPaperWash: false,
                         showsRuledLines: showsRuledLines,
                         showsNotebookChrome: showsNotebookChrome,
@@ -12287,41 +12445,101 @@ private struct WidthTiledPaperImage: View {
     }
 }
 
-private struct KawaiiGridPaperDecorations: View {
+struct IllustratedPaperConfiguration {
+    let decorations: [IllustratedPaperDecoration]
+
+    static let kawaiiGrid = IllustratedPaperConfiguration(
+        decorations: [
+            IllustratedPaperDecoration(
+                imageName: "cat",
+                widthRatio: 0.24,
+                xRatio: 0.14,
+                y: 150,
+                compactWidthRatio: 0.36,
+                compactXRatio: 0.18,
+                compactY: 4
+            ),
+            IllustratedPaperDecoration(
+                imageName: "planet",
+                widthRatio: 0.22,
+                xRatio: 0.88,
+                y: 430,
+                compactWidthRatio: 0.34,
+                compactXRatio: 0.83,
+                compactY: 4
+            ),
+            IllustratedPaperDecoration(
+                imageName: "tree",
+                widthRatio: 0.17,
+                xRatio: 0.10,
+                y: 520,
+                verticalAnchor: .bottom,
+                showsInCompactPreview: false
+            ),
+            IllustratedPaperDecoration(
+                imageName: "stars",
+                widthRatio: 0.16,
+                xRatio: 0.92,
+                y: 310,
+                verticalAnchor: .bottom,
+                showsInCompactPreview: false
+            ),
+            IllustratedPaperDecoration(
+                imageName: "ipod",
+                widthRatio: 0.30,
+                xRatio: 0.85,
+                y: 80,
+                verticalAnchor: .bottom,
+                showsInCompactPreview: false
+            )
+        ]
+    )
+}
+
+struct IllustratedPaperDecoration: Identifiable {
+    enum VerticalAnchor {
+        case top
+        case bottom
+    }
+
+    let id = UUID()
+    let imageName: String
+    let widthRatio: CGFloat
+    let xRatio: CGFloat
+    let y: CGFloat
+    var verticalAnchor: VerticalAnchor = .top
+    var rotationDegrees: Double = 0
+    var compactWidthRatio: CGFloat?
+    var compactXRatio: CGFloat?
+    var compactY: CGFloat?
+    var showsInCompactPreview = true
+
+    func resolvedWidthRatio(isCompactPreview: Bool) -> CGFloat {
+        isCompactPreview ? compactWidthRatio ?? widthRatio : widthRatio
+    }
+
+    func resolvedXRatio(isCompactPreview: Bool) -> CGFloat {
+        isCompactPreview ? compactXRatio ?? xRatio : xRatio
+    }
+
+    func resolvedY(isCompactPreview: Bool) -> CGFloat {
+        isCompactPreview ? compactY ?? y : y
+    }
+}
+
+private struct IllustratedPaperDecorations: View {
+    let configuration: IllustratedPaperConfiguration
     let pageSize: CGSize
-    var showsBottomDecorations = true
+    var isCompactPreview = false
 
     var body: some View {
         let decorationHeight = pageSize.height
 
         ZStack {
-            doodle("cat", widthRatio: showsBottomDecorations ? 0.24 : 0.36)
-                .padding(.leading, showsBottomDecorations ? 8 : 4)
-                .padding(.top, showsBottomDecorations ? 150 : 4)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            doodle("planet", widthRatio: showsBottomDecorations ? 0.22 : 0.34)
-                .padding(.trailing, showsBottomDecorations ? 8 : 4)
-                .padding(.top, showsBottomDecorations ? 430 : 4)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-
-            if showsBottomDecorations {
-                HStack(alignment: .bottom, spacing: 2) {
-                    doodle("tree", widthRatio: 0.17)
+            ForEach(configuration.decorations) { decoration in
+                if !isCompactPreview || decoration.showsInCompactPreview {
+                    doodle(decoration)
                 }
-                .padding(.leading, 10)
-                .padding(.bottom, 520)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-
-                doodle("stars", widthRatio: 0.16)
-                    .padding(.trailing, 12)
-                    .padding(.bottom, 310)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-
-                doodle("ipod", widthRatio: 0.30)
-                    .padding(.trailing, 12)
-                    .padding(.bottom, 80)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
         }
         .frame(width: pageSize.width, height: decorationHeight)
@@ -12329,12 +12547,26 @@ private struct KawaiiGridPaperDecorations: View {
         .allowsHitTesting(false)
     }
 
-    private func doodle(_ imageName: String, widthRatio: CGFloat) -> some View {
-        Image(imageName)
+    private func doodle(_ decoration: IllustratedPaperDecoration) -> some View {
+        let width = pageSize.width * decoration.resolvedWidthRatio(isCompactPreview: isCompactPreview)
+        let x = pageSize.width * decoration.resolvedXRatio(isCompactPreview: isCompactPreview)
+        let yOffset = decoration.resolvedY(isCompactPreview: isCompactPreview)
+        let y: CGFloat = {
+            switch decoration.verticalAnchor {
+            case .top:
+                return yOffset + width / 2
+            case .bottom:
+                return pageSize.height - yOffset - width / 2
+            }
+        }()
+
+        return Image(decoration.imageName)
             .resizable()
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
-            .frame(width: pageSize.width * widthRatio)
+            .frame(width: width)
+            .rotationEffect(.degrees(decoration.rotationDegrees))
+            .position(x: x, y: y)
     }
 }
 
@@ -12344,7 +12576,7 @@ struct NotebookPaperBackground: View {
     var fitsPaperImageToWidth = false
     var drawsTiledPaperImage = true
     var expandsFittedPaperToScreen = true
-    var showsPaperDecorations = false
+    var illustratedPaperConfiguration: IllustratedPaperConfiguration?
     var showsPaperWash = true
     var showsRuledLines = true
     var showsNotebookChrome = true
@@ -12386,10 +12618,11 @@ struct NotebookPaperBackground: View {
                     paperColor
                 }
 
-                if showsPaperDecorations {
-                    KawaiiGridPaperDecorations(
+                if let illustratedPaperConfiguration {
+                    IllustratedPaperDecorations(
+                        configuration: illustratedPaperConfiguration,
                         pageSize: paperSize,
-                        showsBottomDecorations: proxy.size.height > 220
+                        isCompactPreview: proxy.size.height <= 220
                     )
                     .offset(x: paperXOffset)
                 }
@@ -12833,10 +13066,11 @@ private struct CreatePaperPreview: View {
                             .clipped()
                     }
 
-                    if style.showsPaperDecorations {
-                        KawaiiGridPaperDecorations(
+                    if let illustratedPaperConfiguration = style.illustratedPaperConfiguration {
+                        IllustratedPaperDecorations(
+                            configuration: illustratedPaperConfiguration,
                             pageSize: proxy.size,
-                            showsBottomDecorations: false
+                            isCompactPreview: true
                         )
                     }
                 }
