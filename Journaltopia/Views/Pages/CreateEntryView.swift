@@ -1342,6 +1342,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case cottonPaper
     case recycledPaper
     case kawaiiGridPaper
+    case pressedFlowers
 
     static let defaultChoice: CreatePaperStyleChoice = .collegeRuled
 
@@ -1361,6 +1362,8 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Recycled Paper"
         case .kawaiiGridPaper:
             "Kawaii Grid"
+        case .pressedFlowers:
+            "Pressed Flowers"
         }
     }
 
@@ -1401,6 +1404,8 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .kawaiiGridPaper:
             .kawaiiGrid
+        case .pressedFlowers:
+            .pressedFlowers
         case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper:
             nil
         }
@@ -1416,6 +1421,8 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "recycled-paper"
         case .kawaiiGridPaper:
             "Kawaii Grid Paper Doodle Stationery"
+        case .pressedFlowers:
+            "paper"
         case .collegeRuled, .blank:
             nil
         }
@@ -1425,7 +1432,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .collegeRuled:
             NotebookMetrics.marginLeading
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper:
+        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers:
             18
         }
     }
@@ -1434,7 +1441,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .collegeRuled:
             NotebookMetrics.textLeadingInset
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper:
+        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers:
             0
         }
     }
@@ -11279,7 +11286,7 @@ struct AddEntryToJournalPage: View {
             .padding(.top, 10)
             .padding(.bottom, 16)
         }
-        .background(Color.white)
+        .background(Color.white.opacity(0.82))
     }
 
     private var journalList: some View {
@@ -12454,7 +12461,7 @@ struct IllustratedPaperConfiguration {
                 imageName: "cat",
                 widthRatio: 0.24,
                 xRatio: 0.14,
-                y: 150,
+                y: 75,
                 compactWidthRatio: 0.36,
                 compactXRatio: 0.18,
                 compactY: 4
@@ -12463,7 +12470,7 @@ struct IllustratedPaperConfiguration {
                 imageName: "planet",
                 widthRatio: 0.22,
                 xRatio: 0.88,
-                y: 430,
+                y: 475,
                 compactWidthRatio: 0.34,
                 compactXRatio: 0.83,
                 compactY: 4
@@ -12491,6 +12498,30 @@ struct IllustratedPaperConfiguration {
                 y: 80,
                 verticalAnchor: .bottom,
                 showsInCompactPreview: false
+            )
+        ]
+    )
+
+    static let pressedFlowers = IllustratedPaperConfiguration(
+        decorations: [
+            IllustratedPaperDecoration(
+                imageName: "tape",
+                widthRatio: 0.18,
+                xRatio: 0.08,
+                y: 75,
+                rotationDegrees: -12,
+                compactWidthRatio: 0.18,
+                compactXRatio: 0.12,
+                compactY: 2
+            ),
+            IllustratedPaperDecoration(
+                imageName: "flowers",
+                widthRatio: 0.24,
+                xRatio: 0.88,
+                y: 475,
+                compactWidthRatio: 0.34,
+                compactXRatio: 0.80,
+                compactY: 0
             )
         ]
     )
@@ -12789,7 +12820,7 @@ private struct CreateFormattingSheet: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 18)
-        .background(Color.white)
+        .background(Color.white.opacity(0.82))
     }
 
     private var fontStyleContent: some View {
@@ -13057,7 +13088,7 @@ private struct CreatePaperPreview: View {
                             .frame(width: proxy.size.width, height: proxy.size.height)
                             .clipped()
                     }
-                case .kawaiiGridPaper:
+                case .kawaiiGridPaper, .pressedFlowers:
                     if let backgroundImageName = style.backgroundImageName {
                         Image(backgroundImageName)
                             .resizable()
