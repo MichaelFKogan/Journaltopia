@@ -8417,7 +8417,7 @@ struct EntriesView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    entriesPageChrome
+                    entriesScrollingChrome
 
                     entriesPageContent
                 }
@@ -8425,12 +8425,18 @@ struct EntriesView: View {
                 .frame(width: geometry.size.width, alignment: .leading)
             }
             .background(Color.clear)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                entriesPinnedHeader
+            }
         }
     }
 
     private var entriesListContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            entriesPageChrome
+            header
+                .padding(.horizontal, 16)
+
+            entriesScrollingChrome
 
             List {
                 Section {
@@ -8454,11 +8460,29 @@ struct EntriesView: View {
         }
     }
 
-    private var entriesPageChrome: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-                .padding(.horizontal, 16)
+    /// The title row, held above the scrolling content rather than riding along inside it.
+    ///
+    /// Scrolled a long way down the grid, an `Edit` button that had scrolled off the top left no
+    /// way to start selecting entries — and, once selecting, no way to press `Done` and get back
+    /// out again without scrolling all the way back up. The list layout already kept this row
+    /// outside its `List`; this gives the grid the same guarantee.
+    ///
+    /// The material and hairline are only worth it where content actually passes underneath, so the
+    /// list layout renders ``header`` plainly instead of reusing this.
+    private var entriesPinnedHeader: some View {
+        header
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+            .background(.ultraThinMaterial)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.homeBorder)
+                    .frame(height: 1)
+            }
+    }
 
+    private var entriesScrollingChrome: some View {
+        VStack(alignment: .leading, spacing: 10) {
             tabSwitcher
                 .padding(.horizontal, 16)
 
@@ -8687,6 +8711,22 @@ struct EntriesView: View {
     /// signed-in accounts (and sample authors editing the pack).
     private var canEditEntries: Bool {
         contentMode.canPersistUserContent || contentMode.isSampleAuthoring
+    }
+
+    /// Matches the `isSelecting` condition the user-entry cards are built with, so long-press only
+    /// offers `Select` where tapping a card would actually toggle a checkmark.
+    private var canBeginSelectingUserEntries: Bool {
+        canEditEntries && !showsSampleEntries
+    }
+
+    /// The second way into selection mode, for a reader whose attention is on a card rather than on
+    /// the header. Selecting the pressed entry as it goes, because arriving in selection mode with
+    /// nothing selected would throw away the choice the long-press just made.
+    private func beginSelecting(_ entryID: UUID) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            editMode = .active
+            selectedEntryIDs.insert(entryID)
+        }
     }
 
     private var tabSwitcher: some View {
@@ -9312,7 +9352,10 @@ struct EntriesView: View {
                     },
                     onSelect: {
                         toggleEntrySelection(item.id)
-                    }
+                    },
+                    onBeginSelection: canBeginSelectingUserEntries
+                        ? { beginSelecting(item.id) }
+                        : nil
                 )
                 .onAppear {
                     loadMoreCloudEntriesIfNeeded(currentIndex: index, totalCount: completedEntryItems.count)
@@ -9369,7 +9412,10 @@ struct EntriesView: View {
                 },
                 onSelect: {
                     toggleEntrySelection(entry.id)
-                }
+                },
+                onBeginSelection: canEditEntries
+                    ? { beginSelecting(entry.id) }
+                    : nil
             )
         } else {
             EntryGridPreviewCard(
@@ -9400,7 +9446,10 @@ struct EntriesView: View {
                 },
                 onSelect: {
                     toggleEntrySelection(entry.id)
-                }
+                },
+                onBeginSelection: canEditEntries
+                    ? { beginSelecting(entry.id) }
+                    : nil
             )
         }
     }
@@ -9441,7 +9490,10 @@ struct EntriesView: View {
                 },
                 onSelect: {
                     toggleEntrySelection(item.id)
-                }
+                },
+                onBeginSelection: canBeginSelectingUserEntries
+                    ? { beginSelecting(item.id) }
+                    : nil
             )
         } else {
             EntryGridPreviewCard(
@@ -9480,7 +9532,10 @@ struct EntriesView: View {
                 },
                 onSelect: {
                     toggleEntrySelection(item.id)
-                }
+                },
+                onBeginSelection: canBeginSelectingUserEntries
+                    ? { beginSelecting(item.id) }
+                    : nil
             )
         }
     }
@@ -12406,6 +12461,8 @@ private struct EntryGridPreviewCard: View {
     var deleteActionTitle: String = "Delete"
     var onRename: (() -> Void)?
     var onSelect: (() -> Void)?
+    /// Enters selection mode on this card, for the long-press route into it.
+    var onBeginSelection: (() -> Void)?
 
     init(
         entry: CreateEntryDraft,
@@ -12427,7 +12484,8 @@ private struct EntryGridPreviewCard: View {
         onDelete: @escaping () -> Void,
         deleteActionTitle: String = "Delete",
         onRename: (() -> Void)? = nil,
-        onSelect: (() -> Void)? = nil
+        onSelect: (() -> Void)? = nil,
+        onBeginSelection: (() -> Void)? = nil
     ) {
         self.entry = entry
         self.sortOption = sortOption
@@ -12449,6 +12507,7 @@ private struct EntryGridPreviewCard: View {
         self.deleteActionTitle = deleteActionTitle
         self.onRename = onRename
         self.onSelect = onSelect
+        self.onBeginSelection = onBeginSelection
     }
 
     var body: some View {
@@ -12531,6 +12590,14 @@ private struct EntryGridPreviewCard: View {
         }
         .contextMenu {
             if showsActions {
+                if !isSelecting, let onBeginSelection {
+                    Button {
+                        onBeginSelection()
+                    } label: {
+                        Label("Select", systemImage: "checkmark.circle")
+                    }
+                }
+
                 if let onRename {
                     Button {
                         onRename()
@@ -12604,6 +12671,8 @@ private struct CompletedEntryGridCard: View {
     let deleteActionTitle: String
     let onRename: (() -> Void)?
     let onSelect: (() -> Void)?
+    /// Enters selection mode on this card, for the long-press route into it.
+    let onBeginSelection: (() -> Void)?
     let accessibilityLabel: String
 
     init(
@@ -12626,7 +12695,8 @@ private struct CompletedEntryGridCard: View {
         onDelete: (() -> Void)? = nil,
         deleteActionTitle: String = "Delete",
         onRename: (() -> Void)? = nil,
-        onSelect: (() -> Void)? = nil
+        onSelect: (() -> Void)? = nil,
+        onBeginSelection: (() -> Void)? = nil
     ) {
         self.entry = entry
         self.title = title
@@ -12648,6 +12718,7 @@ private struct CompletedEntryGridCard: View {
         self.deleteActionTitle = deleteActionTitle
         self.onRename = onRename
         self.onSelect = onSelect
+        self.onBeginSelection = onBeginSelection
         accessibilityLabel = "Completed \(title)"
     }
 
@@ -12743,6 +12814,14 @@ private struct CompletedEntryGridCard: View {
             }
         }
         .contextMenu {
+            if !isSelecting, let onBeginSelection {
+                Button {
+                    onBeginSelection()
+                } label: {
+                    Label("Select", systemImage: "checkmark.circle")
+                }
+            }
+
             if let onRename {
                 Button {
                     onRename()

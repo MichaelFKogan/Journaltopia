@@ -3414,7 +3414,8 @@ struct CreateEntryView: View {
                 createToolbarItems(
                     title: editorToolbarTitle,
                     showsCloseButton: true,
-                    showsEditorDateTitle: true
+                    showsEditorDateTitle: true,
+                    showsOverflowMenu: true
                 )
             }
         }
@@ -3595,7 +3596,8 @@ struct CreateEntryView: View {
         showsCloseButton: Bool,
         showsEntryDateButton: Bool = false,
         showsEditorDateTitle: Bool = false,
-        showsJournalDestinationButton: Bool = false
+        showsJournalDestinationButton: Bool = false,
+        showsOverflowMenu: Bool = false
     ) -> some ToolbarContent {
         if showsCloseButton {
             ToolbarItem(placement: .topBarLeading) {
@@ -3614,7 +3616,10 @@ struct CreateEntryView: View {
                         .frame(width: 48, height: 48)
                         .contentShape(Rectangle())
                 }
-                .frame(width: showsTrailingToolbarAction ? 94 : 48, alignment: .leading)
+                .frame(
+                    width: trailingToolbarActionWidth(showsOverflowMenu: showsOverflowMenu),
+                    alignment: .leading
+                )
                 .buttonStyle(.plain)
                 .accessibilityLabel(presentation.closeButtonAccessibilityLabel)
                 .disabled(isBlockingSaveInProgress)
@@ -3658,12 +3663,84 @@ struct CreateEntryView: View {
             }
         }
 
-        if showsToolbarSaveButton {
+        if showsToolbarSaveButton || showsToolbarOverflowMenu(showsOverflowMenu) {
             ToolbarItem(placement: .topBarTrailing) {
-                toolbarSaveActionButton
+                // One toolbar item rather than two, so the overflow menu keeps its place beside
+                // Save instead of being reordered or dropped when the bar runs short of room.
+                HStack(spacing: 0) {
+                    if showsToolbarOverflowMenu(showsOverflowMenu) {
+                        toolbarEntryOverflowMenu
+                    }
+
+                    if showsToolbarSaveButton {
+                        toolbarSaveActionButton
+                    }
+                }
             }
             .hideSharedBackgroundIfAvailable()
         }
+    }
+
+    /// The editor had no way to delete the entry you were looking at — the only Delete lived at the
+    /// bottom of the Entry Details step, which you had to know to go looking for. A menu rather than
+    /// a bare trash button, so the destructive action takes a deliberate second tap and there is
+    /// somewhere to put the next entry-level action.
+    private var toolbarEntryOverflowMenu: some View {
+        Menu {
+            Button(role: .destructive) {
+                dismissKeyboard()
+                isConfirmingEntryDeletion = true
+            } label: {
+                Label(isDeletingEntry ? "Deleting Entry" : "Delete Entry", systemImage: "trash")
+            }
+            .disabled(isDeletingEntry || isBlockingSaveInProgress)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.storyInk.opacity(0.72))
+                .frame(width: 36, height: 38)
+                .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
+                )
+                .frame(width: toolbarOverflowMenuWidth, height: 48)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("More entry actions")
+    }
+
+    private func showsToolbarOverflowMenu(_ showsOverflowMenu: Bool) -> Bool {
+        showsOverflowMenu && canDeleteCurrentEntry
+    }
+
+    private var toolbarOverflowMenuWidth: CGFloat { 44 }
+    private var toolbarSaveActionWidth: CGFloat { 94 }
+    private var toolbarCloseButtonWidth: CGFloat { 48 }
+
+    /// What the leading close button reserves so the principal title stays centred.
+    ///
+    /// Capped at the width of Save alone: matching the trailing side exactly is what centres the
+    /// title, but once the overflow menu joins Save there is no longer enough bar left to pay for
+    /// it — reserving the full 138pt on both sides squeezed the middle so hard that SwiftUI dropped
+    /// the date entirely rather than shrink it. A title a little left of centre beats no title, so
+    /// the leading side stops growing and the menu is allowed to make the bar asymmetric.
+    private func trailingToolbarActionWidth(showsOverflowMenu: Bool) -> CGFloat {
+        var width: CGFloat = 0
+
+        if showsToolbarOverflowMenu(showsOverflowMenu) {
+            width += toolbarOverflowMenuWidth
+        }
+
+        if showsToolbarSaveButton {
+            width += toolbarSaveActionWidth
+        }
+
+        if showsToolbarOverflowMenu(showsOverflowMenu) {
+            return toolbarCloseButtonWidth
+        }
+
+        return max(width, toolbarCloseButtonWidth)
     }
 
     private var editorToolbarDateTitle: some View {
@@ -3722,17 +3799,13 @@ struct CreateEntryView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
             )
-            .frame(width: 94, height: 48)
+            .frame(width: toolbarSaveActionWidth, height: 48)
             .contentShape(Rectangle())
             .opacity(canUseToolbarSaveButton || isToolbarSaveInProgress ? 1 : 0.52)
             .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
         }
         .buttonStyle(.plain)
         .disabled(!canUseToolbarSaveButton || isToolbarSaveInProgress)
-    }
-
-    private var showsTrailingToolbarAction: Bool {
-        showsToolbarSaveButton
     }
 
     private var showsToolbarSaveButton: Bool {
