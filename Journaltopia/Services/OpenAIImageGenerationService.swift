@@ -112,10 +112,18 @@ struct CompanionChatService {
         }
 
         do {
-            return try JSONDecoder().decode(ChatResponse.self, from: data).reply
+            return Self.plainTextReply(try JSONDecoder().decode(ChatResponse.self, from: data).reply)
         } catch {
             throw CompanionChatError.invalidResponse
         }
+    }
+
+    private static func plainTextReply(_ reply: String) -> String {
+        reply
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "__", with: "")
+            .replacingOccurrences(of: "*", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func chatRequest(_ payload: ChatRequest, accessToken: String) throws -> URLRequest {

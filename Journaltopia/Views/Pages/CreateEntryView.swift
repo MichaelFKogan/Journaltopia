@@ -1968,6 +1968,13 @@ private enum CompanionChatScrollAnchor {
     static let bottom = "companion-chat-bottom"
 }
 
+private let companionChatStarterPrompts = [
+    "What should I write about?",
+    "Ask me a question",
+    "Help me reflect",
+    "What am I feeling?"
+]
+
 struct CreateEntryView: View {
     private static let defaultArtStyle = "Anime"
     private let artStyles = ["Anime", "Graphic Novel", "Pixel Art", "Manga", "Pop Art"]
@@ -5023,6 +5030,10 @@ struct CreateEntryView: View {
                     VStack(spacing: 12) {
                         companionEntryAccessPill
 
+                        if showsCompanionStarterPrompts {
+                            companionStarterPrompts
+                        }
+
                         ForEach(companionChatMessages) { message in
                             companionMessageBubble(message)
                         }
@@ -5071,25 +5082,23 @@ struct CreateEntryView: View {
                 .fill(Color(red: 0.30, green: 0.85, blue: 0.39))
                 .frame(width: 7, height: 7)
 
-            Text(CreateEntryLayout.companionName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.storyInk)
+            HStack(spacing: 4) {
+                Text(CreateEntryLayout.companionName)
+                    .font(.system(size: 13, weight: .semibold))
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundStyle(Color.storyInk)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(CreateEntryLayout.companionName), character menu")
 
             Spacer()
 
-            Button {
-                isCompanionMutedByWriter.toggle()
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(Color.storyInk.opacity(0.82))
-                    .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("More \(CreateEntryLayout.companionName) options")
+            companionChatOptionsMenu
 
             Button {
-                closeCompanionChat()
+                hideCompanionChat()
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 13, weight: .bold))
@@ -5107,6 +5116,93 @@ struct CreateEntryView: View {
             Rectangle()
                 .fill(Color.storyInk.opacity(0.08))
                 .frame(height: 1)
+        }
+    }
+
+    private var companionChatOptionsMenu: some View {
+        Menu {
+            Button {
+                toggleCompanionVideoVisibility()
+            } label: {
+                Label(
+                    isCompanionVisible ? "Hide Video" : "Show Video",
+                    systemImage: isCompanionVisible ? "video.slash" : "video"
+                )
+            }
+
+            Button {
+                resetCompanionWindow()
+            } label: {
+                Label("Reset Video Window", systemImage: "arrow.counterclockwise")
+            }
+            .disabled(!isCompanionVisible)
+
+            Button {
+                isCompanionMutedByWriter.toggle()
+            } label: {
+                Label(
+                    isCompanionMutedByWriter ? "Unmute Video" : "Mute Video",
+                    systemImage: isCompanionMutedByWriter ? "speaker.wave.2" : "speaker.slash"
+                )
+            }
+
+            Divider()
+
+            Button {
+                hideCompanionChat()
+            } label: {
+                Label("Hide Chat", systemImage: "message.slash")
+            }
+
+            Button {
+                closeCompanionChat()
+            } label: {
+                Label("Close Chat and Video", systemImage: "xmark.circle")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.storyInk.opacity(0.82))
+                .frame(width: 30, height: 30)
+        }
+        .accessibilityLabel("More \(CreateEntryLayout.companionName) options")
+    }
+
+    private var companionVideoOptionsMenu: some View {
+        Menu {
+            Button {
+                toggleCompanionChatVisibility()
+            } label: {
+                Label(
+                    isCompanionChatVisible ? "Hide Chat" : "Show Chat",
+                    systemImage: isCompanionChatVisible ? "message.slash" : "message"
+                )
+            }
+
+            Button {
+                resetCompanionWindow()
+            } label: {
+                Label("Reset Video Window", systemImage: "arrow.counterclockwise")
+            }
+
+            Button {
+                isCompanionMutedByWriter.toggle()
+            } label: {
+                Label(
+                    isCompanionMutedByWriter ? "Unmute Video" : "Mute Video",
+                    systemImage: isCompanionMutedByWriter ? "speaker.wave.2" : "speaker.slash"
+                )
+            }
+
+            Divider()
+
+            Button {
+                hideCompanion()
+            } label: {
+                Label("Hide Video", systemImage: "video.slash")
+            }
+        } label: {
+            companionWindowGlyph("ellipsis")
         }
     }
 
@@ -5134,6 +5230,43 @@ struct CreateEntryView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var showsCompanionStarterPrompts: Bool {
+        !isCompanionReplyPending
+            && companionDraftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !companionChatMessages.contains(where: \.isWriter)
+    }
+
+    private var companionStarterPrompts: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 8),
+                GridItem(.flexible(), spacing: 8)
+            ],
+            spacing: 8
+        ) {
+            ForEach(companionChatStarterPrompts, id: \.self) { prompt in
+                Button {
+                    sendCompanionMessage(prompt)
+                } label: {
+                    Text(prompt)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.storyPurple)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .padding(.horizontal, 8)
+                        .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.storyPurple.opacity(0.22), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(isCompanionReplyPending)
+            }
+        }
+    }
+
     private func companionMessageBubble(_ message: CompanionChatMessage) -> some View {
         HStack(alignment: .bottom) {
             if message.isWriter {
@@ -5158,7 +5291,7 @@ struct CreateEntryView: View {
                     .fill(message.isWriter ? Color.storyPurple : Color.white.opacity(0.88))
                     .shadow(color: Color.storyInk.opacity(message.isWriter ? 0.10 : 0.05), radius: 4, y: 2)
             )
-            .frame(maxWidth: 238, alignment: message.isWriter ? .trailing : .leading)
+            .frame(maxWidth: 312, alignment: message.isWriter ? .trailing : .leading)
 
             if !message.isWriter {
                 Spacer(minLength: 48)
@@ -5271,24 +5404,7 @@ struct CreateEntryView: View {
 
             Spacer(minLength: 4)
 
-            Menu {
-                Button {
-                    isCompanionMutedByWriter.toggle()
-                } label: {
-                    Label(
-                        isCompanionMutedByWriter ? "Unmute \(CreateEntryLayout.companionName)" : "Mute \(CreateEntryLayout.companionName)",
-                        systemImage: isCompanionMutedByWriter ? "speaker.wave.2" : "speaker.slash"
-                    )
-                }
-
-                Button {
-                    hideCompanion()
-                } label: {
-                    Label("Hide \(CreateEntryLayout.companionName)", systemImage: "eye.slash")
-                }
-            } label: {
-                companionWindowGlyph("ellipsis")
-            }
+            companionVideoOptionsMenu
 
             Button {
                 hideCompanion()
@@ -5400,6 +5516,34 @@ struct CreateEntryView: View {
         }
     }
 
+    private func toggleCompanionVideoVisibility() {
+        withAnimation(.snappy(duration: 0.24)) {
+            isCompanionVisible.toggle()
+        }
+    }
+
+    private func toggleCompanionChatVisibility() {
+        withAnimation(.snappy(duration: 0.24)) {
+            isCompanionChatVisible.toggle()
+            if isCompanionChatVisible {
+                isCompanionVisible = true
+            }
+        }
+    }
+
+    private func hideCompanionChat() {
+        withAnimation(.snappy(duration: 0.24)) {
+            isCompanionChatVisible = false
+        }
+    }
+
+    private func resetCompanionWindow() {
+        withAnimation(.snappy(duration: 0.24)) {
+            companionWindowOffset = .zero
+            companionWindowScale = 1
+        }
+    }
+
     private func closeCompanionChat() {
         withAnimation(.snappy(duration: 0.24)) {
             isCompanionChatVisible = false
@@ -5427,7 +5571,11 @@ struct CreateEntryView: View {
     }
 
     private func sendCompanionDraftMessage() {
-        let trimmedMessage = companionDraftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        sendCompanionMessage(companionDraftMessage)
+    }
+
+    private func sendCompanionMessage(_ message: String) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessage.isEmpty, !isCompanionReplyPending else {
             return
         }
@@ -6431,8 +6579,8 @@ struct CreateEntryView: View {
                 .frame(width: 78, height: 65)
 
                 shelfButtonCaption(
-                    title: CreateEntryLayout.companionName,
-                    summary: isCompanionChatVisible ? "Chatting" : "Chat"
+                    title: "Chat",
+                    summary: isCompanionChatVisible ? "Open" : nil
                 )
             }
             .frame(width: 82, height: 111, alignment: .bottom)
@@ -6695,7 +6843,7 @@ struct CreateEntryView: View {
                 .padding(.bottom, 18)
             }
         }
-        .background(Color.white.opacity(0.82))
+        .background(Color.white)
         .frame(maxHeight: customizePanelMaxHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -6744,7 +6892,7 @@ struct CreateEntryView: View {
                 .padding(.bottom, 18)
             }
         }
-        .background(Color.white.opacity(0.82))
+        .background(Color.white)
         .frame(maxHeight: customizePanelMaxHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
@@ -12105,7 +12253,7 @@ struct AddEntryToJournalPage: View {
             .padding(.top, 10)
             .padding(.bottom, 16)
         }
-        .background(Color.white.opacity(0.82))
+        .background(Color.white)
     }
 
     private var journalList: some View {
@@ -13661,7 +13809,7 @@ private struct CreateFormattingSheet: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 18)
-        .background(Color.white.opacity(0.82))
+        .background(Color.white)
     }
 
     private var fontStyleContent: some View {

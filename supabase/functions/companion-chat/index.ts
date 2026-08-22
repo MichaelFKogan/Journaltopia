@@ -150,6 +150,7 @@ function companionInstructions(characterName: string): string {
     "Do not claim to be a therapist or medical professional.",
     "If the writer may be in immediate danger, encourage them to contact local emergency services or a trusted person right away.",
     "Keep most replies to 2-4 short sentences unless the writer asks for more.",
+    "Use plain text only. Do not use Markdown, asterisks, bold, italics, bullets, numbered lists, headings, or code formatting.",
   ].join("\n");
 }
 
