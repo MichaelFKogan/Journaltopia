@@ -6412,6 +6412,7 @@ struct MyStoryView: View {
             coverImageName: coverSettings.imageName,
             remoteCover: coverSettings.remoteCover,
             kind: .storyboard,
+            isFavorite: false,
             entries: []
         )
     }
