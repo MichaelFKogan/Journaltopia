@@ -6425,16 +6425,8 @@ struct MyStoryView: View {
             .map(JournalStoryboardCoverCandidate.init(storyboard:))
     }
 
-    private var hasExplicitMyStoryCover: Bool {
-        coverSettings.storagePath != nil
-            || coverSettings.storyboardID != nil
-            || coverSettings.imageName != nil
-            || coverSettings.remoteCover != nil
-            || coverSettings.coverSource == JournalCoverSource.color.rawValue
-    }
-
     private var myStoryCoverColor: Color {
-        coverSettings.colorHex.flatMap(Color.init(hex:)) ?? Color.homeAccent
+        coverSettings.colorHex.flatMap(Color.init(hex:)) ?? .black
     }
 
     private var myStoryCoverImage: UIImage? {
@@ -6450,7 +6442,7 @@ struct MyStoryView: View {
             return storedCoverImage
         }
 
-        return hasExplicitMyStoryCover ? nil : generatedStoryboards.first?.image
+        return nil
     }
 
     private var myStoryFallbackCoverImageName: String? {
@@ -6458,9 +6450,7 @@ struct MyStoryView: View {
             return imageName
         }
 
-        return myStoryCoverImage == nil && coverSettings.remoteCover == nil && !hasExplicitMyStoryCover
-            ? "blank_storyboard"
-            : nil
+        return nil
     }
 
     private func storyboardCoverImage(for storyboardID: UUID?) -> UIImage? {
