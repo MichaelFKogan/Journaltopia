@@ -1936,9 +1936,9 @@ private struct DraftPageThumbnail: View {
 
 /// Layout constants for the create page chrome that sits outside the notebook paper itself.
 enum CreateEntryLayout {
-    /// The companion video call is parked for now. Flip this to `true` to bring back the floating
-    /// window and its "Call" button on the references shelf — everything else is still wired up.
-    static let isCompanionEnabled = false
+    /// Shows the floating companion video-call window and its "Call" button on the references shelf.
+    /// Flip this to `false` to park both without unwiring the rest of the companion.
+    static let isCompanionEnabled = true
 
     /// Bundled loop shown as the journaling companion.
     static let companionVideoName = "girl-1"
@@ -1953,6 +1953,19 @@ enum CreateEntryLayout {
 
     /// Closest the window may sit to the edges of the page.
     static let companionWindowMargin: CGFloat = 14
+    static let companionWindowMinimumScale: CGFloat = 0.72
+    static let companionWindowMaximumScale: CGFloat = 1.18
+}
+
+private struct CompanionChatMessage: Identifiable {
+    let id = UUID()
+    let text: String
+    let time: String
+    let isWriter: Bool
+}
+
+private enum CompanionChatScrollAnchor {
+    static let bottom = "companion-chat-bottom"
 }
 
 struct CreateEntryView: View {
@@ -2121,8 +2134,22 @@ struct CreateEntryView: View {
     /// Where the writer has dragged the companion window, relative to its top-trailing rest spot.
     @State private var companionWindowOffset: CGSize = .zero
     @GestureState private var companionWindowDrag: CGSize = .zero
-    @State private var isCompanionVisible = true
+    @State private var companionWindowScale: CGFloat = 1
+    @GestureState private var companionWindowPinchScale: CGFloat = 1
+    @State private var isCompanionVisible = false
+    @State private var isCompanionChatVisible = false
     @State private var isCompanionMutedByWriter = false
+    @State private var companionDraftMessage = ""
+    @State private var isCompanionReplyPending = false
+    @State private var companionChatErrorMessage: String?
+    @State private var companionChatScrollRequestID = 0
+    @State private var companionChatMessages: [CompanionChatMessage] = [
+        CompanionChatMessage(
+            text: "I can read this entry while we chat. What would you like to talk through?",
+            time: "9:41 PM",
+            isWriter: false
+        )
+    ]
     @State private var selectedKeyboardTextType: CreateKeyboardTextType = .body
     @State private var editorSelectionState = NotebookTextSelectionState()
     @State private var isKeyboardDismissInProgress = false
@@ -3368,6 +3395,7 @@ struct CreateEntryView: View {
                 createEntryContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(pageTapBackground)
+                    .overlay(companionChatOverlay)
                     .overlay(floatingCompanionWindow)
             }
         }
@@ -4938,6 +4966,7 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: isShowingCustomizeSheet)
             .animation(.snappy(duration: 0.22), value: isShowingJournalsPanel)
             .animation(.snappy(duration: 0.22), value: isShowingJournalPromptsSheet)
+            .animation(.snappy(duration: 0.24), value: isCompanionChatVisible)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -4949,16 +4978,256 @@ struct CreateEntryView: View {
         if CreateEntryLayout.isCompanionEnabled && isCompanionVisible {
             GeometryReader { proxy in
                 companionWindowCard
-                    .padding(CreateEntryLayout.companionWindowMargin)
+                    .padding(.horizontal, CreateEntryLayout.companionWindowMargin)
+                    .padding(.top, CreateEntryLayout.companionWindowMargin)
+                    .padding(.bottom, CreateEntryLayout.companionWindowMargin)
                     .offset(liveCompanionOffset(in: proxy.size))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .gesture(companionDragGesture(in: proxy.size))
+                    .simultaneousGesture(companionScaleGesture(in: proxy.size))
             }
             .transition(.scale(scale: 0.85).combined(with: .opacity))
             .task {
                 prepareCompanionAudioSession()
             }
         }
+    }
+
+    @ViewBuilder
+    private var companionChatOverlay: some View {
+        if CreateEntryLayout.isCompanionEnabled && isCompanionChatVisible {
+            GeometryReader { proxy in
+                companionChatPanel
+                    .frame(
+                        width: min(proxy.size.width - 24, 390),
+                        height: min(proxy.size.height * 0.78, 560)
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, companionChatTopPadding(for: proxy.size))
+                    .padding(.horizontal, 12)
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    private func companionChatTopPadding(for container: CGSize) -> CGFloat {
+        min(max(container.height * 0.14, 72), 118)
+    }
+
+    private var companionChatPanel: some View {
+        VStack(spacing: 0) {
+            companionChatHeader
+
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(spacing: 12) {
+                        companionEntryAccessPill
+
+                        ForEach(companionChatMessages) { message in
+                            companionMessageBubble(message)
+                        }
+
+                        if isCompanionReplyPending {
+                            companionThinkingBubble
+                        }
+
+                        if let companionChatErrorMessage {
+                            companionChatErrorRow(companionChatErrorMessage)
+                        }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(CompanionChatScrollAnchor.bottom)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+                    .padding(.bottom, 14)
+                }
+                .scrollIndicators(.hidden)
+                .onChange(of: companionChatScrollRequestID) { _ in
+                    withAnimation(.snappy(duration: 0.22)) {
+                        scrollProxy.scrollTo(CompanionChatScrollAnchor.bottom, anchor: .bottom)
+                    }
+                }
+            }
+
+            companionChatComposer
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+        }
+        .background(.ultraThinMaterial)
+        .background(Color.white.opacity(0.78))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.storyInk.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: Color.storyInk.opacity(0.16), radius: 18, y: 8)
+    }
+
+    private var companionChatHeader: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Color(red: 0.30, green: 0.85, blue: 0.39))
+                .frame(width: 7, height: 7)
+
+            Text(CreateEntryLayout.companionName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.storyInk)
+
+            Spacer()
+
+            Button {
+                isCompanionMutedByWriter.toggle()
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.82))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("More \(CreateEntryLayout.companionName) options")
+
+            Button {
+                closeCompanionChat()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.storyInk)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close \(CreateEntryLayout.companionName) chat")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .padding(.vertical, 7)
+        .background(Color.white.opacity(0.86))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.storyInk.opacity(0.08))
+                .frame(height: 1)
+        }
+    }
+
+    private var companionEntryAccessPill: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+
+                Text("\(CreateEntryLayout.companionName) can read this entry")
+                    .font(.system(size: 11, weight: .semibold))
+
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundStyle(Color.storyPurple)
+
+            Text("You can change this anytime.")
+                .font(.system(size: 10, weight: .regular))
+                .foregroundStyle(Color.storyInk.opacity(0.62))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.storyPurple.opacity(0.10), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .frame(maxWidth: .infinity)
+    }
+
+    private func companionMessageBubble(_ message: CompanionChatMessage) -> some View {
+        HStack(alignment: .bottom) {
+            if message.isWriter {
+                Spacer(minLength: 48)
+            }
+
+            VStack(alignment: message.isWriter ? .trailing : .leading, spacing: 5) {
+                Text(message.text)
+                    .font(.system(size: 13, weight: .regular))
+                    .lineSpacing(2)
+                    .foregroundStyle(message.isWriter ? Color.white : Color.storyInk)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(message.time)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(message.isWriter ? Color.white.opacity(0.72) : Color.storyInk.opacity(0.42))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(message.isWriter ? Color.storyPurple : Color.white.opacity(0.88))
+                    .shadow(color: Color.storyInk.opacity(message.isWriter ? 0.10 : 0.05), radius: 4, y: 2)
+            )
+            .frame(maxWidth: 238, alignment: message.isWriter ? .trailing : .leading)
+
+            if !message.isWriter {
+                Spacer(minLength: 48)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: message.isWriter ? .trailing : .leading)
+    }
+
+    private var companionThinkingBubble: some View {
+        HStack {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Color.storyPurple)
+
+                Text("\(CreateEntryLayout.companionName) is thinking")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.62))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.82), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Spacer(minLength: 48)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func companionChatErrorRow(_ message: String) -> some View {
+        Text(message)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color.red.opacity(0.82))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    private var companionChatComposer: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Message \(CreateEntryLayout.companionName)...", text: $companionDraftMessage, axis: .vertical)
+                .font(.system(size: 13))
+                .lineLimit(1...4)
+                .textInputAutocapitalization(.sentences)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                sendCompanionDraftMessage()
+            } label: {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.white)
+                    .frame(width: 32, height: 32)
+                    .background(Color.storyPurple, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(companionDraftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCompanionReplyPending)
+            .opacity(companionDraftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCompanionReplyPending ? 0.55 : 1)
+            .accessibilityLabel("Send message to \(CreateEntryLayout.companionName)")
+            .padding(.bottom, 2)
+        }
+        .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Color.storyInk.opacity(0.10), lineWidth: 1)
+        )
     }
 
     private var companionWindowCard: some View {
@@ -4980,8 +5249,9 @@ struct CreateEntryView: View {
                 .stroke(Color.black.opacity(0.28), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
-        .scaleEffect(isDraggingCompanion ? 1.04 : 1)
+        .scaleEffect(liveCompanionWindowScale * (isDraggingCompanion ? 1.04 : 1))
         .animation(.snappy(duration: 0.18), value: isDraggingCompanion)
+        .animation(.snappy(duration: 0.18), value: companionWindowScale)
     }
 
     private var companionWindowTitleBar: some View {
@@ -5056,6 +5326,10 @@ struct CreateEntryView: View {
         companionWindowDrag != .zero
     }
 
+    private var liveCompanionWindowScale: CGFloat {
+        clampedCompanionScale(companionWindowScale * companionWindowPinchScale)
+    }
+
     private func companionDragGesture(in container: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 2)
             .updating($companionWindowDrag) { value, state, _ in
@@ -5067,7 +5341,23 @@ struct CreateEntryView: View {
                         width: companionWindowOffset.width + value.translation.width,
                         height: companionWindowOffset.height + value.translation.height
                     ),
-                    in: container
+                    in: container,
+                    scale: liveCompanionWindowScale
+                )
+            }
+    }
+
+    private func companionScaleGesture(in container: CGSize) -> some Gesture {
+        MagnificationGesture(minimumScaleDelta: 0.01)
+            .updating($companionWindowPinchScale) { value, state, _ in
+                state = value
+            }
+            .onEnded { value in
+                companionWindowScale = clampedCompanionScale(companionWindowScale * value)
+                companionWindowOffset = clampedCompanionOffset(
+                    companionWindowOffset,
+                    in: container,
+                    scale: companionWindowScale
                 )
             }
     }
@@ -5078,19 +5368,29 @@ struct CreateEntryView: View {
                 width: companionWindowOffset.width + companionWindowDrag.width,
                 height: companionWindowOffset.height + companionWindowDrag.height
             ),
-            in: container
+            in: container,
+            scale: liveCompanionWindowScale
         )
     }
 
     /// The window rests at the top trailing corner, so it travels left along x and down along y.
-    private func clampedCompanionOffset(_ proposed: CGSize, in container: CGSize) -> CGSize {
+    private func clampedCompanionOffset(_ proposed: CGSize, in container: CGSize, scale: CGFloat) -> CGSize {
         let margin = CreateEntryLayout.companionWindowMargin
-        let travelX = max(0, container.width - CreateEntryLayout.companionWindowSize.width - margin * 2)
-        let travelY = max(0, container.height - CreateEntryLayout.companionWindowSize.height - margin * 2)
+        let scaledWidth = CreateEntryLayout.companionWindowSize.width * scale
+        let scaledHeight = CreateEntryLayout.companionWindowSize.height * scale
+        let travelX = max(0, container.width - scaledWidth - margin * 2)
+        let travelY = max(0, container.height - scaledHeight - margin * 2)
 
         return CGSize(
             width: min(0, max(-travelX, proposed.width)),
             height: min(travelY, max(0, proposed.height))
+        )
+    }
+
+    private func clampedCompanionScale(_ scale: CGFloat) -> CGFloat {
+        min(
+            CreateEntryLayout.companionWindowMaximumScale,
+            max(CreateEntryLayout.companionWindowMinimumScale, scale)
         )
     }
 
@@ -5100,10 +5400,99 @@ struct CreateEntryView: View {
         }
     }
 
+    private func closeCompanionChat() {
+        withAnimation(.snappy(duration: 0.24)) {
+            isCompanionChatVisible = false
+            isCompanionVisible = false
+        }
+    }
+
     private func toggleCompanion() {
         withAnimation(.snappy(duration: 0.24)) {
-            isCompanionVisible.toggle()
+            if isCompanionChatVisible {
+                isCompanionChatVisible = false
+                isCompanionVisible = false
+            } else {
+                isCompanionChatVisible = true
+                isCompanionVisible = true
+                companionWindowOffset = .zero
+                isShowingReferencePhotosSheet = false
+                isShowingEntryCharactersSheet = false
+                isShowingCustomizeSheet = false
+                isShowingJournalsPanel = false
+                isShowingJournalPromptsSheet = false
+                isPhotosPanelVisible = false
+            }
         }
+    }
+
+    private func sendCompanionDraftMessage() {
+        let trimmedMessage = companionDraftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty, !isCompanionReplyPending else {
+            return
+        }
+
+        let recentMessages = companionChatHistoryMessages()
+        companionChatMessages.append(
+            CompanionChatMessage(
+                text: trimmedMessage,
+                time: companionMessageTimeString(),
+                isWriter: true
+            )
+        )
+        companionDraftMessage = ""
+        companionChatErrorMessage = nil
+        isCompanionReplyPending = true
+        requestCompanionChatScroll()
+
+        Task {
+            do {
+                let reply = try await CompanionChatService().sendMessage(
+                    trimmedMessage,
+                    entryText: entryText,
+                    characterName: CreateEntryLayout.companionName,
+                    recentMessages: recentMessages
+                )
+
+                await MainActor.run {
+                    companionChatMessages.append(
+                        CompanionChatMessage(
+                            text: reply,
+                            time: companionMessageTimeString(),
+                            isWriter: false
+                        )
+                    )
+                    isCompanionReplyPending = false
+                    requestCompanionChatScroll()
+                }
+            } catch {
+                await MainActor.run {
+                    companionChatErrorMessage = error.localizedDescription
+                    isCompanionReplyPending = false
+                    requestCompanionChatScroll()
+                }
+            }
+        }
+    }
+
+    private func requestCompanionChatScroll() {
+        companionChatScrollRequestID += 1
+    }
+
+    private func companionChatHistoryMessages() -> [CompanionChatService.HistoryMessage] {
+        companionChatMessages.suffix(12).map { message in
+            CompanionChatService.HistoryMessage(
+                role: message.isWriter ? .writer : .companion,
+                text: message.text
+            )
+        }
+    }
+
+    private func companionMessageTimeString() -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: Date())
     }
 
     /// Dictation puts the mic on a `.playAndRecord` session, so the companion goes quiet while it
@@ -5344,6 +5733,7 @@ struct CreateEntryView: View {
     private var showsSpeechMicButton: Bool {
         !isShowingEntryOptionsPage
             && !isBlockingSaveInProgress
+            && !isCompanionChatVisible
             && !isBottomOptionsPanelVisible
     }
 
@@ -5394,7 +5784,7 @@ struct CreateEntryView: View {
         VStack(spacing: 0) {
             activeEntryDraftPanel
 
-            if !isBottomOptionsPanelVisible {
+            if !isBottomOptionsPanelVisible && !isCompanionChatVisible {
                 entryReferencesShelf
                     .padding(.horizontal, 18)
                     .padding(.bottom, 8)
@@ -6015,7 +6405,7 @@ struct CreateEntryView: View {
         .frame(width: 78, height: 65)
     }
 
-    /// Calls the companion window back after it has been closed, and hangs it up again.
+    /// Opens Luna's chat session and brings the floating video window along with it.
     private var companionCallShelfButton: some View {
         Button {
             toggleCompanion()
@@ -6023,26 +6413,26 @@ struct CreateEntryView: View {
             VStack(spacing: 5) {
                 ZStack {
                     Circle()
-                        .fill(isCompanionVisible ? Color.storyPurple : Color.white.opacity(0.88))
+                        .fill(isCompanionChatVisible ? Color.storyPurple : Color.white.opacity(0.88))
                         .frame(width: 56, height: 56)
                         .overlay(
                             Circle()
                                 .strokeBorder(
-                                    isCompanionVisible ? Color.clear : Color.storyPurple.opacity(0.45),
+                                    isCompanionChatVisible ? Color.clear : Color.storyPurple.opacity(0.45),
                                     style: StrokeStyle(lineWidth: 1.4, dash: [4, 3])
                                 )
                         )
                         .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
 
-                    Image(systemName: isCompanionVisible ? "phone.down.fill" : "phone.fill")
+                    Image(systemName: "bubble.left.and.bubble.right")
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(isCompanionVisible ? Color.white : Color.storyPurple)
+                        .foregroundStyle(isCompanionChatVisible ? Color.white : Color.storyPurple)
                 }
                 .frame(width: 78, height: 65)
 
                 shelfButtonCaption(
                     title: CreateEntryLayout.companionName,
-                    summary: isCompanionVisible ? "On call" : "Call"
+                    summary: isCompanionChatVisible ? "Chatting" : "Chat"
                 )
             }
             .frame(width: 82, height: 111, alignment: .bottom)
@@ -6050,9 +6440,9 @@ struct CreateEntryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            isCompanionVisible
-                ? "Hang up on \(CreateEntryLayout.companionName)"
-                : "Call \(CreateEntryLayout.companionName)"
+            isCompanionChatVisible
+                ? "Close \(CreateEntryLayout.companionName) chat"
+                : "Chat with \(CreateEntryLayout.companionName)"
         )
     }
 

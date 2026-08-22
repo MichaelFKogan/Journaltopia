@@ -2,6 +2,141 @@ import Foundation
 import Supabase
 import UIKit
 
+enum CompanionChatError: LocalizedError {
+    case notAuthenticated
+    case invalidResponse
+    case requestFailed(String)
+    case transportFailed(URLError)
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthenticated:
+            return "Sign in before chatting with Luna."
+        case .invalidResponse:
+            return "Luna sent a response Journaltopia could not read."
+        case .requestFailed(let message):
+            return message
+        case .transportFailed(let error):
+            switch error.code {
+            case .networkConnectionLost:
+                return "The chat connection dropped before Luna could reply. Try again in a moment."
+            case .notConnectedToInternet:
+                return "Connect to the internet before chatting with Luna."
+            case .timedOut:
+                return "Luna took too long to reply. Try again in a moment."
+            default:
+                return "Luna could not connect right now."
+            }
+        }
+    }
+}
+
+struct CompanionChatService {
+    private let client: SupabaseClient
+    private let session: URLSession
+    private let requestTimeout: TimeInterval = 90
+
+    init(
+        client: SupabaseClient = SupabaseService.shared,
+        session: URLSession = .shared
+    ) {
+        self.client = client
+        self.session = session
+    }
+
+    struct HistoryMessage: Encodable {
+        let role: Role
+        let text: String
+
+        enum Role: String, Encodable {
+            case writer
+            case companion
+        }
+    }
+
+    private struct ChatRequest: Encodable {
+        let message: String
+        let entryText: String
+        let characterName: String
+        let recentMessages: [HistoryMessage]
+    }
+
+    private struct ChatResponse: Decodable {
+        let reply: String
+    }
+
+    private struct ErrorResponse: Decodable {
+        let error: String?
+    }
+
+    func sendMessage(
+        _ message: String,
+        entryText: String,
+        characterName: String,
+        recentMessages: [HistoryMessage]
+    ) async throws -> String {
+        let authSession: Session
+        do {
+            authSession = try await client.auth.session
+        } catch {
+            throw CompanionChatError.notAuthenticated
+        }
+
+        let request = try chatRequest(
+            ChatRequest(
+                message: message,
+                entryText: entryText,
+                characterName: characterName,
+                recentMessages: recentMessages
+            ),
+            accessToken: authSession.accessToken
+        )
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError {
+            print("[Journaltopia] Companion chat transport failed: \(error.code.rawValue) \(error.localizedDescription)")
+            throw CompanionChatError.transportFailed(error)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CompanionChatError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data).error)
+                ?? "Luna could not reply right now."
+            throw CompanionChatError.requestFailed(message)
+        }
+
+        do {
+            return try JSONDecoder().decode(ChatResponse.self, from: data).reply
+        } catch {
+            throw CompanionChatError.invalidResponse
+        }
+    }
+
+    private func chatRequest(_ payload: ChatRequest, accessToken: String) throws -> URLRequest {
+        let projectURL = try JournaltopiaSupabaseConfig.projectURL
+        let anonKey = try JournaltopiaSupabaseConfig.anonKey
+        let functionURL = projectURL
+            .appendingPathComponent("functions")
+            .appendingPathComponent("v1")
+            .appendingPathComponent("companion-chat")
+
+        var request = URLRequest(url: functionURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.httpBody = try JSONEncoder().encode(payload)
+        return request
+    }
+}
+
 /// Which server-side generation path a request belongs to. Real user entries and Sample Studio
 /// entries live in different tables and buckets, so they have separate Edge Functions.
 enum StoryboardGenerationTarget {
