@@ -1335,6 +1335,37 @@ private enum CreateFontChoice: String, CaseIterable, Identifiable {
     }
 }
 
+/// EXPERIMENT (translucent-background): every knob for the floating writing sheet that sits on
+/// top of scenic paper art. Tune here; nothing else hard-codes these values.
+fileprivate enum CreateScenicSheetMetrics {
+    /// Frosted blur behind the sheet. Any `Material` lays down a gray, cloudy cast that hides the
+    /// artwork, so the sheet defaults to no blur at all — just the white wash below. Set this true
+    /// to get the frosted look back.
+    static let usesMaterial = false
+    /// Blur/vibrancy strength, used only when `usesMaterial` is true. Lighter -> more artwork shows
+    /// through: `.ultraThinMaterial` < `.thinMaterial` < `.regularMaterial` < `.thickMaterial`.
+    static let material: Material = .ultraThinMaterial
+    /// The white wash that lifts text off the artwork. This is the main transparency dial:
+    /// 0 = fully clear, 1 = opaque white. Around 0.30 starts looking milky.
+    static let tintOpacity: Double = 0.40
+    static let cornerRadius: CGFloat = 26
+    /// Left/right inset between the screen edges and the sheet.
+    static let horizontalMargin: CGFloat = 14
+    /// Gap between the navigation bar and the top of the sheet.
+    static let topMargin: CGFloat = 8
+    /// Fixed strip reserved below the sheet for the bottom controls. The sheet's bottom edge sits
+    /// exactly this far above the safe area and never moves, so panels taller than the strip draw
+    /// over the sheet rather than pushing it. Raise it to sit the sheet higher.
+    static let bottomReserve: CGFloat = 216
+    static let borderOpacity: Double = 0.30
+    static let shadowOpacity: Double = 0.16
+    static let shadowRadius: CGFloat = 18
+    static let shadowYOffset: CGFloat = 8
+    /// Placeholder ink. The sheet is clear enough that a faint placeholder disappears into the
+    /// artwork, so this runs darker than the one used on paper styles.
+    static let placeholderColor = Color.storyGray.opacity(0.8)
+}
+
 fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case collegeRuled
     case blank
@@ -1400,6 +1431,13 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
 
     var fillsBackgroundWithPaperImage: Bool {
         backgroundImageName != nil
+    }
+
+    /// EXPERIMENT (translucent-background): scenic art papers render the image once as a fixed
+    /// full-screen backdrop and float a translucent writing sheet on top of it, instead of
+    /// tiling the art inside the editor's own scroll view.
+    var usesFloatingWritingSheet: Bool {
+        self == .pastelSkyline
     }
 
     var showsPaperDecorations: Bool {
@@ -1481,7 +1519,12 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    func editorPlaceholderColor(for textStyle: NotebookTextStyle) -> Color {
+    func editorPlaceholderColor(for textStyle: NotebookTextStyle, paperColor: Color = .homePageBackground) -> Color {
+        if usesLightEditorChrome
+            || (showsPaperColorOptions && TexturedPaperTextEffect.shouldMultiplyBlend(UIColor(paperColor))) {
+            return .white.opacity(0.78)
+        }
+
         if showsPaperColorOptions {
             return textStyle.color.opacity(0.46)
         }
@@ -2521,19 +2564,6 @@ struct CreateEntryView: View {
     private var isCharacterEditorSheetPresented: Binding<Bool> {
         Binding(
             get: {
-                characterEditorSession != nil && !isShowingEntryCharactersSheet
-            },
-            set: { isPresented in
-                if !isPresented {
-                    characterEditorSession = nil
-                }
-            }
-        )
-    }
-
-    private var isNestedCharacterEditorSheetPresented: Binding<Bool> {
-        Binding(
-            get: {
                 characterEditorSession != nil
             },
             set: { isPresented in
@@ -2559,12 +2589,6 @@ struct CreateEntryView: View {
         editorWithPhotoPicker
         .sheet(isPresented: $isShowingPhotoSourceSheet) {
             photoSourceSheetContent()
-        }
-        .sheet(isPresented: $isShowingReferencePhotosSheet) {
-            referencePhotosSheetContent()
-        }
-        .sheet(isPresented: $isShowingEntryCharactersSheet) {
-            entryCharactersSheetContent()
         }
     }
 
@@ -2611,113 +2635,6 @@ struct CreateEntryView: View {
             .presentationDetents([.height(280), .medium])
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.homePageBackground)
-        )
-    }
-
-    private func referencePhotosSheetContent() -> AnyView {
-        AnyView(
-            NavigationStack {
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text("Add photos of people, places, objects, or scenery you want the storyboard to reference. Any person in these photos will be added to your storyboard. To isolate a specific person or pet, use Characters instead.")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Color.storyInk.opacity(0.68))
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        if hasStoryboardPhotos {
-                            referencePhotoFanPreview
-                                .frame(maxWidth: .infinity)
-
-                            referencePhotosSheetStripRow
-
-                            Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(Color.storyInk.opacity(0.58))
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
-
-                        if nextAvailablePhotoSlot != nil {
-                            referencePhotoSourceChoices
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 18)
-                    .padding(.bottom, 28)
-                }
-                .background(Color.homePageBackground.ignoresSafeArea())
-                .navigationTitle("Reference Photos")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") {
-                            isShowingReferencePhotosSheet = false
-                        }
-                        .foregroundStyle(Color.storyPurple)
-                    }
-                }
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.homePageBackground)
-        )
-    }
-
-    private func entryCharactersSheetContent() -> AnyView {
-        AnyView(
-            NavigationStack {
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text("Add people or pets who appear in this story. Character references help keep them recognizable throughout your storyboard.")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Color.storyInk.opacity(0.68))
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        if entryCharacters.isEmpty {
-                            characterPhotoSourceSection
-                        } else {
-                            VStack(alignment: .leading, spacing: 11) {
-                                Text("Characters in this Entry")
-                                    .font(.system(size: 16, weight: .bold, design: .serif))
-                                    .foregroundStyle(Color.storyInk)
-
-                                entryCharactersSheetStripRow
-                            }
-
-                            if isEntryCharacterAddChoicesVisible {
-                                characterPhotoSourceSection
-                            }
-                        }
-
-                        entryCharactersReusableLibrarySection
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 18)
-                    .padding(.bottom, 28)
-                }
-                .background(Color.homePageBackground.ignoresSafeArea())
-                .navigationTitle("Characters")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") {
-                            isShowingEntryCharactersSheet = false
-                        }
-                        .foregroundStyle(Color.storyPurple)
-                    }
-                }
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.homePageBackground)
-            .sheet(isPresented: isNestedCharacterEditorSheetPresented) {
-                characterEditorSheetContent()
-            }
-            .onAppear {
-                reusableCharacters = authoringMode.isSampleStudio
-                    ? mergedReusableCharacters(reusableCharacters)
-                    : mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
-                refreshReusableCharacters()
-            }
         )
     }
 
@@ -3553,7 +3470,7 @@ struct CreateEntryView: View {
                         scrollsInternally: false,
                         pageHeight: scrollContentHeight,
                         textStyle: selectedTextStyle,
-                        placeholderColor: selectedPaperStyleChoice.editorPlaceholderColor(for: selectedTextStyle),
+                        placeholderColor: selectedPaperStyleChoice.editorPlaceholderColor(for: selectedTextStyle, paperColor: selectedPaperColor),
                         showsTitleRule: selectedPaperStyleChoice.showsNotebookChrome,
                         leadingContentPadding: selectedPaperStyleChoice.leadingContentPadding,
                         leadingTextPadding: selectedPaperStyleChoice.leadingTextPadding,
@@ -4842,7 +4759,139 @@ struct CreateEntryView: View {
         }
     }
 
-    private var entryDraftStepContent: some View {
+    // Type-erased on purpose. `CreateEntryView`'s body is already a very deep generic tree — deep
+    // enough that the surrounding code splits itself into the `editorWith*` chain — and nesting a
+    // second full editor layout inside a `_ConditionalContent` here overflowed the stack while
+    // SwiftUI walked the tree. `AnyView` collapses both branches to a single node.
+    private var entryDraftStepContent: AnyView {
+        selectedPaperStyleChoice.usesFloatingWritingSheet
+            ? AnyView(scenicSheetStepContent)
+            : AnyView(scrollingPaperStepContent)
+    }
+
+    /// EXPERIMENT (translucent-background): the scenic artwork is already painted once, fixed and
+    /// full-screen, by `pageBackground`. Here we only float a translucent writing sheet over it and
+    /// let the text view scroll inside that sheet, so nothing about the backdrop moves or repeats.
+    /// The sheet is deliberately pinned: it reserves a fixed strip at the bottom and the controls
+    /// are drawn *over* that strip as an overlay, not as a `safeAreaInset`. An inset would resize
+    /// the sheet every time a panel grew, and the keyboard safe area would shrink it again — the
+    /// sheet would drift up and down while writing. Ignoring the keyboard safe area keeps it still;
+    /// the editor inside gets a matching bottom inset so the caret never hides behind the keyboard.
+    private var scenicSheetStepContent: some View {
+        GeometryReader { proxy in
+            scenicWritingSheet(bottomContentInset: scenicKeyboardContentInset(safeAreaBottom: proxy.safeAreaInsets.bottom))
+                .padding(.horizontal, CreateScenicSheetMetrics.horizontalMargin)
+                .padding(.top, CreateScenicSheetMetrics.topMargin)
+                .padding(.bottom, CreateScenicSheetMetrics.bottomReserve)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .overlay(alignment: .bottom) {
+                    if !isKeyboardVisible
+                        && !isBodyEditorEditing
+                        && activeKeyboardFormattingMode == nil {
+                        existingEntryModeBottomControls
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+        }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .animation(.snappy(duration: 0.22), value: scenicSheetChromeState)
+    }
+
+    /// How far the keyboard reaches up into the sheet. The sheet itself never moves, so the editor
+    /// content is inset by this much instead.
+    private func scenicKeyboardContentInset(safeAreaBottom: CGFloat) -> CGFloat {
+        guard isKeyboardVisible || isBodyEditorEditing || activeKeyboardFormattingMode != nil else {
+            return 0
+        }
+
+        let sheetBottomAboveScreen = safeAreaBottom + CreateScenicSheetMetrics.bottomReserve
+        return max(0, lastKeyboardHeight - sheetBottomAboveScreen)
+    }
+
+    /// One value for every piece of state that shows or hides the bottom controls, so the sheet
+    /// animates them with a single modifier instead of a stack of seven.
+    private var scenicSheetChromeState: Int {
+        var state = 0
+        for flag in [
+            isKeyboardVisible,
+            isBodyEditorEditing,
+            activeKeyboardFormattingMode != nil,
+            hasStoryboardPhotos,
+            isPhotosPanelVisible,
+            isShowingReferencePhotosSheet,
+            isShowingEntryCharactersSheet,
+            isShowingCustomizeSheet,
+            isShowingJournalsPanel,
+            isShowingJournalPromptsSheet
+        ] {
+            state = (state << 1) | (flag ? 1 : 0)
+        }
+        return state
+    }
+
+    private func scenicWritingSheet(bottomContentInset: CGFloat) -> some View {
+        CreateScenicWritingSheet {
+            draftEditorContent(scrollsInternally: true, pageHeight: nil)
+                .padding(.bottom, bottomContentInset)
+        }
+    }
+
+    /// The title + body editor pair, shared by the scrolling-paper layout (which sizes the editor to
+    /// a tall page and scrolls the page) and the scenic sheet (which lets the text view scroll itself).
+    private func draftEditorContent(scrollsInternally: Bool, pageHeight: CGFloat?) -> some View {
+        NotebookEditorContent(
+            storyTitle: $storyTitle,
+            entryText: $entryText,
+            entryRichText: $entryRichText,
+            isTitleFocused: $isTitleFocused,
+            editorFocusRequestID: editorFocusRequestID,
+            editorBlurRequestID: editorBlurRequestID,
+            formattingRequest: textFormattingRequest,
+            isDictating: speechTranscriber.state.isListening,
+            dictationTranscriptRequest: dictationTranscriptRequest,
+            bodyPlaceholder: "Start writing...",
+            scrollsInternally: scrollsInternally,
+            pageHeight: pageHeight,
+            textStyle: selectedTextStyle,
+            placeholderColor: selectedPaperStyleChoice.usesFloatingWritingSheet
+                ? CreateScenicSheetMetrics.placeholderColor
+                : selectedPaperStyleChoice.editorPlaceholderColor(for: selectedTextStyle, paperColor: selectedPaperColor),
+            showsTitleRule: selectedPaperStyleChoice.showsNotebookChrome,
+            leadingContentPadding: selectedPaperStyleChoice.leadingContentPadding,
+            leadingTextPadding: selectedPaperStyleChoice.leadingTextPadding,
+            showsKeyboardAccessory: showsDraftKeyboardAccessory,
+            keyboardInputMode: draftKeyboardInputMode,
+            keyboardAccessoryContent: AnyView(entryDraftKeyboardAccessory),
+            keyboardPanelContent: AnyView(keyboardFormattingPanelContent),
+            titleKeyboardAccessoryContent: AnyView(titleDraftKeyboardAccessory),
+            titleKeyboardInputMode: titleKeyboardInputMode,
+            titleKeyboardPanelContent: AnyView(keyboardFormattingPanelContent),
+            usesTexturedPaperEffect: selectedPaperStyleChoice.usesTexturedPaperTextEffect
+                && !selectedPaperStyleChoice.usesFloatingWritingSheet,
+            onBodyTap: {
+                handleBodyEditorTap()
+            },
+            onSelectionStateChange: updateEditorSelectionState,
+            onEditingEnded: {
+                guard !isKeyboardDismissInProgress else {
+                    return
+                }
+
+                isBodyEditorEditing = false
+                isMovingFocusToBodyEditor = false
+                resetKeyboardFormattingState()
+            },
+            onEditingBegan: {
+                isBodyEditorEditing = true
+                isMovingFocusToBodyEditor = false
+            },
+            onTitleSubmit: {
+                focusBodyEditor()
+            }
+        )
+    }
+
+    private var scrollingPaperStepContent: some View {
         GeometryReader { proxy in
             let scrollContentHeight = editorScrollContentHeight(for: proxy.size.height)
 
@@ -4862,53 +4911,7 @@ struct CreateEntryView: View {
                     .frame(maxWidth: .infinity, minHeight: scrollContentHeight, maxHeight: .infinity)
 
                     VStack(alignment: .leading, spacing: 0) {
-                        NotebookEditorContent(
-                            storyTitle: $storyTitle,
-                            entryText: $entryText,
-                            entryRichText: $entryRichText,
-                            isTitleFocused: $isTitleFocused,
-                            editorFocusRequestID: editorFocusRequestID,
-                            editorBlurRequestID: editorBlurRequestID,
-                            formattingRequest: textFormattingRequest,
-                            isDictating: speechTranscriber.state.isListening,
-                            dictationTranscriptRequest: dictationTranscriptRequest,
-                            bodyPlaceholder: "Start writing...",
-                            scrollsInternally: false,
-                            pageHeight: scrollContentHeight,
-                            textStyle: selectedTextStyle,
-                            placeholderColor: selectedPaperStyleChoice.editorPlaceholderColor(for: selectedTextStyle),
-                            showsTitleRule: selectedPaperStyleChoice.showsNotebookChrome,
-                            leadingContentPadding: selectedPaperStyleChoice.leadingContentPadding,
-                            leadingTextPadding: selectedPaperStyleChoice.leadingTextPadding,
-                            showsKeyboardAccessory: showsDraftKeyboardAccessory,
-                            keyboardInputMode: draftKeyboardInputMode,
-                            keyboardAccessoryContent: AnyView(entryDraftKeyboardAccessory),
-                            keyboardPanelContent: AnyView(keyboardFormattingPanelContent),
-                            titleKeyboardAccessoryContent: AnyView(titleDraftKeyboardAccessory),
-                            titleKeyboardInputMode: titleKeyboardInputMode,
-                            titleKeyboardPanelContent: AnyView(keyboardFormattingPanelContent),
-                            usesTexturedPaperEffect: selectedPaperStyleChoice.usesTexturedPaperTextEffect,
-                            onBodyTap: {
-                                handleBodyEditorTap()
-                            },
-                            onSelectionStateChange: updateEditorSelectionState,
-                            onEditingEnded: {
-                                guard !isKeyboardDismissInProgress else {
-                                    return
-                                }
-
-                                isBodyEditorEditing = false
-                                isMovingFocusToBodyEditor = false
-                                resetKeyboardFormattingState()
-                            },
-                            onEditingBegan: {
-                                isBodyEditorEditing = true
-                                isMovingFocusToBodyEditor = false
-                            },
-                            onTitleSubmit: {
-                                focusBodyEditor()
-                            }
-                        )
+                        draftEditorContent(scrollsInternally: false, pageHeight: scrollContentHeight)
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
 
@@ -4930,6 +4933,8 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: activeKeyboardFormattingMode)
             .animation(.snappy(duration: 0.22), value: hasStoryboardPhotos)
             .animation(.snappy(duration: 0.22), value: isPhotosPanelVisible)
+            .animation(.snappy(duration: 0.22), value: isShowingReferencePhotosSheet)
+            .animation(.snappy(duration: 0.22), value: isShowingEntryCharactersSheet)
             .animation(.snappy(duration: 0.22), value: isShowingCustomizeSheet)
             .animation(.snappy(duration: 0.22), value: isShowingJournalsPanel)
             .animation(.snappy(duration: 0.22), value: isShowingJournalPromptsSheet)
@@ -5339,10 +5344,16 @@ struct CreateEntryView: View {
     private var showsSpeechMicButton: Bool {
         !isShowingEntryOptionsPage
             && !isBlockingSaveInProgress
-            && !isPhotosPanelVisible
-            && !isShowingCustomizeSheet
-            && !isShowingJournalPromptsSheet
-            && !isShowingJournalsPanel
+            && !isBottomOptionsPanelVisible
+    }
+
+    private var isBottomOptionsPanelVisible: Bool {
+        isPhotosPanelVisible
+            || isShowingReferencePhotosSheet
+            || isShowingEntryCharactersSheet
+            || isShowingCustomizeSheet
+            || isShowingJournalsPanel
+            || isShowingJournalPromptsSheet
     }
 
     private var speechMicBottomPadding: CGFloat {
@@ -5381,29 +5392,9 @@ struct CreateEntryView: View {
 
     private var entryDraftBottomBar: some View {
         VStack(spacing: 0) {
-            if isPhotosPanelVisible {
-                photosAndCharactersPanel
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if isShowingCustomizeSheet {
-                customizeOptionsPanel
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if isShowingJournalsPanel {
-                journalsOptionsPanel
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if isShowingJournalPromptsSheet {
-                promptsOptionsPanel
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            activeEntryDraftPanel
 
-            if !isPhotosPanelVisible && !isShowingCustomizeSheet && !isShowingJournalsPanel && !isShowingJournalPromptsSheet {
+            if !isBottomOptionsPanelVisible {
                 entryReferencesShelf
                     .padding(.horizontal, 18)
                     .padding(.bottom, 8)
@@ -5413,6 +5404,37 @@ struct CreateEntryView: View {
             floatingEditorMenu
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Same panels, same order and transitions as the `if`/`else if` chain this replaces —
+    /// but type-erased. Nesting several large panel types in one `_ConditionalContent` chain put
+    /// every subtree into this bar's static type even though only one ever renders, and this bar
+    /// sits inside `CreateEntryView`'s already very deep body.
+    private var activeEntryDraftPanel: AnyView? {
+        let panel: AnyView
+
+        if isShowingReferencePhotosSheet {
+            panel = AnyView(referencesOptionsPanel)
+        } else if isShowingEntryCharactersSheet {
+            panel = AnyView(charactersOptionsPanel)
+        } else if isPhotosPanelVisible {
+            panel = AnyView(photosAndCharactersPanel)
+        } else if isShowingCustomizeSheet {
+            panel = AnyView(customizeOptionsPanel)
+        } else if isShowingJournalsPanel {
+            panel = AnyView(journalsOptionsPanel)
+        } else if isShowingJournalPromptsSheet {
+            panel = AnyView(promptsOptionsPanel)
+        } else {
+            return nil
+        }
+
+        return AnyView(
+            panel
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        )
     }
 
     private var editorBottomDateLabel: some View {
@@ -5427,9 +5449,8 @@ struct CreateEntryView: View {
             .accessibilityLabel("Entry date, \(editorToolbarDateText)")
     }
 
-    @ViewBuilder
-    private var existingEntryModeBottomControls: some View {
-        entryDraftBottomBar
+    private var existingEntryModeBottomControls: AnyView {
+        AnyView(entryDraftBottomBar)
     }
 
     private var storyDetailsTab: some View {
@@ -5799,7 +5820,11 @@ struct CreateEntryView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(hasStoryboardPhotos ? "\(referencePhotoShelfSummary), open reference photos" : "Add reference photos")
+        .accessibilityLabel(
+            isShowingReferencePhotosSheet
+                ? "Close reference panel"
+                : (hasStoryboardPhotos ? "\(referencePhotoShelfSummary), open reference photos" : "Add reference photos")
+        )
     }
 
     private var referencePhotoShelfStack: some View {
@@ -5932,7 +5957,11 @@ struct CreateEntryView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(entryCharacters.isEmpty ? "Add character" : "\(characterShelfSummary), open characters")
+        .accessibilityLabel(
+            isShowingEntryCharactersSheet
+                ? "Close characters panel"
+                : (entryCharacters.isEmpty ? "Add character" : "\(characterShelfSummary), open characters")
+        )
     }
 
     private var characterShelfAvatars: some View {
@@ -6239,6 +6268,142 @@ struct CreateEntryView: View {
         .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
     }
 
+    private var referencesOptionsPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            bottomOptionsPanelHeader(
+                title: "Reference",
+                systemName: "photo.on.rectangle.angled",
+                closeLabel: "Close reference panel",
+                onClose: closeReferencesPanel
+            )
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Add photos of people, places, objects, or scenery you want the storyboard to reference. Any person in these photos will be added to your storyboard. To isolate a specific person or pet, use Characters instead.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.68))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if hasStoryboardPhotos {
+                        referencePhotoFanPreview
+                            .frame(maxWidth: .infinity)
+
+                        referencePhotosSheetStripRow
+
+                        Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Color.storyInk.opacity(0.58))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+
+                    if nextAvailablePhotoSlot != nil {
+                        referencePhotoSourceChoices
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 18)
+            }
+        }
+        .background(Color.white.opacity(0.82))
+        .frame(maxHeight: customizePanelMaxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+    }
+
+    private var charactersOptionsPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            bottomOptionsPanelHeader(
+                title: "Characters",
+                systemName: "person.2.fill",
+                closeLabel: "Close characters panel",
+                onClose: closeCharactersPanel
+            )
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Add people or pets who appear in this story. Character references help keep them recognizable throughout your storyboard.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.68))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if entryCharacters.isEmpty {
+                        characterPhotoSourceSection
+                    } else {
+                        VStack(alignment: .leading, spacing: 11) {
+                            Text("Characters in this Entry")
+                                .font(.system(size: 16, weight: .bold, design: .serif))
+                                .foregroundStyle(Color.storyInk)
+
+                            entryCharactersSheetStripRow
+                        }
+
+                        if isEntryCharacterAddChoicesVisible {
+                            characterPhotoSourceSection
+                        }
+                    }
+
+                    entryCharactersReusableLibrarySection
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 18)
+            }
+        }
+        .background(Color.white.opacity(0.82))
+        .frame(maxHeight: customizePanelMaxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
+        .onAppear {
+            reusableCharacters = authoringMode.isSampleStudio
+                ? mergedReusableCharacters(reusableCharacters)
+                : mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
+            refreshReusableCharacters()
+        }
+    }
+
+    private func bottomOptionsPanelHeader(
+        title: String,
+        systemName: String,
+        closeLabel: String,
+        onClose: @escaping () -> Void
+    ) -> some View {
+        HStack {
+            Spacer()
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.58))
+                    .frame(width: 44, height: 44)
+                    .background(Color.homeInputGray.opacity(0.85), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(closeLabel)
+        }
+        .overlay {
+            HStack(spacing: 7) {
+                Image(systemName: systemName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
+
+                Text(title)
+                    .font(.system(size: 19, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+    }
+
     private var customizeOptionsPanel: some View {
         CreateFormattingSheet(
             initialTab: activeCustomizeTab,
@@ -6455,7 +6620,8 @@ struct CreateEntryView: View {
     private func openReferencesPanel(expandPhotos: Bool) {
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.2)) {
-            isShowingReferencePhotosSheet = true
+            isShowingReferencePhotosSheet.toggle()
+            isShowingEntryCharactersSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
@@ -6466,8 +6632,11 @@ struct CreateEntryView: View {
     private func openCharactersFromShelf() {
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.2)) {
-            isShowingEntryCharactersSheet = true
-            isEntryCharacterAddChoicesVisible = entryCharacters.isEmpty
+            isShowingEntryCharactersSheet.toggle()
+            if isShowingEntryCharactersSheet {
+                isEntryCharacterAddChoicesVisible = entryCharacters.isEmpty
+            }
+            isShowingReferencePhotosSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
@@ -6480,6 +6649,8 @@ struct CreateEntryView: View {
         prepareJournalSelection()
         withAnimation(.snappy(duration: 0.2)) {
             isShowingJournalsPanel.toggle()
+            isShowingReferencePhotosSheet = false
+            isShowingEntryCharactersSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
@@ -6492,10 +6663,7 @@ struct CreateEntryView: View {
         }
 
         selectedPhotoSlot = nextAvailablePhotoSlot
-        isShowingReferencePhotosSheet = false
-        DispatchQueue.main.async {
-            isShowingCamera = true
-        }
+        isShowingCamera = true
     }
 
     private func presentPhotoLibraryFromReferencePhotosSheet() {
@@ -6504,10 +6672,7 @@ struct CreateEntryView: View {
         }
 
         selectedPhotoSlot = nextAvailablePhotoSlot
-        isShowingReferencePhotosSheet = false
-        DispatchQueue.main.async {
-            isShowingPhotoLibrary = true
-        }
+        isShowingPhotoLibrary = true
     }
 
     private func presentCreateCharacterFromEntryCharactersSheet(source: CharacterInitialPhotoSource) {
@@ -6518,6 +6683,8 @@ struct CreateEntryView: View {
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.2)) {
             isShowingJournalPromptsSheet.toggle()
+            isShowingReferencePhotosSheet = false
+            isShowingEntryCharactersSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalsPanel = false
             isPhotosPanelVisible = false
@@ -7264,6 +7431,8 @@ struct CreateEntryView: View {
             }
             isShowingJournalPromptsSheet = false
             isShowingJournalsPanel = false
+            isShowingReferencePhotosSheet = false
+            isShowingEntryCharactersSheet = false
             isPhotosPanelVisible = false
         }
     }
@@ -9084,6 +9253,8 @@ struct CreateEntryView: View {
     private func togglePhotosPanel() {
         withAnimation(.snappy(duration: 0.2)) {
             isPhotosPanelVisible.toggle()
+            isShowingReferencePhotosSheet = false
+            isShowingEntryCharactersSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
@@ -9105,6 +9276,18 @@ struct CreateEntryView: View {
     private func closePromptsPanel() {
         withAnimation(.snappy(duration: 0.2)) {
             isShowingJournalPromptsSheet = false
+        }
+    }
+
+    private func closeReferencesPanel() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingReferencePhotosSheet = false
+        }
+    }
+
+    private func closeCharactersPanel() {
+        withAnimation(.snappy(duration: 0.2)) {
+            isShowingEntryCharactersSheet = false
         }
     }
 
@@ -12576,7 +12759,7 @@ struct ExpandedEntryEditor: View {
                         scrollsInternally: false,
                         pageHeight: proxy.size.height,
                         textStyle: textStyle,
-                        placeholderColor: paperStyleChoice.editorPlaceholderColor(for: textStyle),
+                        placeholderColor: paperStyleChoice.editorPlaceholderColor(for: textStyle, paperColor: paperColor),
                         showsTitleRule: showsNotebookChrome,
                         leadingContentPadding: leadingContentPadding,
                         leadingTextPadding: leadingTextPadding,
@@ -15202,5 +15385,44 @@ func artStyleAssetName(for title: String) -> String {
         return "art_style_pop_art"
     default:
         return "art_style_anime"
+    }
+}
+
+/// EXPERIMENT (translucent-background): the floating writing sheet's chrome, kept in its own view
+/// so the sheet contributes one node to `CreateEntryView`'s already very deep generic body type
+/// rather than a dozen nested modifier generics.
+fileprivate struct CreateScenicWritingSheet<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: CreateScenicSheetMetrics.cornerRadius, style: .continuous)
+    }
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(sheetSurface)
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(
+                    Color.white.opacity(CreateScenicSheetMetrics.borderOpacity),
+                    lineWidth: 1
+                )
+            )
+            .shadow(
+                color: .black.opacity(CreateScenicSheetMetrics.shadowOpacity),
+                radius: CreateScenicSheetMetrics.shadowRadius,
+                y: CreateScenicSheetMetrics.shadowYOffset
+            )
+    }
+
+    private var sheetSurface: some View {
+        ZStack {
+            if CreateScenicSheetMetrics.usesMaterial {
+                shape.fill(CreateScenicSheetMetrics.material)
+            }
+
+            shape.fill(Color.white.opacity(CreateScenicSheetMetrics.tintOpacity))
+        }
     }
 }
