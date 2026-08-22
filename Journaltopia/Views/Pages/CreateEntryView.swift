@@ -5007,34 +5007,18 @@ struct CreateEntryView: View {
                 companionChatPanel
                     .frame(
                         width: min(proxy.size.width - 24, 390),
-                        height: companionChatHeight(for: proxy.size)
+                        height: min(proxy.size.height * 0.78, 560)
                     )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, companionChatTopPadding(for: proxy.size))
                     .padding(.horizontal, 12)
-                    .padding(.bottom, companionChatBottomPadding)
             }
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 
-    private var companionChatBottomPadding: CGFloat {
-        88
-    }
-
-    private func companionChatTopClearance(for container: CGSize) -> CGFloat {
-        if isCompanionVisible {
-            let videoBottom = CreateEntryLayout.companionWindowSize.height * liveCompanionWindowScale
-                + CreateEntryLayout.companionWindowMargin * 2
-            return videoBottom + 18
-        }
-
-        return min(max(container.height * 0.14, 72), 118)
-    }
-
-    private func companionChatHeight(for container: CGSize) -> CGFloat {
-        let topClearance = companionChatTopClearance(for: container)
-        let availableHeight = container.height - topClearance - companionChatBottomPadding
-        return min(max(availableHeight, 240), 680)
+    private func companionChatTopPadding(for container: CGSize) -> CGFloat {
+        min(max(container.height * 0.14, 72), 118)
     }
 
     private var companionChatPanel: some View {

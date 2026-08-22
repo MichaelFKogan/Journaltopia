@@ -230,25 +230,25 @@ struct SettingsView: View {
 
     private var signedOutConfirmationCard: some View {
         ZStack(alignment: .topTrailing) {
-            VStack(spacing: 12) {
+            VStack(spacing: 16) {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 28, weight: .semibold))
+                    .font(.system(size: 36, weight: .semibold))
                     .foregroundStyle(Color.storyPurple)
 
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     Text("Signed Out")
-                        .font(.system(size: 20, weight: .bold, design: .serif))
+                        .font(.system(size: 24, weight: .bold, design: .serif))
                         .foregroundStyle(Color.storyInk)
 
                     Text("This device is back in signed-out mode. Your local samples stay available to browse.")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(Color.homeMutedText)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 26)
+            .padding(.horizontal, 36)
+            .padding(.vertical, 36)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Signed out. This device is back in signed-out mode.")
 
@@ -256,20 +256,20 @@ struct SettingsView: View {
                 dismissSignedOutConfirmation()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.storyInk.opacity(0.55))
-                    .frame(width: 32, height: 32)
+                    .frame(width: 36, height: 36)
                     .background(Color.homeInputGray.opacity(0.85), in: Circle())
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .padding(10)
+            .padding(12)
             .accessibilityLabel("Close")
         }
-        .frame(maxWidth: 300)
-        .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .frame(maxWidth: 360)
+        .background(Color.white.opacity(0.97), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(Color.storyPurple.opacity(0.16), lineWidth: 1)
         )
         .shadow(color: Color.storyPurple.opacity(0.14), radius: 20, y: 10)
