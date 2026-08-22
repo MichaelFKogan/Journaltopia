@@ -37,10 +37,16 @@ struct HomeView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
-                .padding(.bottom, 104)
+                .padding(.bottom, 104 + signInCalloutContentInset)
             }
 
             BottomNavigationBar(selectedPage: $selectedPage)
+
+            if contentMode.requiresSignIn {
+                SampleSignInCallout()
+                    .padding(.bottom, JournaltopiaFloatingControlMetrics.signInCalloutBottomInset)
+                    .zIndex(3)
+            }
         }
         .sheet(
             isPresented: Binding(
@@ -71,6 +77,12 @@ struct HomeView: View {
 
     private var showsSampleHomeContent: Bool {
         contentMode.showsSampleContent
+    }
+
+    /// Extra room under the content for the floating sign-in callout, which nothing else in the
+    /// layout reserves space for.
+    private var signInCalloutContentInset: CGFloat {
+        contentMode.requiresSignIn ? JournaltopiaFloatingControlMetrics.signInCalloutContentInset : 0
     }
 
     private var homeStoryboardLoadID: String {

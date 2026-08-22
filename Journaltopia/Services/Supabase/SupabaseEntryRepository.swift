@@ -263,6 +263,272 @@ struct JournalRemoteCover: Codable, Equatable, Sendable {
     }
 }
 
+struct MyStoryCoverSettings: Codable, Equatable, Sendable {
+    let colorHex: String?
+    let storagePath: String?
+    let storyboardID: UUID?
+    let imageName: String?
+    let coverSource: String?
+    let imageURL: String?
+    let thumbURL: String?
+    let attributionName: String?
+    let attributionURL: String?
+    let downloadLocation: String?
+
+    enum CodingKeys: String, CodingKey {
+        case colorHex = "my_story_cover_color_hex"
+        case storagePath = "my_story_cover_storage_path"
+        case storyboardID = "my_story_cover_storyboard_id"
+        case imageName = "my_story_cover_image_name"
+        case coverSource = "my_story_cover_source"
+        case imageURL = "my_story_cover_image_url"
+        case thumbURL = "my_story_cover_thumb_url"
+        case attributionName = "my_story_cover_attribution_name"
+        case attributionURL = "my_story_cover_attribution_url"
+        case downloadLocation = "my_story_cover_download_location"
+    }
+
+    static let empty = MyStoryCoverSettings(
+        colorHex: nil,
+        storagePath: nil,
+        storyboardID: nil,
+        imageName: nil,
+        coverSource: nil,
+        imageURL: nil,
+        thumbURL: nil,
+        attributionName: nil,
+        attributionURL: nil,
+        downloadLocation: nil
+    )
+
+    var remoteCover: JournalRemoteCover? {
+        guard
+            coverSource == JournalCoverSource.unsplash.rawValue,
+            let imageURL,
+            !imageURL.isEmpty
+        else {
+            return nil
+        }
+
+        return JournalRemoteCover(
+            source: .unsplash,
+            imageURL: imageURL,
+            thumbnailURL: thumbURL,
+            attributionName: attributionName,
+            attributionURL: attributionURL,
+            downloadLocation: downloadLocation
+        )
+    }
+}
+
+private struct MyStoryCoverSettingsUpdate: Encodable, Sendable {
+    let colorHex: String?
+    let storagePath: String?
+    let storyboardID: UUID?
+    let imageName: String?
+    let coverSource: String?
+    let imageURL: String?
+    let thumbURL: String?
+    let attributionName: String?
+    let attributionURL: String?
+    let downloadLocation: String?
+
+    enum CodingKeys: String, CodingKey {
+        case colorHex = "my_story_cover_color_hex"
+        case storagePath = "my_story_cover_storage_path"
+        case storyboardID = "my_story_cover_storyboard_id"
+        case imageName = "my_story_cover_image_name"
+        case coverSource = "my_story_cover_source"
+        case imageURL = "my_story_cover_image_url"
+        case thumbURL = "my_story_cover_thumb_url"
+        case attributionName = "my_story_cover_attribution_name"
+        case attributionURL = "my_story_cover_attribution_url"
+        case downloadLocation = "my_story_cover_download_location"
+    }
+
+    init(settings: MyStoryCoverSettings) {
+        colorHex = settings.colorHex
+        storagePath = settings.storagePath
+        storyboardID = settings.storyboardID
+        imageName = settings.imageName
+        coverSource = settings.coverSource
+        imageURL = settings.imageURL
+        thumbURL = settings.thumbURL
+        attributionName = settings.attributionName
+        attributionURL = settings.attributionURL
+        downloadLocation = settings.downloadLocation
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try encodeNullable(colorHex, forKey: .colorHex, in: &container)
+        try encodeNullable(storagePath, forKey: .storagePath, in: &container)
+        try encodeNullable(storyboardID, forKey: .storyboardID, in: &container)
+        try encodeNullable(imageName, forKey: .imageName, in: &container)
+        try encodeNullable(coverSource, forKey: .coverSource, in: &container)
+        try encodeNullable(imageURL, forKey: .imageURL, in: &container)
+        try encodeNullable(thumbURL, forKey: .thumbURL, in: &container)
+        try encodeNullable(attributionName, forKey: .attributionName, in: &container)
+        try encodeNullable(attributionURL, forKey: .attributionURL, in: &container)
+        try encodeNullable(downloadLocation, forKey: .downloadLocation, in: &container)
+    }
+
+    private func encodeNullable<T: Encodable>(
+        _ value: T?,
+        forKey key: CodingKeys,
+        in container: inout KeyedEncodingContainer<CodingKeys>
+    ) throws {
+        if let value {
+            try container.encode(value, forKey: key)
+        } else {
+            try container.encodeNil(forKey: key)
+        }
+    }
+}
+
+enum MyStoryCoverServiceError: LocalizedError {
+    case notAuthenticated
+    case invalidCover
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthenticated:
+            return "Sign in before changing your My Story cover."
+        case .invalidCover:
+            return "The My Story cover could not be prepared."
+        case .unavailable:
+            return "Your My Story cover could not be saved. Please try again."
+        }
+    }
+}
+
+struct MyStoryCoverService {
+    private let client: SupabaseClient
+    private let coverBucketName = "journal-covers"
+    private let selectColumns = [
+        "my_story_cover_color_hex",
+        "my_story_cover_storage_path",
+        "my_story_cover_storyboard_id",
+        "my_story_cover_image_name",
+        "my_story_cover_source",
+        "my_story_cover_image_url",
+        "my_story_cover_thumb_url",
+        "my_story_cover_attribution_name",
+        "my_story_cover_attribution_url",
+        "my_story_cover_download_location"
+    ].joined(separator: ",")
+
+    init(client: SupabaseClient = SupabaseService.shared) {
+        self.client = client
+    }
+
+    func fetchSettings() async throws -> MyStoryCoverSettings {
+        let userID = try await authenticatedUserID()
+
+        do {
+            return try await client
+                .from("profiles")
+                .select(selectColumns)
+                .eq("id", value: userID)
+                .single()
+                .execute()
+                .value
+        } catch {
+            throw MyStoryCoverServiceError.unavailable
+        }
+    }
+
+    @discardableResult
+    func saveSettings(_ settings: MyStoryCoverSettings) async throws -> MyStoryCoverSettings {
+        let userID = try await authenticatedUserID()
+
+        do {
+            return try await client
+                .from("profiles")
+                .update(MyStoryCoverSettingsUpdate(settings: settings))
+                .eq("id", value: userID)
+                .select(selectColumns)
+                .single()
+                .execute()
+                .value
+        } catch {
+            throw MyStoryCoverServiceError.unavailable
+        }
+    }
+
+    @discardableResult
+    func uploadCover(_ image: UIImage, baseSettings: MyStoryCoverSettings) async throws -> MyStoryCoverSettings {
+        let userID = try await authenticatedUserID()
+        guard let imageData = image.journaltopiaPreparedJPEGData(compressionQuality: 0.86) else {
+            throw MyStoryCoverServiceError.invalidCover
+        }
+
+        let storagePath = [
+            userID.uuidString.lowercased(),
+            "my-story",
+            "cover-\(UUID().uuidString.lowercased()).jpg"
+        ].joined(separator: "/")
+
+        do {
+            try await client.storage
+                .from(coverBucketName)
+                .upload(
+                    storagePath,
+                    data: imageData,
+                    options: FileOptions(
+                        cacheControl: "31536000",
+                        contentType: CreateEntryReferencePhoto.mimeType,
+                        upsert: true
+                    )
+                )
+
+            return try await saveSettings(
+                MyStoryCoverSettings(
+                    colorHex: baseSettings.colorHex,
+                    storagePath: storagePath,
+                    storyboardID: nil,
+                    imageName: nil,
+                    coverSource: JournalCoverSource.local.rawValue,
+                    imageURL: nil,
+                    thumbURL: nil,
+                    attributionName: nil,
+                    attributionURL: nil,
+                    downloadLocation: nil
+                )
+            )
+        } catch let error as MyStoryCoverServiceError {
+            throw error
+        } catch {
+            throw MyStoryCoverServiceError.unavailable
+        }
+    }
+
+    func downloadCover(storagePath: String) async throws -> UIImage {
+        do {
+            let data = try await client.storage
+                .from(coverBucketName)
+                .download(path: storagePath)
+
+            guard let image = UIImage(data: data) else {
+                throw MyStoryCoverServiceError.unavailable
+            }
+
+            return image
+        } catch {
+            throw MyStoryCoverServiceError.unavailable
+        }
+    }
+
+    private func authenticatedUserID() async throws -> UUID {
+        do {
+            return try await client.auth.session.user.id
+        } catch {
+            throw MyStoryCoverServiceError.notAuthenticated
+        }
+    }
+}
+
 struct UnsplashCoverPhoto: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let colorHex: String?

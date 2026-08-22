@@ -6,6 +6,7 @@ enum StoryPage {
     case create
     case entries
     case journal
+    case myStory
     case profile
     case settings
 }

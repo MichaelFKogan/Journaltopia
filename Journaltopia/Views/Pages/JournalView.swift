@@ -2579,6 +2579,7 @@ private struct JournalCustomization {
     let color: Color
     let coverImageName: String?
     let remoteCover: JournalRemoteCover?
+    let storyboardCoverID: UUID?
     let storedCoverImage: UIImage?
     let clearsStoredCover: Bool
 }
@@ -3208,6 +3209,7 @@ private enum JournalCustomizationCoverSource: Equatable {
 private struct JournalCustomizationSheet: View {
     let chapter: PrototypeChapter
     let initialStoryboardCovers: [JournalStoryboardCoverCandidate]
+    let title: String
     let onSave: (JournalCustomization) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedColorHex: String
@@ -3233,10 +3235,12 @@ private struct JournalCustomizationSheet: View {
     init(
         chapter: PrototypeChapter,
         initialStoryboardCovers: [JournalStoryboardCoverCandidate] = [],
+        title: String = "Journal Cover",
         onSave: @escaping (JournalCustomization) -> Void
     ) {
         self.chapter = chapter
         self.initialStoryboardCovers = initialStoryboardCovers
+        self.title = title
         self.onSave = onSave
         let initialColorHex = JournalColorOption.hexString(for: chapter.color)
         let initialStoredCoverImage = JournalCoverStore.image(for: chapter)
@@ -3292,7 +3296,7 @@ private struct JournalCustomizationSheet: View {
                 }
             }
             .background(Color.homePageBackground)
-            .navigationTitle("Journal Cover")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -3698,6 +3702,7 @@ private struct JournalCustomizationSheet: View {
                 color: selectedColor,
                 coverImageName: coverImageName,
                 remoteCover: remoteCover,
+                storyboardCoverID: selectedStoryboardCoverID,
                 storedCoverImage: storedCoverImage,
                 clearsStoredCover: clearsStoredCover
             )
@@ -4873,6 +4878,24 @@ struct ClassicJournalView: View {
     }
 }
 
+/// Interior comic-reader pages. Empty journals use `blank_storyboard`; real storyboards replace it.
+private enum JournalComicReaderPages {
+    static let emptyPlaceholderImageName = "blank_storyboard"
+    static let emptyPlaceholderID = UUID()
+
+    static func interiorPages(from storyboards: [GeneratedStoryboard]) -> [(id: UUID, image: UIImage)] {
+        if !storyboards.isEmpty {
+            return storyboards.map { (id: $0.id, image: $0.image) }
+        }
+
+        guard let placeholder = UIImage(named: emptyPlaceholderImageName) else {
+            return []
+        }
+
+        return [(id: emptyPlaceholderID, image: placeholder)]
+    }
+}
+
 private struct JournalStoryboardComicReaderView: View {
     @EnvironmentObject private var signInGate: SignInGate
 
@@ -5265,7 +5288,7 @@ private struct JournalStoryboardComicReaderView: View {
                         .accessibilityLabel("Go to journal cover")
                         .accessibilityAddTraits(currentPageIndex == 0 ? .isSelected : [])
 
-                        ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                        ForEach(Array(interiorPages.enumerated()), id: \.element.id) { index, page in
                             let pageIndex = index + 1
 
                             Button {
@@ -5273,7 +5296,7 @@ private struct JournalStoryboardComicReaderView: View {
                                     currentPageIndex = pageIndex
                                 }
                             } label: {
-                                readerThumbnail(for: storyboard.image, at: pageIndex)
+                                readerThumbnail(for: page.image, at: pageIndex)
                             }
                             .buttonStyle(.plain)
                             .id(pageIndex)
@@ -5361,21 +5384,25 @@ private struct JournalStoryboardComicReaderView: View {
             .padding(.horizontal, 28)
     }
 
+    private var interiorPages: [(id: UUID, image: UIImage)] {
+        JournalComicReaderPages.interiorPages(from: storyboards)
+    }
+
     private var storyboardImages: [UIImage] {
-        storyboards.map(\.image)
+        interiorPages.map(\.image)
     }
 
     private var totalPageCount: Int {
-        storyboards.count + 1
+        interiorPages.count + 1
     }
 
     private var readerPageAspectRatio: CGFloat {
-        guard let firstStoryboard = storyboards.first,
-              firstStoryboard.image.size.height > 0 else {
+        guard let firstImage = storyboardImages.first,
+              firstImage.size.height > 0 else {
             return 0.57
         }
 
-        return firstStoryboard.image.size.width / firstStoryboard.image.size.height
+        return firstImage.size.width / firstImage.size.height
     }
 
     private var isAtFitZoom: Bool {
@@ -5404,11 +5431,11 @@ private struct JournalStoryboardComicReaderView: View {
 
     private func image(for pageIndex: Int) -> UIImage? {
         let index = clampedPageIndex(pageIndex) - 1
-        guard storyboards.indices.contains(index) else {
+        guard storyboardImages.indices.contains(index) else {
             return nil
         }
 
-        return storyboards[index].image
+        return storyboardImages[index]
     }
 
     private func imageAspectRatio(for pageIndex: Int) -> CGFloat {
@@ -5706,6 +5733,853 @@ private struct JournalStoryboardComicReaderView: View {
     }
 }
 
+struct MyStoryView: View {
+    @EnvironmentObject private var authStore: SupabaseAuthStore
+    @EnvironmentObject private var signInGate: SignInGate
+
+    @Binding var selectedPage: StoryPage
+    @Binding var generatedStoryboards: [GeneratedStoryboard]
+    var contentMode: JournaltopiaContentMode = .user
+
+    @State private var currentPageIndex = 0
+    @State private var isLoadingStoryboards = false
+    @State private var loadErrorMessage: String?
+    @State private var isShowingVerticalView = false
+    @State private var isPageTurnActive = false
+    @State private var programmaticTurnOffset = 0
+    @State private var programmaticTurnProgress: CGFloat = 0
+    @State private var programmaticTurnTask: Task<Void, Never>?
+    @State private var isShowingCoverCustomization = false
+    @State private var coverSettings = MyStoryCoverSettings.empty
+    @State private var storedCoverImage: UIImage?
+    @State private var coverErrorMessage: String?
+
+    private let readerTopToolbarClearance: CGFloat = 62
+    private let readerBottomToolbarClearance: CGFloat = 150
+    private let thumbnailHeight: CGFloat = 56
+    private static let coverChapterID = UUID(uuidString: "00000000-0000-4000-8000-000000000101")!
+
+    var body: some View {
+        NavigationStack {
+            ZStack(alignment: .bottom) {
+                Color.black
+                    .ignoresSafeArea()
+
+                readerContent
+
+                VStack(spacing: 0) {
+                    if !generatedStoryboards.isEmpty {
+                        readerBottomBar
+                        readerThumbnailStrip
+                            .padding(.bottom, 8)
+                    }
+
+                    BottomNavigationBar(selectedPage: $selectedPage)
+                }
+                .background {
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.34), .black.opacity(0.62)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .allowsHitTesting(false)
+                }
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .overlay(alignment: .top) {
+                readerTopBar
+            }
+            .fullScreenCover(isPresented: $isShowingVerticalView) {
+                JournalStoryboardVerticalComicViewer(
+                    storyboards: generatedStoryboards,
+                    currentPageIndex: $currentPageIndex,
+                    journalTitle: "My Story",
+                    journalColor: myStoryCoverColor,
+                    coverImage: myStoryCoverImage,
+                    remoteCoverURL: coverSettings.remoteCover?.thumbnailNSURL ?? coverSettings.remoteCover?.imageNSURL,
+                    fallbackCoverImageName: myStoryFallbackCoverImageName,
+                    pageCountText: pageCountText,
+                    storyboardCountText: storyboardCountText,
+                    readerPageAspectRatio: readerPageAspectRatio
+                )
+            }
+            .sheet(isPresented: $isShowingCoverCustomization) {
+                JournalCustomizationSheet(
+                    chapter: myStoryCoverChapter,
+                    initialStoryboardCovers: myStoryStoryboardCoverCandidates,
+                    title: "My Story Cover",
+                    onSave: applyMyStoryCoverCustomization
+                )
+            }
+            .onChange(of: generatedStoryboards.count) { _ in
+                currentPageIndex = clampedPageIndex(currentPageIndex)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
+                Task {
+                    await loadMyStoryboards(forceReload: true)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
+                guard contentMode.showsSampleContent, !contentMode.isSampleAuthoring else {
+                    return
+                }
+
+                Task {
+                    await loadSampleStoryboards()
+                }
+            }
+            .task(id: contentMode.loadIdentity(userID: authStore.userID)) {
+                await loadMyStoryboards()
+                await loadMyStoryCoverSettings()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var readerContent: some View {
+        if isLoadingStoryboards && generatedStoryboards.isEmpty {
+            myStoryLoadingState
+        } else if let loadErrorMessage, generatedStoryboards.isEmpty {
+            myStoryErrorState(message: loadErrorMessage)
+        } else if generatedStoryboards.isEmpty {
+            myStoryEmptyState
+        } else {
+            GeometryReader { proxy in
+                let pageSize = fittedPageSize(in: proxy.size)
+
+                JournalStoryboardPageTurnView(
+                    images: generatedStoryboards.map(\.image),
+                    journalTitle: "My Story",
+                    journalColor: myStoryCoverColor,
+                    coverImage: myStoryCoverImage,
+                    remoteCoverURL: coverSettings.remoteCover?.thumbnailNSURL ?? coverSettings.remoteCover?.imageNSURL,
+                    fallbackCoverImageName: myStoryFallbackCoverImageName,
+                    pageCountText: pageCountText,
+                    storyboardCountText: storyboardCountText,
+                    currentPageIndex: $currentPageIndex,
+                    programmaticTurnOffset: programmaticTurnOffset,
+                    programmaticTurnProgress: programmaticTurnProgress,
+                    isPageTurnActive: $isPageTurnActive
+                )
+                .frame(width: pageSize.width, height: pageSize.height)
+                .shadow(color: .black.opacity(0.24), radius: 18, y: 8)
+                .padding(.top, readerTopToolbarClearance)
+                .padding(.bottom, readerBottomToolbarClearance)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+    }
+
+    private var readerTopBar: some View {
+        HStack(spacing: 12) {
+            Text("My Story")
+                .font(.system(size: 24, weight: .bold, design: .serif))
+                .foregroundStyle(.white)
+
+            Spacer(minLength: 0)
+
+            if !generatedStoryboards.isEmpty {
+                Text("\(currentPageIndex + 1) / \(totalPageCount)")
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(Color.white.opacity(0.12), in: Capsule())
+
+                Button {
+                    isShowingVerticalView = true
+                } label: {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.14), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open vertical comic view")
+
+                Menu {
+                    Button {
+                        openMyStoryCoverCustomization()
+                    } label: {
+                        Label("Change Cover", systemImage: "photo.on.rectangle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.14), in: Circle())
+                }
+                .accessibilityLabel("My Story options")
+            }
+
+            NavigationLink {
+                SettingsView()
+                    .environment(\.colorScheme, .light)
+                    .preferredColorScheme(.light)
+                    .enableInteractivePopGesture()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.white.opacity(0.14), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open settings")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+            .background {
+                LinearGradient(
+                    colors: [.black.opacity(0.78), .black.opacity(0.34), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea(edges: .top)
+            }
+    }
+
+    private var readerBottomBar: some View {
+        HStack(spacing: 14) {
+            readerControlButton(
+                isEnabled: currentPageIndex > 0 && !isTurningProgrammatically,
+                accessibilityLabel: "Previous page"
+            ) {
+                Image(systemName: "chevron.left")
+            } action: {
+                turnPage(by: -1)
+            }
+
+            Spacer(minLength: 0)
+
+            Text(storyboardCountText)
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white.opacity(0.82))
+
+            Spacer(minLength: 0)
+
+            readerControlButton(
+                isEnabled: currentPageIndex < totalPageCount - 1 && !isTurningProgrammatically,
+                accessibilityLabel: "Next page"
+            ) {
+                Image(systemName: "chevron.right")
+            } action: {
+                turnPage(by: 1)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    private func readerControlButton<Label: View>(
+        isEnabled: Bool,
+        accessibilityLabel: String,
+        @ViewBuilder label: () -> Label,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            label()
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(isEnabled ? .white : Color.white.opacity(0.28))
+                .frame(width: 44, height: 40)
+                .background(Capsule().fill(Color.white.opacity(isEnabled ? 0.14 : 0.06)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var readerThumbnailStrip: some View {
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Button {
+                            goToPage(0)
+                        } label: {
+                            readerCoverThumbnail()
+                        }
+                        .buttonStyle(.plain)
+                        .id(0)
+                        .accessibilityLabel("Go to My Story cover")
+                        .accessibilityAddTraits(currentPageIndex == 0 ? .isSelected : [])
+
+                        ForEach(Array(generatedStoryboards.enumerated()), id: \.element.id) { index, storyboard in
+                            let pageIndex = index + 1
+
+                            Button {
+                                goToPage(pageIndex)
+                            } label: {
+                                readerThumbnail(for: storyboard.image, at: pageIndex)
+                            }
+                            .buttonStyle(.plain)
+                            .id(pageIndex)
+                            .accessibilityLabel("Go to storyboard \(index + 1)")
+                            .accessibilityAddTraits(pageIndex == currentPageIndex ? .isSelected : [])
+                        }
+                    }
+                    .frame(minWidth: geometry.size.width, alignment: .center)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                }
+                .onAppear {
+                    proxy.scrollTo(currentPageIndex, anchor: .center)
+                }
+                .onChange(of: currentPageIndex) { pageIndex in
+                    withAnimation(.easeInOut(duration: 0.24)) {
+                        proxy.scrollTo(pageIndex, anchor: .center)
+                    }
+                }
+            }
+        }
+        .frame(height: thumbnailHeight + 12)
+    }
+
+    private func readerCoverThumbnail() -> some View {
+        let isSelected = currentPageIndex == 0
+
+        return JournalStoryboardReaderCoverPage(
+            title: "My Story",
+            color: myStoryCoverColor,
+            coverImage: myStoryCoverImage,
+            remoteCoverURL: coverSettings.remoteCover?.thumbnailNSURL ?? coverSettings.remoteCover?.imageNSURL,
+            fallbackImageName: myStoryFallbackCoverImageName,
+            pageCountText: pageCountText,
+            storyboardCountText: storyboardCountText,
+            showsDecorativeCopy: false
+        )
+        .frame(width: thumbnailHeight * readerPageAspectRatio, height: thumbnailHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(
+                    isSelected ? Color.white : Color.white.opacity(0.22),
+                    lineWidth: isSelected ? 2.5 : 1
+                )
+        }
+        .shadow(color: .black.opacity(isSelected ? 0.42 : 0.2), radius: isSelected ? 8 : 4, y: 2)
+        .opacity(isSelected ? 1 : 0.74)
+        .scaleEffect(isSelected ? 1.05 : 1)
+        .animation(.easeInOut(duration: 0.18), value: currentPageIndex)
+    }
+
+    private func readerThumbnail(for image: UIImage, at index: Int) -> some View {
+        let isSelected = index == currentPageIndex
+        let aspectRatio = image.size.height > 0 ? image.size.width / image.size.height : 0.57
+        let thumbnailWidth = max(28, thumbnailHeight * aspectRatio)
+
+        return Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(width: thumbnailWidth, height: thumbnailHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(
+                        isSelected ? Color.white : Color.white.opacity(0.22),
+                        lineWidth: isSelected ? 2.5 : 1
+                    )
+            }
+            .shadow(color: .black.opacity(isSelected ? 0.42 : 0.2), radius: isSelected ? 8 : 4, y: 2)
+            .opacity(isSelected ? 1 : 0.74)
+            .scaleEffect(isSelected ? 1.05 : 1)
+            .animation(.easeInOut(duration: 0.18), value: currentPageIndex)
+    }
+
+    private var myStoryLoadingState: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .tint(.white)
+
+            Text("Loading My Story")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white.opacity(0.82))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var myStoryEmptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "rectangle.stack")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.62))
+
+            Text(contentMode.showsSampleContent ? "No sample storyboards yet" : "No storyboards yet")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white.opacity(0.84))
+
+            Text("Completed storyboards will appear here as a comic reader.")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.62))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+
+            if let coverErrorMessage {
+                Text(coverErrorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func myStoryErrorState(message: String) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.68))
+
+            Text(message)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.78))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 30)
+
+            if let coverErrorMessage {
+                Text(coverErrorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 30)
+            }
+
+            Button {
+                Task {
+                    await loadMyStoryboards(forceReload: true)
+                }
+            } label: {
+                Text("Try Again")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 18)
+                    .frame(height: 36)
+                    .background(Color.white, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @MainActor
+    private func loadMyStoryboards(forceReload: Bool = false) async {
+        if let unavailableMessage = contentMode.unavailableMessage {
+            generatedStoryboards = []
+            loadErrorMessage = unavailableMessage
+            isLoadingStoryboards = false
+            return
+        }
+
+        guard contentMode.isResolved else {
+            isLoadingStoryboards = true
+            return
+        }
+
+        if contentMode.showsSampleContent {
+            await loadSampleStoryboards()
+            return
+        }
+
+        guard authStore.userID != nil else {
+            generatedStoryboards = []
+            loadErrorMessage = nil
+            isLoadingStoryboards = false
+            return
+        }
+
+        if !forceReload, generatedStoryboards.isEmpty {
+            generatedStoryboards = myStoryEligibleStoryboards(GeneratedStoryboardStore.load(), sampleEntryIDs: [])
+        }
+
+        isLoadingStoryboards = generatedStoryboards.isEmpty
+        loadErrorMessage = nil
+        defer { isLoadingStoryboards = false }
+
+        do {
+            let service = SupabaseStoryboardService()
+            let sampleEntryIDs = await activeSampleEntryIDs()
+            let rows = try await service.loadCompletedJournalStoryboardRows()
+                .filter { row in
+                    !sampleEntryIDs.contains(row.clientEntryID)
+                        && !row.storagePath.hasPrefix("journaltopia-first-run/")
+                }
+            let downloadedStoryboards = await service.downloadStoryboards(from: rows)
+                .sorted(by: myStoryStoryboardSort)
+
+            generatedStoryboards = downloadedStoryboards
+            cacheSelectedStoryboardCoverIfNeeded()
+            currentPageIndex = clampedPageIndex(currentPageIndex)
+        } catch {
+            print("[Journaltopia] My Story storyboard load failed: \(error.localizedDescription)")
+            if generatedStoryboards.isEmpty {
+                loadErrorMessage = "Could not load your completed AI storyboards from Journaltopia cloud."
+            }
+        }
+    }
+
+    @MainActor
+    private func loadSampleStoryboards() async {
+        loadErrorMessage = nil
+
+        if !contentMode.isSampleAuthoring, let seededPack = SampleContentStore.pack {
+            applySampleStoryPack(seededPack)
+        }
+
+        isLoadingStoryboards = generatedStoryboards.isEmpty
+        defer { isLoadingStoryboards = false }
+
+        do {
+            let service = SupabaseSampleStoryService()
+            let pack: SampleStoryPack
+            if contentMode.isSampleAuthoring {
+                pack = try await service.loadAuthoringPack()
+            } else {
+                pack = try await service.loadActivePack()
+                SampleContentStore.replace(with: pack)
+            }
+
+            applySampleStoryPack(pack)
+        } catch {
+            print("[Journaltopia] My Story sample storyboard load failed: \(error.localizedDescription)")
+            if generatedStoryboards.isEmpty {
+                loadErrorMessage = "Could not load the sample storyboards."
+            }
+        }
+    }
+
+    @MainActor
+    private func applySampleStoryPack(_ pack: SampleStoryPack) {
+        generatedStoryboards = pack.storyboardsByEntryID.values
+            .flatMap { $0 }
+            .sorted(by: myStoryStoryboardSort)
+        cacheSelectedStoryboardCoverIfNeeded()
+        currentPageIndex = clampedPageIndex(currentPageIndex)
+    }
+
+    @MainActor
+    private func loadMyStoryCoverSettings() async {
+        guard contentMode.isResolved, !contentMode.showsSampleContent, authStore.userID != nil else {
+            coverSettings = .empty
+            storedCoverImage = nil
+            JournalCoverStore.delete(for: myStoryCoverChapter)
+            return
+        }
+
+        do {
+            let service = MyStoryCoverService()
+            let settings = try await service.fetchSettings()
+            coverSettings = settings
+            coverErrorMessage = nil
+
+            if let storagePath = settings.storagePath {
+                let image = try await service.downloadCover(storagePath: storagePath)
+                storedCoverImage = image
+                JournalCoverStore.save(image, for: myStoryCoverChapter)
+            } else if let storyboardCoverImage = storyboardCoverImage(for: settings.storyboardID) {
+                storedCoverImage = storyboardCoverImage
+                JournalCoverStore.save(storyboardCoverImage, for: myStoryCoverChapter)
+            } else {
+                storedCoverImage = nil
+                JournalCoverStore.delete(for: myStoryCoverChapter)
+            }
+        } catch {
+            print("[Journaltopia] My Story cover load failed: \(error.localizedDescription)")
+            coverErrorMessage = "Could not load your saved My Story cover."
+        }
+    }
+
+    private func openMyStoryCoverCustomization() {
+        guard signInGate.requireAccount(for: .customizeJournalCover, retry: { isShowingCoverCustomization = true }) else {
+            return
+        }
+
+        if let selectedImage = myStoryCoverImage {
+            JournalCoverStore.save(selectedImage, for: myStoryCoverChapter)
+        } else {
+            JournalCoverStore.delete(for: myStoryCoverChapter)
+        }
+
+        isShowingCoverCustomization = true
+    }
+
+    @MainActor
+    private func applyMyStoryCoverCustomization(_ customization: JournalCustomization) {
+        coverErrorMessage = nil
+
+        if let storedCoverImage = customization.storedCoverImage {
+            self.storedCoverImage = storedCoverImage
+            JournalCoverStore.save(storedCoverImage, for: myStoryCoverChapter)
+        } else if customization.clearsStoredCover {
+            storedCoverImage = nil
+            JournalCoverStore.delete(for: myStoryCoverChapter)
+        }
+
+        let baseSettings = MyStoryCoverSettings(
+            colorHex: JournalColorOption.hexString(for: customization.color),
+            storagePath: nil,
+            storyboardID: customization.storyboardCoverID,
+            imageName: customization.coverImageName,
+            coverSource: myStoryCoverSource(for: customization),
+            imageURL: customization.remoteCover?.imageURL,
+            thumbURL: customization.remoteCover?.thumbnailURL,
+            attributionName: customization.remoteCover?.attributionName,
+            attributionURL: customization.remoteCover?.attributionURL,
+            downloadLocation: customization.remoteCover?.downloadLocation
+        )
+
+        coverSettings = baseSettings
+
+        Task { @MainActor in
+            do {
+                let service = MyStoryCoverService()
+                let savedSettings: MyStoryCoverSettings
+                if
+                    customization.storyboardCoverID == nil,
+                    customization.remoteCover == nil,
+                    customization.coverImageName == nil,
+                    let storedCoverImage = customization.storedCoverImage
+                {
+                    savedSettings = try await service.uploadCover(storedCoverImage, baseSettings: baseSettings)
+                } else {
+                    savedSettings = try await service.saveSettings(baseSettings)
+                }
+
+                coverSettings = savedSettings
+                if let coverImage = myStoryCoverImage {
+                    JournalCoverStore.save(coverImage, for: myStoryCoverChapter)
+                } else {
+                    JournalCoverStore.delete(for: myStoryCoverChapter)
+                }
+            } catch {
+                print("[Journaltopia] My Story cover save failed: \(error.localizedDescription)")
+                coverErrorMessage = "Could not save your My Story cover."
+            }
+        }
+    }
+
+    private func activeSampleEntryIDs() async -> Set<UUID> {
+        (try? await SupabaseSampleStoryService().loadActiveSampleEntryIDs()) ?? []
+    }
+
+    private func myStoryEligibleStoryboards(
+        _ storyboards: [GeneratedStoryboard],
+        sampleEntryIDs: Set<UUID>
+    ) -> [GeneratedStoryboard] {
+        storyboards
+            .filter { storyboard in
+                guard !storyboard.isSampleContent else {
+                    return false
+                }
+
+                guard storyboard.cloudSyncState != StoryboardCloudSyncState.failed.rawValue else {
+                    return false
+                }
+
+                if let clientEntryID = storyboard.clientEntryID,
+                   sampleEntryIDs.contains(clientEntryID) {
+                    return false
+                }
+
+                if let storagePath = storyboard.storagePath {
+                    return !storagePath.hasPrefix("journaltopia-first-run/")
+                }
+
+                return false
+            }
+            .sorted(by: myStoryStoryboardSort)
+    }
+
+    private func myStoryStoryboardSort(_ lhs: GeneratedStoryboard, _ rhs: GeneratedStoryboard) -> Bool {
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt > rhs.createdAt
+        }
+
+        return lhs.id.uuidString > rhs.id.uuidString
+    }
+
+    private var myStoryCoverChapter: PrototypeChapter {
+        PrototypeChapter(
+            id: Self.coverChapterID,
+            title: "My Story",
+            subtitle: "All your completed storyboards",
+            color: myStoryCoverColor,
+            symbol: "person.fill",
+            coverImageName: coverSettings.imageName,
+            remoteCover: coverSettings.remoteCover,
+            kind: .storyboard,
+            entries: []
+        )
+    }
+
+    private var myStoryStoryboardCoverCandidates: [JournalStoryboardCoverCandidate] {
+        var seen = Set<UUID>()
+        return generatedStoryboards
+            .filter { seen.insert($0.id).inserted }
+            .sorted(by: myStoryStoryboardSort)
+            .map(JournalStoryboardCoverCandidate.init(storyboard:))
+    }
+
+    private var hasExplicitMyStoryCover: Bool {
+        coverSettings.storagePath != nil
+            || coverSettings.storyboardID != nil
+            || coverSettings.imageName != nil
+            || coverSettings.remoteCover != nil
+            || coverSettings.coverSource == JournalCoverSource.color.rawValue
+    }
+
+    private var myStoryCoverColor: Color {
+        coverSettings.colorHex.flatMap(Color.init(hex:)) ?? Color.homeAccent
+    }
+
+    private var myStoryCoverImage: UIImage? {
+        if coverSettings.remoteCover != nil || coverSettings.imageName != nil {
+            return nil
+        }
+
+        if let storyboardCoverImage = storyboardCoverImage(for: coverSettings.storyboardID) {
+            return storyboardCoverImage
+        }
+
+        if let storedCoverImage {
+            return storedCoverImage
+        }
+
+        return hasExplicitMyStoryCover ? nil : generatedStoryboards.first?.image
+    }
+
+    private var myStoryFallbackCoverImageName: String? {
+        if let imageName = coverSettings.imageName {
+            return imageName
+        }
+
+        return myStoryCoverImage == nil && coverSettings.remoteCover == nil && !hasExplicitMyStoryCover
+            ? "blank_storyboard"
+            : nil
+    }
+
+    private func storyboardCoverImage(for storyboardID: UUID?) -> UIImage? {
+        guard let storyboardID else {
+            return nil
+        }
+
+        return generatedStoryboards.first(where: { $0.id == storyboardID })?.image
+    }
+
+    private func cacheSelectedStoryboardCoverIfNeeded() {
+        guard let storyboardCoverImage = storyboardCoverImage(for: coverSettings.storyboardID) else {
+            return
+        }
+
+        storedCoverImage = storyboardCoverImage
+        JournalCoverStore.save(storyboardCoverImage, for: myStoryCoverChapter)
+    }
+
+    private func myStoryCoverSource(for customization: JournalCustomization) -> String? {
+        if customization.remoteCover != nil {
+            return JournalCoverSource.unsplash.rawValue
+        }
+
+        if customization.coverImageName != nil {
+            return JournalCoverSource.asset.rawValue
+        }
+
+        if customization.storyboardCoverID != nil || customization.storedCoverImage != nil {
+            return JournalCoverSource.local.rawValue
+        }
+
+        return JournalCoverSource.color.rawValue
+    }
+
+    private var pageCountText: String {
+        generatedStoryboards.count == 1 ? "1 Page" : "\(generatedStoryboards.count) Pages"
+    }
+
+    private var storyboardCountText: String {
+        generatedStoryboards.count == 1 ? "1 Storyboard" : "\(generatedStoryboards.count) Storyboards"
+    }
+
+    private var totalPageCount: Int {
+        generatedStoryboards.count + 1
+    }
+
+    private var readerPageAspectRatio: CGFloat {
+        guard let firstStoryboard = generatedStoryboards.first,
+              firstStoryboard.image.size.height > 0 else {
+            return 0.57
+        }
+
+        return firstStoryboard.image.size.width / firstStoryboard.image.size.height
+    }
+
+    private var isTurningProgrammatically: Bool {
+        isPageTurnActive || programmaticTurnOffset != 0
+    }
+
+    private func fittedPageSize(in viewport: CGSize) -> CGSize {
+        let width = max(viewport.width, 1)
+        let height = width / readerPageAspectRatio
+        return CGSize(width: width, height: height)
+    }
+
+    private func goToPage(_ pageIndex: Int) {
+        currentPageIndex = clampedPageIndex(pageIndex)
+    }
+
+    private func turnPage(by offset: Int) {
+        guard !isTurningProgrammatically else {
+            return
+        }
+
+        let nextPageIndex = clampedPageIndex(currentPageIndex + offset)
+        guard nextPageIndex != currentPageIndex else {
+            return
+        }
+
+        programmaticTurnOffset = offset
+        programmaticTurnProgress = 0.02
+
+        programmaticTurnTask?.cancel()
+        programmaticTurnTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            guard !Task.isCancelled, programmaticTurnOffset == offset else {
+                return
+            }
+
+            let frameCount = 24
+            for frame in 1...frameCount {
+                guard !Task.isCancelled, programmaticTurnOffset == offset else {
+                    return
+                }
+
+                let linearProgress = CGFloat(frame) / CGFloat(frameCount)
+                let remainingProgress = 1 - linearProgress
+                let easedProgress = 1 - (remainingProgress * remainingProgress)
+                programmaticTurnProgress = min(1, max(0.02, easedProgress))
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+
+            withTransaction(transaction) {
+                currentPageIndex = nextPageIndex
+                programmaticTurnOffset = 0
+                programmaticTurnProgress = 0
+                programmaticTurnTask = nil
+            }
+        }
+    }
+
+    private func clampedPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, totalPageCount - 1))
+    }
+}
+
 private struct JournalStoryboardVerticalComicViewer: View {
     let storyboards: [GeneratedStoryboard]
     @Binding var currentPageIndex: Int
@@ -5762,12 +6636,12 @@ private struct JournalStoryboardVerticalComicViewer: View {
                                 .id(0)
                                 .background(pagePositionReader(index: 0))
 
-                            ForEach(Array(storyboards.enumerated()), id: \.element.id) { index, storyboard in
+                            ForEach(Array(interiorPages.enumerated()), id: \.element.id) { index, page in
                                 let pageIndex = index + 1
 
                                 pageBoundary(pageIndex: pageIndex)
 
-                                Image(uiImage: storyboard.image)
+                                Image(uiImage: page.image)
                                     .resizable()
                                     .scaledToFit()
                                     .frame(maxWidth: .infinity)
@@ -5844,7 +6718,7 @@ private struct JournalStoryboardVerticalComicViewer: View {
                 .frame(height: 1)
                 .padding(.horizontal, 28)
 
-            Text("\(pageIndex) / \(storyboards.count)")
+            Text("\(pageIndex) / \(interiorPages.count)")
                 .font(.system(size: 12, weight: .heavy))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
@@ -5887,8 +6761,12 @@ private struct JournalStoryboardVerticalComicViewer: View {
         min(max(0, pageIndex), max(0, totalPageCount - 1))
     }
 
+    private var interiorPages: [(id: UUID, image: UIImage)] {
+        JournalComicReaderPages.interiorPages(from: storyboards)
+    }
+
     private var totalPageCount: Int {
-        storyboards.count + 1
+        interiorPages.count + 1
     }
 }
 
@@ -11173,70 +12051,6 @@ private struct EntrySampleBadge: View {
             )
             .shadow(color: Color.storyInk.opacity(0.20), radius: 3, y: 1)
             .accessibilityLabel("Sample")
-    }
-}
-
-/// Where the floating controls sit above the tab bar, and how much room the scroll content has to
-/// leave underneath so its last row is not left permanently hidden behind them.
-private enum JournaltopiaFloatingControlMetrics {
-    static let bottomInset: CGFloat = 84
-    static let floatingButtonDiameter: CGFloat = 60
-    static let signInCalloutHeight: CGFloat = 44
-
-    /// The callout shares a row with the floating button but is the shorter of the two, so matching
-    /// their bottom edges leaves them looking misaligned. Lifting it by half the height difference
-    /// puts the two centre lines together instead.
-    static let signInCalloutBottomInset: CGFloat =
-        bottomInset + (floatingButtonDiameter - signInCalloutHeight) / 2
-
-    /// What the scroll content adds underneath so its last row clears the callout. The floating
-    /// button reaches further down the screen than this but sits against the trailing edge, where
-    /// it covers a corner rather than a whole row.
-    static let signInCalloutContentInset: CGFloat = 32
-}
-
-/// The one call to action on the signed-out browse screens, floating at the bottom centre above the
-/// tab bar.
-///
-/// The sample badges say *what* this content is; this says what to do about it. It routes through
-/// ``SignInGate`` rather than presenting `SignInView` itself so the sign-in page is still the single
-/// one mounted at the app root, and so a visitor who signs in from here lands back where they were.
-///
-/// The label is kept short on purpose. Centred, it shares a row with a floating button pinned 20pt
-/// from the trailing edge, so the pill has about 205pt to live in before the two touch on a 375pt
-/// phone — a longer sentence collides there while still looking fine on a Pro.
-private struct SampleSignInCallout: View {
-    @EnvironmentObject private var signInGate: SignInGate
-
-    var body: some View {
-        Button {
-            signInGate.requireAccount(for: .signIn)
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 13, weight: .bold))
-
-                Text("Sign in to start")
-                    .font(.system(size: 15, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .foregroundStyle(Color.white)
-            .padding(.horizontal, 18)
-            .frame(height: JournaltopiaFloatingControlMetrics.signInCalloutHeight)
-            .background(Color.storyPurple, in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
-            )
-            // It floats over the content rather than sitting in the layout, so it carries its own
-            // separation from whatever scrolls underneath it.
-            .shadow(color: Color.black.opacity(0.28), radius: 14, y: 6)
-            .shadow(color: Color.storyPurple.opacity(0.34), radius: 6, y: 2)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Sign in to start")
-        .accessibilityHint("Opens the sign in page")
     }
 }
 

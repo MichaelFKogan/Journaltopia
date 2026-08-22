@@ -15,7 +15,7 @@ create extension if not exists pgtap with schema extensions;
 
 begin;
 
-select plan(47);
+select plan(50);
 
 -- Users' own content ------------------------------------------------------------------------------
 -- Four policies each, so four privileges each. Checked as a set, since a partial grant here shows up
@@ -88,6 +88,21 @@ select ok(
 select ok(
     has_column_privilege('authenticated', 'public.profiles', 'avatar_url', 'update'),
     'profile editing keeps avatar_url'
+);
+
+select ok(
+    has_column_privilege('authenticated', 'public.profiles', 'my_story_cover_storage_path', 'update'),
+    'My Story cover storage path is writable by the signed-in owner'
+);
+
+select ok(
+    has_column_privilege('authenticated', 'public.profiles', 'my_story_cover_storyboard_id', 'update'),
+    'My Story cover storyboard choice is writable by the signed-in owner'
+);
+
+select ok(
+    has_column_privilege('authenticated', 'public.profiles', 'my_story_cover_source', 'update'),
+    'My Story cover source metadata is writable by the signed-in owner'
 );
 
 select is(

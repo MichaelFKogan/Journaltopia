@@ -125,6 +125,7 @@ struct SettingsView: View {
         } message: {
             Text(deleteAccountConfirmationMessage)
         }
+        .environment(\.colorScheme, .light)
         .preferredColorScheme(.light)
         .enableInteractivePopGesture()
         // Presented from here rather than through the gate: Settings can already be presented over
@@ -753,6 +754,7 @@ private struct SettingsExtraView: View {
         .navigationTitle("Extra")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
+        .environment(\.colorScheme, .light)
         .preferredColorScheme(.light)
         .fullScreenCover(isPresented: $isOnboardingPreviewPresented) {
             OnboardingView {

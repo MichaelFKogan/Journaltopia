@@ -393,6 +393,14 @@ struct ContentView: View {
             )
                 .transition(.identity)
                 .zIndex(0)
+        case .myStory:
+            MyStoryView(
+                selectedPage: pageSelection,
+                generatedStoryboards: $generatedStoryboards,
+                contentMode: contentMode
+            )
+            .transition(.identity)
+            .zIndex(0)
         case .profile:
             ProfileView(
                 selectedPage: pageSelection,
@@ -559,7 +567,7 @@ struct ContentView: View {
         }
 
         isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
-        if selectedPage == .create || pageBehindCreate == .profile {
+        if selectedPage == .create || pageBehindCreate == .myStory || pageBehindCreate == .profile {
             generatedStoryboards = GeneratedStoryboardStore.load()
         }
         activeDraftID = nil

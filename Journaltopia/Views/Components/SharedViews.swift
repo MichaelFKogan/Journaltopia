@@ -148,6 +148,70 @@ struct CreditBalanceBadge: View {
     }
 }
 
+/// Where the floating controls sit above the tab bar, and how much room the scroll content has to
+/// leave underneath so its last row is not left permanently hidden behind them.
+enum JournaltopiaFloatingControlMetrics {
+    static let bottomInset: CGFloat = 84
+    static let floatingButtonDiameter: CGFloat = 60
+    static let signInCalloutHeight: CGFloat = 44
+
+    /// The callout shares a row with the floating button but is the shorter of the two, so matching
+    /// their bottom edges leaves them looking misaligned. Lifting it by half the height difference
+    /// puts the two centre lines together instead.
+    static let signInCalloutBottomInset: CGFloat =
+        bottomInset + (floatingButtonDiameter - signInCalloutHeight) / 2
+
+    /// What the scroll content adds underneath so its last row clears the callout. The floating
+    /// button reaches further down the screen than this but sits against the trailing edge, where
+    /// it covers a corner rather than a whole row.
+    static let signInCalloutContentInset: CGFloat = 32
+}
+
+/// The one call to action on the signed-out browse screens, floating at the bottom centre above the
+/// tab bar.
+///
+/// The sample badges say *what* this content is; this says what to do about it. It routes through
+/// ``SignInGate`` rather than presenting `SignInView` itself so the sign-in page is still the single
+/// one mounted at the app root, and so a visitor who signs in from here lands back where they were.
+///
+/// The label is kept short on purpose. Centred, it shares a row with a floating button pinned 20pt
+/// from the trailing edge, so the pill has about 205pt to live in before the two touch on a 375pt
+/// phone — a longer sentence collides there while still looking fine on a Pro.
+struct SampleSignInCallout: View {
+    @EnvironmentObject private var signInGate: SignInGate
+
+    var body: some View {
+        Button {
+            signInGate.requireAccount(for: .signIn)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .bold))
+
+                Text("Sign in to start")
+                    .font(.system(size: 15, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 18)
+            .frame(height: JournaltopiaFloatingControlMetrics.signInCalloutHeight)
+            .background(Color.storyPurple, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
+            )
+            // It floats over the content rather than sitting in the layout, so it carries its own
+            // separation from whatever scrolls underneath it.
+            .shadow(color: Color.black.opacity(0.28), radius: 14, y: 6)
+            .shadow(color: Color.storyPurple.opacity(0.34), radius: 6, y: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sign in to start")
+        .accessibilityHint("Opens the sign in page")
+    }
+}
+
 struct BottomNavigationBar: View {
     @Binding var selectedPage: StoryPage
 
@@ -185,12 +249,12 @@ struct BottomNavigationBar: View {
                     selectedPage = .journal
                 }
                 NavItem(
-                    title: "Profile",
-                    systemName: selectedPage == .profile ? "person.fill" : "person",
-                    isSelected: selectedPage == .profile,
+                    title: "My Story",
+                    systemName: selectedPage == .myStory ? "person.fill" : "person",
+                    isSelected: selectedPage == .myStory,
                     selectedColor: .homeAccent
                 ) {
-                    selectedPage = .profile
+                    selectedPage = .myStory
                 }
             }
             .padding(.horizontal, 22)
