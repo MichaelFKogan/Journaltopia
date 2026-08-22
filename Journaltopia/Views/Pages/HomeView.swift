@@ -15,9 +15,13 @@ struct HomeView: View {
     var openEntriesPage: () -> Void = {}
     var openJournalsPage: () -> Void = {}
     var openStorySoFarPage: () -> Void = {}
+    var openRecentEntry: (CreateEntryDraft, UIImage?) -> Void = { _, _ in }
+    var openRecentJournal: (PrototypeChapter) -> Void = { _ in }
 
     @State private var fullScreenImageName: String?
     @State private var isLoadingHomeStoryboards = false
+    @State private var recentEntry: HomeRecentEntry?
+    @State private var recentJournal: HomeRecentJournal?
 
     private let homeStoryboardLoadLimit = 50
 
@@ -28,12 +32,9 @@ struct HomeView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
                     header
-                    heroCard
-                        .zIndex(3)
-                    homeNavigationCards
+                    homeCardGrid
                         .zIndex(2)
-                    journalCoverSection
-                        .zIndex(1)
+                    recentContentSection
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -66,7 +67,20 @@ struct HomeView: View {
         }
         .task(id: homeStoryboardLoadID) {
             await loadHomeStoryboards()
+            refreshRecentContent()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+        }
+        .onAppear {
+            refreshRecentContent()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
+            refreshRecentContent()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaJournalCoverChanged)) { _ in
+            refreshRecentContent()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
+            refreshRecentContent()
         }
         .preferredColorScheme(.light)
     }
@@ -159,52 +173,12 @@ struct HomeView: View {
         )
     }
 
-    private var heroCard: some View {
-        Button {
-            openCreatePage()
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Create\nStory")
-                    .font(.system(size: 26, weight: .bold, design: .serif))
-                    .lineSpacing(2)
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .homeBannerTitleContrast()
+    private var homeCardGrid: some View {
+        LazyVGrid(columns: HomeCardLayout.gridColumns, spacing: HomeCardLayout.gridSpacing) {
+            heroCard
 
-                Text("Write about your day\nand turn it into a storyboard.")
-                    .font(.system(size: 14, weight: .medium))
-                    .lineSpacing(2)
-                    .foregroundStyle(.white.opacity(0.92))
-                    .homeBannerSubtitleContrast()
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, HomeCardLayout.verticalPadding)
-            .frame(maxWidth: .infinity, minHeight: HomeCardLayout.primaryHeight, alignment: .leading)
-            .background {
-                HomeLoopingVideoBackground(resourceName: "homepage_banner")
-                    .overlay(HomeBannerLeadingGradient())
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(alignment: .bottomTrailing) {
-                HomeCardNavigationIndicator(systemName: "plus", style: .accent)
-                    .padding(14)
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Create Story")
-        .accessibilityHint("Opens Create Story")
-    }
-
-    private var homeNavigationCards: some View {
-        VStack(spacing: 14) {
             HomeNavigationCard(
-                title: "My Entries",
+                title: "Entries",
                 subtitle: "Write, edit, and turn your\nthoughts into storyboards.",
                 backgroundImageName: "home_entries_card_bg",
                 backgroundVideoName: "home_entries_card_bg",
@@ -214,7 +188,7 @@ struct HomeView: View {
             }
 
             HomeNavigationCard(
-                title: "My Journals",
+                title: "Journals",
                 subtitle: "Organize your stories\ninto meaningful journals.",
                 backgroundImageName: "home_journals_card_bg",
                 backgroundVideoName: "home_journals_card_bg",
@@ -222,7 +196,51 @@ struct HomeView: View {
             ) {
                 openJournalsPage()
             }
+
+            journalCoverSection
         }
+    }
+
+    private var heroCard: some View {
+        Button {
+            openCreatePage()
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Create")
+                    .font(.system(size: HomeCardLayout.titleSize, weight: .bold, design: .serif))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .homeBannerTitleContrast()
+
+                Text("Write about your day\nand turn it into a storyboard.")
+                    .font(.system(size: HomeCardLayout.subtitleSize, weight: .medium))
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.92))
+                    .homeBannerSubtitleContrast()
+            }
+            .padding(.horizontal, HomeCardLayout.horizontalPadding)
+            .padding(.vertical, HomeCardLayout.verticalPadding)
+            .frame(maxWidth: .infinity, minHeight: HomeCardLayout.primaryHeight, alignment: .leading)
+            .background {
+                HomeLoopingVideoBackground(resourceName: "homepage_banner")
+                    .overlay(HomeBannerLeadingGradient())
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(alignment: .bottomTrailing) {
+                HomeCardNavigationIndicator(systemName: "plus", style: .accent)
+                    .padding(HomeCardLayout.indicatorInset)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder, lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Create")
+        .accessibilityHint("Opens Create")
     }
 
     private var journalCoverSection: some View {
@@ -231,11 +249,147 @@ struct HomeView: View {
             isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
             action: openStorySoFarPage
         )
-        .frame(height: HomeCardLayout.primaryHeight)
-        .clipped()
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .padding(.top, 4)
-        .padding(.bottom, 2)
+    }
+
+    @ViewBuilder
+    private var recentContentSection: some View {
+        if recentEntry != nil || recentJournal != nil {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Most Recent")
+                    .font(.system(size: 22, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+                    .padding(.top, 6)
+
+                LazyVGrid(columns: HomeRecentContentLayout.gridColumns, spacing: HomeRecentContentLayout.gridSpacing) {
+                    if let recentEntry {
+                        HomeRecentEntryCard(recent: recentEntry) {
+                            openRecentEntry(recentEntry.entry, recentEntry.storyboardImage)
+                        }
+                    }
+
+                    if let recentJournal {
+                        HomeRecentJournalCard(recent: recentJournal) {
+                            openRecentJournal(recentJournal.chapter)
+                        }
+                    }
+                }
+            }
+            .padding(.top, 8)
+        }
+    }
+
+    @MainActor
+    private func refreshRecentContent() {
+        if showsSampleHomeContent, let pack = SampleContentStore.pack {
+            recentEntry = mostRecentSampleEntry(from: pack)
+            recentJournal = mostRecentSampleJournal(from: pack)
+            return
+        }
+
+        let localEntries = CreateEntryDraftStore.loadAll()
+        recentEntry = localEntries
+            .sorted(by: homeRecentEntrySort)
+            .first
+            .map { entry in
+                HomeRecentEntry(
+                    entry: entry,
+                    storyboardImage: primaryStoryboardImage(for: entry.id),
+                    storyboardCount: storyboardCount(for: entry.id),
+                    isSample: false
+                )
+            }
+
+        recentJournal = UserChapterStore.load()
+            .map { HomeRecentJournal(chapter: $0, recentDate: recentDate(for: $0, entries: localEntries), isSample: false) }
+            .sorted(by: homeRecentJournalSort)
+            .first
+    }
+
+    @MainActor
+    private func mostRecentSampleEntry(from pack: SampleStoryPack) -> HomeRecentEntry? {
+        let entry = (pack.entries + pack.journals.flatMap(\.entries))
+            .sorted(by: homeRecentEntrySort)
+            .first
+
+        return entry.map {
+            HomeRecentEntry(
+                entry: $0,
+                storyboardImage: primaryStoryboardImage(for: $0.id),
+                storyboardCount: storyboardCount(for: $0.id),
+                isSample: true
+            )
+        }
+    }
+
+    @MainActor
+    private func mostRecentSampleJournal(from pack: SampleStoryPack) -> HomeRecentJournal? {
+        pack.journals
+            .map { journal in
+                HomeRecentJournal(
+                    chapter: SampleJournalDisplay.chapter(from: journal),
+                    recentDate: journal.entries.map(\.updatedAt).max().map { max($0, journal.updatedAt) } ?? journal.updatedAt,
+                    isSample: true
+                )
+            }
+            .sorted(by: homeRecentJournalSort)
+            .first
+    }
+
+    private func recentDate(for chapter: PrototypeChapter, entries: [CreateEntryDraft]) -> Date {
+        let linkedEntryIDs = EntryJournalLinkStore.draftIDs(linkedTo: chapter.title)
+            .union(Set(StoryEntryStore.clientEntryIDs(for: chapter.title)))
+        let linkedEntryUpdatedAt = entries
+            .filter { linkedEntryIDs.contains($0.id) }
+            .map(\.updatedAt)
+            .max()
+
+        return max(chapter.updatedAt, linkedEntryUpdatedAt ?? .distantPast)
+    }
+
+    private func homeRecentEntrySort(_ lhs: CreateEntryDraft, _ rhs: CreateEntryDraft) -> Bool {
+        if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt > rhs.updatedAt
+        }
+
+        return lhs.createdAt > rhs.createdAt
+    }
+
+    private func homeRecentJournalSort(_ lhs: HomeRecentJournal, _ rhs: HomeRecentJournal) -> Bool {
+        if lhs.recentDate != rhs.recentDate {
+            return lhs.recentDate > rhs.recentDate
+        }
+
+        return lhs.chapter.createdAt > rhs.chapter.createdAt
+    }
+
+    @MainActor
+    private func primaryStoryboardImage(for entryID: UUID) -> UIImage? {
+        let storyboards: [GeneratedStoryboard]
+        if showsSampleHomeContent {
+            storyboards = SampleContentStore.storyboards(clientEntryID: entryID)
+        } else {
+            storyboards = GeneratedStoryboardStore.load(clientEntryIDs: [entryID])
+        }
+
+        return storyboards
+            .sorted { lhs, rhs in
+                if lhs.isPrimary != rhs.isPrimary {
+                    return lhs.isPrimary
+                }
+
+                return lhs.createdAt > rhs.createdAt
+            }
+            .first?
+            .image
+    }
+
+    @MainActor
+    private func storyboardCount(for entryID: UUID) -> Int {
+        if showsSampleHomeContent {
+            return SampleContentStore.storyboards(clientEntryID: entryID).count
+        }
+
+        return GeneratedStoryboardStore.count(clientEntryIDs: [entryID])
     }
 
     @MainActor
@@ -600,8 +754,329 @@ private struct HomeCardNavigationIndicator: View {
 }
 
 private enum HomeCardLayout {
-    static let primaryHeight: CGFloat = 160
-    static let verticalPadding: CGFloat = 14
+    static let gridSpacing: CGFloat = 12
+    static let gridColumns = [
+        GridItem(.flexible(), spacing: gridSpacing),
+        GridItem(.flexible(), spacing: gridSpacing)
+    ]
+    static let primaryHeight: CGFloat = 154
+    static let horizontalPadding: CGFloat = 14
+    static let verticalPadding: CGFloat = 12
+    static let indicatorInset: CGFloat = 12
+    static let titleSize: CGFloat = 22
+    static let subtitleSize: CGFloat = 12
+}
+
+private enum HomeRecentContentLayout {
+    static let gridSpacing: CGFloat = 16
+    static let gridColumns = [
+        GridItem(.flexible(), spacing: gridSpacing),
+        GridItem(.flexible(), spacing: gridSpacing)
+    ]
+    static let entryAspectRatio: CGFloat = 260.0 / 340.0
+    static let journalAspectRatio: CGFloat = 0.72
+}
+
+private struct HomeRecentEntry: Identifiable {
+    let entry: CreateEntryDraft
+    let storyboardImage: UIImage?
+    let storyboardCount: Int
+    let isSample: Bool
+
+    var id: UUID {
+        entry.id
+    }
+}
+
+private struct HomeRecentJournal: Identifiable {
+    let chapter: PrototypeChapter
+    let recentDate: Date
+    let isSample: Bool
+
+    var id: UUID {
+        chapter.id
+    }
+}
+
+private func homeRecentEntryTitle(_ entry: CreateEntryDraft) -> String {
+    let trimmedTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedTitle.isEmpty {
+        return trimmedTitle
+    }
+
+    let trimmedText = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmedText.isEmpty ? "Untitled Entry" : trimmedText
+}
+
+private struct HomeRecentEntryCard: View {
+    let recent: HomeRecentEntry
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                GeometryReader { proxy in
+                    ZStack(alignment: .top) {
+                        entryPreview
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(alignment: .top) {
+                                HomeStoryPhotoTape(width: 48, height: 14, rotation: -2)
+                                    .offset(y: -7)
+                            }
+
+                        if recent.storyboardImage != nil {
+                            storyboardOverlay(in: proxy.size)
+                        }
+                    }
+                }
+                .aspectRatio(HomeRecentContentLayout.entryAspectRatio, contentMode: .fit)
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(homeRecentEntryTitle(recent.entry))
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.storyInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+
+                    Text(recent.entry.updatedAt.formatted(.dateTime.month(.abbreviated).day()))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+                        .lineLimit(1)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Most recent entry, \(homeRecentEntryTitle(recent.entry))")
+        .accessibilityHint("Opens the entry")
+    }
+
+    @ViewBuilder
+    private var entryPreview: some View {
+        if let thumbnail = recent.entry.thumbnail {
+            Image(uiImage: thumbnail)
+                .resizable()
+                .scaledToFill()
+        } else {
+            ZStack {
+                Color(red: 0.985, green: 0.978, blue: 0.955)
+
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.storyInk.opacity(0.08), lineWidth: 1)
+                    .padding(12)
+
+                Image(systemName: "doc.text")
+                    .font(.system(size: 34, weight: .regular))
+                    .foregroundStyle(Color.storyInk.opacity(0.34))
+            }
+        }
+    }
+
+    private func storyboardOverlay(in size: CGSize) -> some View {
+        let overlayHeight = size.height * 0.47
+        let overlayWidth = overlayHeight * 0.72
+
+        return ZStack(alignment: .topTrailing) {
+            if let storyboardImage = recent.storyboardImage {
+                Image(uiImage: storyboardImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: overlayWidth, height: overlayHeight)
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.white.opacity(0.82), lineWidth: 1)
+                    )
+                    .shadow(color: Color.storyInk.opacity(0.08), radius: 3, y: 1)
+                    .zIndex(1)
+            }
+
+            Image(systemName: "paperclip")
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(Color(red: 0.74, green: 0.76, blue: 0.82))
+                .rotationEffect(.degrees(-34))
+                .shadow(color: Color.white.opacity(0.75), radius: 1, y: 1)
+                .shadow(color: Color.storyInk.opacity(0.12), radius: 1, y: 1)
+                .offset(x: 1, y: -13)
+                .zIndex(2)
+
+            if recent.storyboardCount > 1 {
+                Text("\(recent.storyboardCount)")
+                    .font(.system(size: 11, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 24, height: 24)
+                    .background(Color.storyPurple, in: Circle())
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .shadow(color: Color.storyInk.opacity(0.18), radius: 5, y: 2)
+                    .offset(x: 12, y: overlayHeight - 16)
+                    .zIndex(3)
+            }
+        }
+        .frame(width: overlayWidth, height: overlayHeight)
+        .rotationEffect(.degrees(2))
+        .shadow(color: Color.storyInk.opacity(0.16), radius: 6, y: 4)
+        .position(x: size.width * 0.76, y: size.height * 0.73)
+    }
+}
+
+private struct HomeRecentJournalCard: View {
+    let recent: HomeRecentJournal
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack(alignment: .leading) {
+                    journalCover
+                        .aspectRatio(HomeRecentContentLayout.journalAspectRatio, contentMode: .fit)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(Color.black.opacity(0.18))
+                                .frame(width: 12)
+                                .overlay(alignment: .trailing) {
+                                    Rectangle()
+                                        .fill(Color.white.opacity(0.22))
+                                        .frame(width: 1)
+                                }
+                        }
+                        .overlay(alignment: .bottomLeading) {
+                            LinearGradient(
+                                colors: [.clear, .black.opacity(0.48)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: 64)
+                            .overlay(alignment: .bottomLeading) {
+                                Text(recent.chapter.title)
+                                    .font(.system(size: 13, weight: .heavy, design: .serif))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(2)
+                                    .minimumScaleFactor(0.72)
+                                    .padding(.leading, 18)
+                                    .padding(.trailing, 10)
+                                    .padding(.bottom, 10)
+                                    .homeBannerSubtitleContrast()
+                            }
+                        }
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(Color.homeBorder, lineWidth: 1)
+                        )
+                }
+                .shadow(color: Color.storyInk.opacity(0.16), radius: 9, y: 5)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(recent.chapter.entryCountText)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.storyInk)
+                        .lineLimit(1)
+
+                    Text(recent.recentDate.formatted(.dateTime.month(.abbreviated).day()))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.homeMutedText)
+                        .lineLimit(1)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Most recent journal, \(recent.chapter.title)")
+        .accessibilityHint("Opens Journals")
+    }
+
+    @ViewBuilder
+    private var journalCover: some View {
+        if let localCoverImage = HomeJournalCoverImageStore.image(for: recent.chapter) {
+            Image(uiImage: localCoverImage)
+                .resizable()
+                .scaledToFill()
+        } else if let remoteCoverURL = recent.chapter.remoteCover?.thumbnailNSURL ?? recent.chapter.remoteCover?.imageNSURL {
+            AsyncImage(url: remoteCoverURL) { phase in
+                if let image = phase.image {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    recent.chapter.color
+                }
+            }
+        } else if let coverImageName = recent.chapter.coverImageName {
+            Image(coverImageName)
+                .resizable()
+                .scaledToFill()
+        } else {
+            ZStack {
+                recent.chapter.color
+
+                Image(systemName: recent.chapter.symbol)
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.82))
+            }
+        }
+    }
+}
+
+private struct HomeStoryPhotoTape: View {
+    let width: CGFloat
+    let height: CGFloat
+    let rotation: Double
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color.white.opacity(0.72))
+            .frame(width: width, height: height)
+            .overlay(
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(Color.storyInk.opacity(0.06), lineWidth: 0.6)
+            )
+            .shadow(color: Color.storyInk.opacity(0.08), radius: 2, y: 1)
+            .rotationEffect(.degrees(rotation))
+            .blendMode(.plusLighter)
+            .allowsHitTesting(false)
+    }
+}
+
+private enum HomeJournalCoverImageStore {
+    private static let folderName = "JournalCovers"
+
+    static func image(for journal: PrototypeChapter) -> UIImage? {
+        image(for: journal.coverStorageKey) ?? image(for: journal.title)
+    }
+
+    private static func image(for key: String) -> UIImage? {
+        guard
+            let data = try? Data(contentsOf: fileURL(for: key)),
+            let image = UIImage(data: data)
+        else {
+            return nil
+        }
+
+        return image
+    }
+
+    private static var directoryURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    private static func fileURL(for key: String) -> URL {
+        directoryURL.appendingPathComponent(fileName(for: key))
+    }
+
+    private static func fileName(for key: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let sanitized = key.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? String(scalar) : "-"
+        }.joined()
+        return "\(sanitized.isEmpty ? "journal" : sanitized).jpg"
+    }
 }
 
 private extension View {
@@ -657,20 +1132,20 @@ private struct HomeNavigationCard: View {
         Button(action: action) {
             VStack(alignment: contentAlignment, spacing: 8) {
                 Text(title)
-                    .font(.system(size: 26, weight: .bold, design: .serif))
+                    .font(.system(size: HomeCardLayout.titleSize, weight: .bold, design: .serif))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(textAlignment)
                     .homeBannerTitleContrast()
 
                 Text(subtitle)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: HomeCardLayout.subtitleSize, weight: .semibold))
                     .lineSpacing(2)
                     .foregroundStyle(.white.opacity(0.96))
                     .multilineTextAlignment(textAlignment)
                     .fixedSize(horizontal: false, vertical: true)
                     .homeBannerSubtitleContrast()
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, HomeCardLayout.horizontalPadding)
             .padding(.vertical, HomeCardLayout.verticalPadding)
             .frame(
                 maxWidth: .infinity,
@@ -685,7 +1160,7 @@ private struct HomeNavigationCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
                 HomeCardNavigationIndicator()
-                    .padding(14)
+                    .padding(HomeCardLayout.indicatorInset)
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -732,8 +1207,8 @@ private struct HomeStorySoFarCard: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 10) {
-                    Text("The Story So Far...")
-                        .font(.system(size: 26, weight: .bold, design: .serif))
+                    Text("The Story\nSo Far...")
+                        .font(.system(size: HomeCardLayout.titleSize, weight: .bold, design: .serif))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.leading)
                         .homeBannerTitleContrast()
@@ -746,14 +1221,14 @@ private struct HomeStorySoFarCard: View {
                 }
 
                 Text(subtitle)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: HomeCardLayout.subtitleSize, weight: .semibold))
                     .lineSpacing(2)
                     .foregroundStyle(.white.opacity(0.96))
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .homeBannerSubtitleContrast()
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, HomeCardLayout.horizontalPadding)
             .padding(.vertical, HomeCardLayout.verticalPadding)
             .frame(
                 maxWidth: .infinity,
@@ -769,7 +1244,7 @@ private struct HomeStorySoFarCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
                 HomeCardNavigationIndicator(isEnabled: isEnabled)
-                    .padding(14)
+                    .padding(HomeCardLayout.indicatorInset)
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)

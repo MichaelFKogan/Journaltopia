@@ -216,6 +216,7 @@ struct JournalView: View {
     @Binding var isOpeningCompletedEntryFromEntries: Bool
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     @Binding var storyboardGenerationStatus: StoryboardGenerationGlobalStatus?
+    @Binding var pendingOpenJournalID: UUID?
     var contentMode: JournaltopiaContentMode = .user
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
@@ -285,6 +286,7 @@ struct JournalView: View {
         isOpeningCompletedEntryFromEntries: Binding<Bool> = .constant(false),
         generatedStoryboards: Binding<[GeneratedStoryboard]> = .constant([]),
         storyboardGenerationStatus: Binding<StoryboardGenerationGlobalStatus?> = .constant(nil),
+        pendingOpenJournalID: Binding<UUID?> = .constant(nil),
         contentMode: JournaltopiaContentMode = .user
     ) {
         _selectedPage = selectedPage
@@ -296,6 +298,7 @@ struct JournalView: View {
         _isOpeningCompletedEntryFromEntries = isOpeningCompletedEntryFromEntries
         _generatedStoryboards = generatedStoryboards
         _storyboardGenerationStatus = storyboardGenerationStatus
+        _pendingOpenJournalID = pendingOpenJournalID
         self.contentMode = contentMode
         _chapters = State(initialValue: DailyJournalData.allChapters())
     }
@@ -349,11 +352,16 @@ struct JournalView: View {
         }
         .onAppear {
             reloadJournalsForCurrentMode()
+            openPendingJournalIfNeeded()
         }
         .onChange(of: selectedPage) { newPage in
             if newPage != .create {
                 reloadJournalsForCurrentMode()
+                openPendingJournalIfNeeded()
             }
+        }
+        .onChange(of: pendingOpenJournalID) { _ in
+            openPendingJournalIfNeeded()
         }
         .onChange(of: journalNavigationPath) { newPath in
             if !newPath.contains(.createEntry) {
@@ -367,6 +375,7 @@ struct JournalView: View {
             journalPageBackground = JournalPageBackgroundStore.load()
             resetJournalSessionState()
             reloadJournalsForCurrentMode(retriesCoverSync: true)
+            openPendingJournalIfNeeded()
         }
         .onChange(of: scenePhase) { phase in
             guard phase == .active else {
@@ -374,6 +383,7 @@ struct JournalView: View {
             }
 
             reloadJournalsForCurrentMode(retriesCoverSync: true)
+            openPendingJournalIfNeeded()
         }
         // These journals came from the cache, so a background re-check that turns up a newer pack
         // has to be picked up rather than waiting for the next launch.
@@ -1291,6 +1301,20 @@ struct JournalView: View {
         }
     }
 
+    private func openPendingJournalIfNeeded() {
+        guard
+            let pendingOpenJournalID,
+            openingJournal == nil,
+            journalNavigationPath.isEmpty,
+            let index = chapters.firstIndex(where: { $0.id == pendingOpenJournalID })
+        else {
+            return
+        }
+
+        self.pendingOpenJournalID = nil
+        openJournal(chapters[index], dayOffset: index)
+    }
+
     private func dismissOpenedJournal() {
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -1504,6 +1528,7 @@ struct JournalView: View {
         chapters = DailyJournalData.allChapters()
         loadCloudJournalsIfNeeded()
         restorePendingCoverSyncIfNeeded()
+        openPendingJournalIfNeeded()
 
         if retriesCoverSync {
             retryPendingCoverSync()
@@ -1599,6 +1624,7 @@ struct JournalView: View {
         chapters = pack.journals.map(SampleJournalDisplay.chapter(from:))
         showsPrototypeData = true
         editMode = .inactive
+        openPendingJournalIfNeeded()
     }
 
     private func reconcileSampleJournalCovers(
