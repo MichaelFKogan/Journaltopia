@@ -34,6 +34,7 @@ struct ContentView: View {
     @State private var isOpeningCompletedEntryFromEntries: Bool
     @State private var homeStorySoFarPresentation: HomeStorySoFarPresentation?
     @State private var homeStorySoFarPageIndex: Int
+    @State private var pendingHomeJournalID: UUID?
     @AppStorage("JournaltopiaHasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("JournaltopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
     @AppStorage("JournaltopiaSignedOutSignInPromptDismissed") private var isSignedOutSignInPromptDismissed = false
@@ -54,6 +55,7 @@ struct ContentView: View {
         _isOpeningCompletedEntryFromEntries = State(initialValue: false)
         _homeStorySoFarPresentation = State(initialValue: nil)
         _homeStorySoFarPageIndex = State(initialValue: 0)
+        _pendingHomeJournalID = State(initialValue: nil)
     }
 
     var body: some View {
@@ -362,7 +364,9 @@ struct ContentView: View {
                 openCreatePage: openCreatePageFromHome,
                 openEntriesPage: openEntriesPageFromHome,
                 openJournalsPage: openJournalsPage,
-                openStorySoFarPage: openStorySoFarPage
+                openStorySoFarPage: openStorySoFarPage,
+                openRecentEntry: openRecentEntryFromHome,
+                openRecentJournal: openRecentJournalFromHome
             )
                 .transition(.identity)
                 .zIndex(0)
@@ -389,6 +393,7 @@ struct ContentView: View {
                 isOpeningCompletedEntryFromEntries: $isOpeningCompletedEntryFromEntries,
                 generatedStoryboards: $generatedStoryboards,
                 storyboardGenerationStatus: $storyboardGenerationStatus,
+                pendingOpenJournalID: $pendingHomeJournalID,
                 contentMode: contentMode
             )
                 .transition(.identity)
@@ -478,6 +483,12 @@ struct ContentView: View {
         selectPage(.journal)
     }
 
+    private func openRecentJournalFromHome(_ journal: PrototypeChapter) {
+        resetHomeCardState()
+        pendingHomeJournalID = journal.id
+        selectPage(.journal)
+    }
+
     private func openStorySoFarPage() {
         guard !generatedStoryboards.isEmpty else {
             return
@@ -486,6 +497,20 @@ struct ContentView: View {
         // Snapshot at open time so a Home reload can't wipe the pushed page.
         homeStorySoFarPageIndex = 0
         homeStorySoFarPresentation = HomeStorySoFarPresentation(storyboards: generatedStoryboards)
+    }
+
+    private func openRecentEntryFromHome(_ entry: CreateEntryDraft, storyboardImage: UIImage?) {
+        homeStorySoFarPresentation = nil
+        journalCreatePresentation = nil
+        activeDraftID = entry.id
+        entryText = entry.text
+        draftStoryTitle = entry.title
+        draftStoryboardPhotos = Array((entry.photos.map(Optional.some) + Array(repeating: nil, count: 5)).prefix(5))
+        completedEntryOpenedStoryboardImage = storyboardImage
+        isOpeningEntryFromEntries = true
+        isOpeningCompletedEntryFromEntries = entry.status == JournalEntryStatus.completed.rawValue
+        pageBehindCreate = .entries
+        selectedPage = .create
     }
 
     private var isOpenedStoryboardGenerationImagePresented: Binding<Bool> {
@@ -534,6 +559,7 @@ struct ContentView: View {
     private func resetHomeCardState() {
         homeStorySoFarPresentation = nil
         journalCreatePresentation = nil
+        pendingHomeJournalID = nil
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
         completedEntryOpenedStoryboardImage = nil
@@ -822,5 +848,6 @@ struct ContentView_Previews: PreviewProvider {
             .environmentObject(SubscriptionStore())
             .environmentObject(PendingStoryboardGenerationMonitor())
             .environmentObject(SignInGate())
+            .environmentObject(EntitlementGate())
     }
 }
