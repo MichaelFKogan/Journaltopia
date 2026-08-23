@@ -1946,15 +1946,17 @@ enum CreateEntryLayout {
     /// Character the loop belongs to, shown on the window's title bar.
     static let companionName = "Luna"
 
-    /// Portrait "video call" window. The loop is aspect-filled into it, so a landscape source is
-    /// centre-cropped.
-    static let companionWindowSize = CGSize(width: 156, height: 200)
-    static let companionWindowCornerRadius: CGFloat = 18
+    /// Banner for the loop, flush to the panel's edges under the header. The loop is aspect-filled
+    /// into it, so a landscape source is centre-cropped.
+    static let companionChatVideoHeight: CGFloat = 150
 
-    /// Closest the window may sit to the edges of the page.
-    static let companionWindowMargin: CGFloat = 14
-    static let companionWindowMinimumScale: CGFloat = 0.72
-    static let companionWindowMaximumScale: CGFloat = 1.18
+    /// Gap between the toolbar and the top of the chat panel.
+    static let companionChatTopInset: CGFloat = 8
+    /// Strip kept clear below the chat panel so it never covers the floating editor menu.
+    static let companionChatBottomReserve: CGFloat = 84
+    static let companionChatMaximumHeight: CGFloat = 900
+    static let companionChatMinimumHeight: CGFloat = 320
+
 }
 
 private struct CompanionChatMessage: Identifiable {
@@ -2138,11 +2140,6 @@ struct CreateEntryView: View {
     @State private var entryDeletionErrorMessage: String?
     @State private var activeKeyboardFormattingMode: CreateKeyboardFormattingMode?
     @State private var lastKeyboardHeight: CGFloat = 300
-    /// Where the writer has dragged the companion window, relative to its top-trailing rest spot.
-    @State private var companionWindowOffset: CGSize = .zero
-    @GestureState private var companionWindowDrag: CGSize = .zero
-    @State private var companionWindowScale: CGFloat = 1
-    @GestureState private var companionWindowPinchScale: CGFloat = 1
     @State private var isCompanionVisible = false
     @State private var isCompanionChatVisible = false
     @State private var isCompanionMutedByWriter = false
@@ -3411,7 +3408,6 @@ struct CreateEntryView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(pageTapBackground)
                     .overlay(companionChatOverlay)
-                    .overlay(floatingCompanionWindow)
             }
         }
         .background(selectedPaperSurfaceColor)
@@ -3811,7 +3807,10 @@ struct CreateEntryView: View {
     }
 
     private var showsBottomSaveButton: Bool {
-        showsToolbarSaveButton && (canUseToolbarSaveButton || isToolbarSaveInProgress)
+        showsToolbarSaveButton
+            && !isBottomOptionsPanelVisible
+            && !isCompanionChatVisible
+            && (canUseToolbarSaveButton || isToolbarSaveInProgress)
     }
 
     private var bottomSaveButtonPadding: CGFloat {
@@ -5055,36 +5054,14 @@ struct CreateEntryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// Journaling companion as a floating call window: it sits above the page rather than in the
-    /// layout, so the paper keeps its full height and the window can be dragged anywhere.
-    @ViewBuilder
-    private var floatingCompanionWindow: some View {
-        if CreateEntryLayout.isCompanionEnabled && isCompanionVisible {
-            GeometryReader { proxy in
-                companionWindowCard
-                    .padding(.horizontal, CreateEntryLayout.companionWindowMargin)
-                    .padding(.top, CreateEntryLayout.companionWindowMargin)
-                    .padding(.bottom, CreateEntryLayout.companionWindowMargin)
-                    .offset(liveCompanionOffset(in: proxy.size))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .gesture(companionDragGesture(in: proxy.size))
-                    .simultaneousGesture(companionScaleGesture(in: proxy.size))
-            }
-            .transition(.scale(scale: 0.85).combined(with: .opacity))
-            .task {
-                prepareCompanionAudioSession()
-            }
-        }
-    }
-
     @ViewBuilder
     private var companionChatOverlay: some View {
         if CreateEntryLayout.isCompanionEnabled && isCompanionChatVisible {
             GeometryReader { proxy in
                 companionChatPanel
                     .frame(
-                        width: min(proxy.size.width - 24, 390),
-                        height: min(proxy.size.height * 0.78, 560)
+                        width: companionChatWidth(for: proxy.size),
+                        height: companionChatHeight(for: proxy.size)
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .padding(.top, companionChatTopPadding(for: proxy.size))
@@ -5094,13 +5071,33 @@ struct CreateEntryView: View {
         }
     }
 
+    private func companionChatWidth(for container: CGSize) -> CGFloat {
+        min(container.width - 24, 390)
+    }
+
+    /// The panel starts just under the toolbar; the page's own geometry already excludes it.
     private func companionChatTopPadding(for container: CGSize) -> CGFloat {
-        min(max(container.height * 0.14, 72), 118)
+        CreateEntryLayout.companionChatTopInset
+    }
+
+    /// The panel grows into whatever the page leaves between the top inset and the floating editor
+    /// menu, so the loop riding at its top can never push the composer down over the menu.
+    private func companionChatHeight(for container: CGSize) -> CGFloat {
+        let available = container.height
+            - companionChatTopPadding(for: container)
+            - CreateEntryLayout.companionChatBottomReserve
+
+        return max(
+            CreateEntryLayout.companionChatMinimumHeight,
+            min(available, CreateEntryLayout.companionChatMaximumHeight)
+        )
     }
 
     private var companionChatPanel: some View {
         VStack(spacing: 0) {
             companionChatHeader
+
+            companionChatVideoBanner
 
             ScrollViewReader { scrollProxy in
                 ScrollView {
@@ -5151,6 +5148,25 @@ struct CreateEntryView: View {
                 .stroke(Color.storyInk.opacity(0.08), lineWidth: 1)
         )
         .shadow(color: Color.storyInk.opacity(0.16), radius: 18, y: 8)
+        .task {
+            prepareCompanionAudioSession()
+        }
+    }
+
+    /// The companion loop, flush against the panel's left, right and header edges. The panel's own
+    /// rounded clip trims the banner, so it carries no corner radius or inset of its own.
+    @ViewBuilder
+    private var companionChatVideoBanner: some View {
+        if isCompanionVisible {
+            HomeLoopingVideoBackground(
+                resourceName: CreateEntryLayout.companionVideoName,
+                isMuted: isCompanionMuted
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: CreateEntryLayout.companionChatVideoHeight)
+            .background(Color.black)
+            .clipped()
+        }
     }
 
     private var companionChatHeader: some View {
@@ -5208,13 +5224,6 @@ struct CreateEntryView: View {
             }
 
             Button {
-                resetCompanionWindow()
-            } label: {
-                Label("Reset Video Window", systemImage: "arrow.counterclockwise")
-            }
-            .disabled(!isCompanionVisible)
-
-            Button {
                 isCompanionMutedByWriter.toggle()
             } label: {
                 Label(
@@ -5226,15 +5235,9 @@ struct CreateEntryView: View {
             Divider()
 
             Button {
-                hideCompanionChat()
-            } label: {
-                Label("Hide Chat", systemImage: "message.slash")
-            }
-
-            Button {
                 closeCompanionChat()
             } label: {
-                Label("Close Chat and Video", systemImage: "xmark.circle")
+                Label("Close Chat", systemImage: "xmark.circle")
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -5243,44 +5246,6 @@ struct CreateEntryView: View {
                 .frame(width: 30, height: 30)
         }
         .accessibilityLabel("More \(CreateEntryLayout.companionName) options")
-    }
-
-    private var companionVideoOptionsMenu: some View {
-        Menu {
-            Button {
-                toggleCompanionChatVisibility()
-            } label: {
-                Label(
-                    isCompanionChatVisible ? "Hide Chat" : "Show Chat",
-                    systemImage: isCompanionChatVisible ? "message.slash" : "message"
-                )
-            }
-
-            Button {
-                resetCompanionWindow()
-            } label: {
-                Label("Reset Video Window", systemImage: "arrow.counterclockwise")
-            }
-
-            Button {
-                isCompanionMutedByWriter.toggle()
-            } label: {
-                Label(
-                    isCompanionMutedByWriter ? "Unmute Video" : "Mute Video",
-                    systemImage: isCompanionMutedByWriter ? "speaker.wave.2" : "speaker.slash"
-                )
-            }
-
-            Divider()
-
-            Button {
-                hideCompanion()
-            } label: {
-                Label("Hide Video", systemImage: "video.slash")
-            }
-        } label: {
-            companionWindowGlyph("ellipsis")
-        }
     }
 
     private var companionEntryAccessPill: some View {
@@ -5440,159 +5405,6 @@ struct CreateEntryView: View {
         )
     }
 
-    private var companionWindowCard: some View {
-        HomeLoopingVideoBackground(
-            resourceName: CreateEntryLayout.companionVideoName,
-            isMuted: isCompanionMuted
-        )
-        .frame(
-            width: CreateEntryLayout.companionWindowSize.width,
-            height: CreateEntryLayout.companionWindowSize.height
-        )
-        .background(Color.black)
-        .overlay(alignment: .top) {
-            companionWindowTitleBar
-        }
-        .clipShape(RoundedRectangle(cornerRadius: CreateEntryLayout.companionWindowCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: CreateEntryLayout.companionWindowCornerRadius, style: .continuous)
-                .stroke(Color.black.opacity(0.28), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
-        .scaleEffect(liveCompanionWindowScale * (isDraggingCompanion ? 1.04 : 1))
-        .animation(.snappy(duration: 0.18), value: isDraggingCompanion)
-        .animation(.snappy(duration: 0.18), value: companionWindowScale)
-    }
-
-    private var companionWindowTitleBar: some View {
-        HStack(spacing: 6) {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(Color(red: 0.30, green: 0.85, blue: 0.39))
-                    .frame(width: 6, height: 6)
-
-                Text(CreateEntryLayout.companionName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.black.opacity(0.42), in: Capsule())
-
-            Spacer(minLength: 4)
-
-            companionVideoOptionsMenu
-
-            Button {
-                hideCompanion()
-            } label: {
-                companionWindowGlyph("xmark")
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close \(CreateEntryLayout.companionName)")
-        }
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
-        .padding(.bottom, 16)
-        .background(alignment: .top) {
-            // Keeps the controls legible over whatever the loop happens to be showing.
-            LinearGradient(
-                colors: [.black.opacity(0.45), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 60)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private func companionWindowGlyph(_ systemName: String) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 22, height: 22)
-            .background(.black.opacity(0.42), in: Circle())
-            .contentShape(Circle())
-    }
-
-    private var isDraggingCompanion: Bool {
-        companionWindowDrag != .zero
-    }
-
-    private var liveCompanionWindowScale: CGFloat {
-        clampedCompanionScale(companionWindowScale * companionWindowPinchScale)
-    }
-
-    private func companionDragGesture(in container: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 2)
-            .updating($companionWindowDrag) { value, state, _ in
-                state = value.translation
-            }
-            .onEnded { value in
-                companionWindowOffset = clampedCompanionOffset(
-                    CGSize(
-                        width: companionWindowOffset.width + value.translation.width,
-                        height: companionWindowOffset.height + value.translation.height
-                    ),
-                    in: container,
-                    scale: liveCompanionWindowScale
-                )
-            }
-    }
-
-    private func companionScaleGesture(in container: CGSize) -> some Gesture {
-        MagnificationGesture(minimumScaleDelta: 0.01)
-            .updating($companionWindowPinchScale) { value, state, _ in
-                state = value
-            }
-            .onEnded { value in
-                companionWindowScale = clampedCompanionScale(companionWindowScale * value)
-                companionWindowOffset = clampedCompanionOffset(
-                    companionWindowOffset,
-                    in: container,
-                    scale: companionWindowScale
-                )
-            }
-    }
-
-    private func liveCompanionOffset(in container: CGSize) -> CGSize {
-        clampedCompanionOffset(
-            CGSize(
-                width: companionWindowOffset.width + companionWindowDrag.width,
-                height: companionWindowOffset.height + companionWindowDrag.height
-            ),
-            in: container,
-            scale: liveCompanionWindowScale
-        )
-    }
-
-    /// The window rests at the top trailing corner, so it travels left along x and down along y.
-    private func clampedCompanionOffset(_ proposed: CGSize, in container: CGSize, scale: CGFloat) -> CGSize {
-        let margin = CreateEntryLayout.companionWindowMargin
-        let scaledWidth = CreateEntryLayout.companionWindowSize.width * scale
-        let scaledHeight = CreateEntryLayout.companionWindowSize.height * scale
-        let travelX = max(0, container.width - scaledWidth - margin * 2)
-        let travelY = max(0, container.height - scaledHeight - margin * 2)
-
-        return CGSize(
-            width: min(0, max(-travelX, proposed.width)),
-            height: min(travelY, max(0, proposed.height))
-        )
-    }
-
-    private func clampedCompanionScale(_ scale: CGFloat) -> CGFloat {
-        min(
-            CreateEntryLayout.companionWindowMaximumScale,
-            max(CreateEntryLayout.companionWindowMinimumScale, scale)
-        )
-    }
-
-    private func hideCompanion() {
-        withAnimation(.snappy(duration: 0.24)) {
-            isCompanionVisible = false
-        }
-    }
-
     private func toggleCompanionVideoVisibility() {
         withAnimation(.snappy(duration: 0.24)) {
             isCompanionVisible.toggle()
@@ -5602,23 +5414,13 @@ struct CreateEntryView: View {
     private func toggleCompanionChatVisibility() {
         withAnimation(.snappy(duration: 0.24)) {
             isCompanionChatVisible.toggle()
-            if isCompanionChatVisible {
-                isCompanionVisible = true
-            }
+            isCompanionVisible = isCompanionChatVisible
         }
     }
 
+    /// The loop lives inside the panel, so it leaves with the panel.
     private func hideCompanionChat() {
-        withAnimation(.snappy(duration: 0.24)) {
-            isCompanionChatVisible = false
-        }
-    }
-
-    private func resetCompanionWindow() {
-        withAnimation(.snappy(duration: 0.24)) {
-            companionWindowOffset = .zero
-            companionWindowScale = 1
-        }
+        closeCompanionChat()
     }
 
     private func closeCompanionChat() {
@@ -5636,7 +5438,6 @@ struct CreateEntryView: View {
             } else {
                 isCompanionChatVisible = true
                 isCompanionVisible = true
-                companionWindowOffset = .zero
                 isShowingReferencePhotosSheet = false
                 isShowingEntryCharactersSheet = false
                 isShowingCustomizeSheet = false
@@ -6630,7 +6431,7 @@ struct CreateEntryView: View {
         .frame(width: 78, height: 65)
     }
 
-    /// Opens Luna's chat session and brings the floating video window along with it.
+    /// Opens Luna's chat session; the loop rides along inside the panel.
     private var companionCallShelfButton: some View {
         Button {
             toggleCompanion()
