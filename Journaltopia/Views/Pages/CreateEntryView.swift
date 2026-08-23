@@ -1050,6 +1050,13 @@ private enum CreateFormattingTab: String, CaseIterable, Identifiable {
     }
 }
 
+private enum StoryReferencesTab: String, CaseIterable, Identifiable {
+    case photos
+    case characters
+
+    var id: String { rawValue }
+}
+
 private typealias CreateKeyboardFormattingMode = NotebookKeyboardFormattingMode
 
 private enum CreateKeyboardTextType: String, CaseIterable, Identifiable {
@@ -2102,9 +2109,8 @@ struct CreateEntryView: View {
     @State private var completedEntryStoryboardScale: CGFloat = 1
     @State private var completedEntryStoryboardScaleStart: CGFloat?
     @State private var isPhotosPanelVisible = false
-    @State private var isShowingReferencePhotosSheet = false
-    @State private var isShowingEntryCharactersSheet = false
-    @State private var isEntryCharacterAddChoicesVisible = false
+    @State private var isShowingStoryReferencesSheet = false
+    @State private var selectedStoryReferencesTab: StoryReferencesTab = .photos
     @State private var isPhotoTabCollapsed = true
     @State private var isCharacterTabCollapsed = true
     @State private var isStoryDetailsTabCollapsed = true
@@ -4929,8 +4935,7 @@ struct CreateEntryView: View {
             activeKeyboardFormattingMode != nil,
             hasStoryboardPhotos,
             isPhotosPanelVisible,
-            isShowingReferencePhotosSheet,
-            isShowingEntryCharactersSheet,
+            isShowingStoryReferencesSheet,
             isShowingCustomizeSheet,
             isShowingJournalsPanel,
             isShowingJournalPromptsSheet
@@ -5044,8 +5049,7 @@ struct CreateEntryView: View {
             .animation(.snappy(duration: 0.22), value: activeKeyboardFormattingMode)
             .animation(.snappy(duration: 0.22), value: hasStoryboardPhotos)
             .animation(.snappy(duration: 0.22), value: isPhotosPanelVisible)
-            .animation(.snappy(duration: 0.22), value: isShowingReferencePhotosSheet)
-            .animation(.snappy(duration: 0.22), value: isShowingEntryCharactersSheet)
+            .animation(.snappy(duration: 0.22), value: isShowingStoryReferencesSheet)
             .animation(.snappy(duration: 0.22), value: isShowingCustomizeSheet)
             .animation(.snappy(duration: 0.22), value: isShowingJournalsPanel)
             .animation(.snappy(duration: 0.22), value: isShowingJournalPromptsSheet)
@@ -5438,8 +5442,7 @@ struct CreateEntryView: View {
             } else {
                 isCompanionChatVisible = true
                 isCompanionVisible = true
-                isShowingReferencePhotosSheet = false
-                isShowingEntryCharactersSheet = false
+                isShowingStoryReferencesSheet = false
                 isShowingCustomizeSheet = false
                 isShowingJournalsPanel = false
                 isShowingJournalPromptsSheet = false
@@ -5765,8 +5768,7 @@ struct CreateEntryView: View {
 
     private var isBottomOptionsPanelVisible: Bool {
         isPhotosPanelVisible
-            || isShowingReferencePhotosSheet
-            || isShowingEntryCharactersSheet
+            || isShowingStoryReferencesSheet
             || isShowingCustomizeSheet
             || isShowingJournalsPanel
             || isShowingJournalPromptsSheet
@@ -5829,10 +5831,8 @@ struct CreateEntryView: View {
     private var activeEntryDraftPanel: AnyView? {
         let panel: AnyView
 
-        if isShowingReferencePhotosSheet {
-            panel = AnyView(referencesOptionsPanel)
-        } else if isShowingEntryCharactersSheet {
-            panel = AnyView(charactersOptionsPanel)
+        if isShowingStoryReferencesSheet {
+            panel = AnyView(storyReferencesOptionsPanel)
         } else if isPhotosPanelVisible {
             panel = AnyView(photosAndCharactersPanel)
         } else if isShowingCustomizeSheet {
@@ -6186,9 +6186,6 @@ struct CreateEntryView: View {
         HStack(alignment: .bottom, spacing: 13) {
             referencePhotosShelfButton
 
-            charactersShelfButton
-                .padding(.leading, -8)
-
             if CreateEntryLayout.isCompanionEnabled {
                 companionCallShelfButton
                     .padding(.leading, -8)
@@ -6222,14 +6219,14 @@ struct CreateEntryView: View {
 
     private var referencePhotosShelfButton: some View {
         Button {
-            openReferencesPanel(expandPhotos: true)
+            openReferencesPanel(tab: .photos)
         } label: {
             VStack(spacing: 5) {
                 referencePhotoShelfStack
 
                 shelfButtonCaption(
-                    title: "Reference",
-                    summary: hasStoryboardPhotos ? referencePhotoShelfSummary : nil
+                    title: "References",
+                    summary: attachedReferencesCount > 0 ? referenceShelfSummary : nil
                 )
             }
             .frame(width: 82, height: 114, alignment: .bottom)
@@ -6237,9 +6234,9 @@ struct CreateEntryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            isShowingReferencePhotosSheet
-                ? "Close reference panel"
-                : (hasStoryboardPhotos ? "\(referencePhotoShelfSummary), open reference photos" : "Add reference photos")
+            isShowingStoryReferencesSheet
+                ? "Close story references"
+                : (attachedReferencesCount > 0 ? "\(referenceShelfSummary), open story references" : "Add story references")
         )
     }
 
@@ -6258,17 +6255,20 @@ struct CreateEntryView: View {
                         .zIndex(Double(index))
                 }
 
-                if photos.count > 1 {
-                    Text("\(photos.count)")
-                        .font(.system(size: 10, weight: .heavy))
-                        .foregroundStyle(Color.white)
-                        .frame(width: 22, height: 22)
-                        .background(Color.storyPurple, in: Circle())
-                        .overlay(Circle().stroke(Color.white, lineWidth: 1.6))
-                        .shadow(color: Color.storyInk.opacity(0.14), radius: 4, y: 2)
-                        .offset(x: 9, y: -6)
-                        .zIndex(5)
-                }
+            }
+
+            if attachedReferencesCount > 0 {
+                Text(attachedReferencesCount > 9 ? "9+" : "\(attachedReferencesCount)")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(Color.white)
+                    .minimumScaleFactor(0.75)
+                    .frame(minWidth: 22, minHeight: 22)
+                    .padding(.horizontal, attachedReferencesCount > 9 ? 2 : 0)
+                    .background(Color.storyPurple, in: Circle())
+                    .overlay(Circle().stroke(Color.white, lineWidth: 1.6))
+                    .shadow(color: Color.storyInk.opacity(0.14), radius: 4, y: 2)
+                    .offset(x: 9, y: -6)
+                    .zIndex(5)
             }
         }
         .frame(width: 78, height: 74)
@@ -6352,83 +6352,12 @@ struct CreateEntryView: View {
         }
     }
 
-    private var referencePhotoShelfSummary: String {
-        let count = storyboardPhotos.compactMap { $0 }.count
-        return "\(count) photo\(count == 1 ? "" : "s")"
+    private var attachedReferencesCount: Int {
+        storyboardPhotos.compactMap { $0 }.count + entryCharacters.count
     }
 
-    private var charactersShelfButton: some View {
-        Button {
-            openCharactersFromShelf()
-        } label: {
-            VStack(spacing: 5) {
-                characterShelfAvatars
-
-                shelfButtonCaption(
-                    title: entryCharacters.count == 1 ? "Character" : "Characters",
-                    summary: entryCharacters.isEmpty ? nil : characterShelfSummary
-                )
-            }
-            .frame(width: 82, height: 111, alignment: .bottom)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(
-            isShowingEntryCharactersSheet
-                ? "Close characters panel"
-                : (entryCharacters.isEmpty ? "Add character" : "\(characterShelfSummary), open characters")
-        )
-    }
-
-    private var characterShelfAvatars: some View {
-        ZStack(alignment: .bottomTrailing) {
-            if entryCharacters.isEmpty {
-                StoryboardPhotoStripAddButton(
-                    systemName: "person.crop.circle.badge.plus",
-                    iconColor: Color.storyPurple,
-                    size: 56,
-                    iconWeight: .semibold,
-                    shape: .circle
-                )
-                .background(createChromeFill, in: Circle())
-                .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
-            } else {
-                ZStack {
-                    ForEach(Array(entryCharacters.prefix(3).enumerated()), id: \.element.id) { index, character in
-                        Image(uiImage: character.image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 52, height: 52)
-                            .clipShape(Circle())
-                            .overlay(
-                                Circle()
-                                    .stroke(index == 0 ? Color.storyPurple.opacity(0.76) : Color.white.opacity(0.94), lineWidth: index == 0 ? 1.6 : 2)
-                            )
-                            .shadow(color: Color.storyInk.opacity(0.12), radius: 5, y: 3)
-                            .offset(x: CGFloat(index) * 14 - CGFloat(min(entryCharacters.count, 3) - 1) * 7, y: CGFloat(index % 2) * -3)
-                            .zIndex(Double(index))
-                    }
-                }
-                .frame(width: 76, height: 60)
-
-                if entryCharacters.count > 1 {
-                    Text("\(entryCharacters.count)")
-                        .font(.system(size: 9, weight: .heavy))
-                        .foregroundStyle(Color.white)
-                        .frame(width: 19, height: 19)
-                        .background(Color.storyPurple, in: Circle())
-                        .overlay(Circle().stroke(Color.white, lineWidth: 1.4))
-                        .offset(x: 0, y: -2)
-                } else {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(Color.storyPurple)
-                        .background(Color.white, in: Circle())
-                        .offset(x: 0, y: -1)
-                }
-            }
-        }
-        .frame(width: 78, height: 65)
+    private var referenceShelfSummary: String {
+        "\(attachedReferencesCount) reference\(attachedReferencesCount == 1 ? "" : "s")"
     }
 
     /// Opens Luna's chat session; the loop rides along inside the panel.
@@ -6470,18 +6399,6 @@ struct CreateEntryView: View {
                 ? "Close \(CreateEntryLayout.companionName) chat"
                 : "Chat with \(CreateEntryLayout.companionName)"
         )
-    }
-
-    private var characterShelfSummary: String {
-        guard let firstCharacter = entryCharacters.first else {
-            return "Add"
-        }
-
-        if entryCharacters.count == 1 {
-            return firstCharacter.name
-        }
-
-        return "\(entryCharacters.count) added"
     }
 
     private var journalsShelfButton: some View {
@@ -6684,86 +6601,30 @@ struct CreateEntryView: View {
         .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
     }
 
-    private var referencesOptionsPanel: some View {
+    private var storyReferencesOptionsPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             bottomOptionsPanelHeader(
-                title: "Reference",
+                title: "Story References",
                 systemName: "photo.on.rectangle.angled",
-                closeLabel: "Close reference panel",
+                closeLabel: "Close story references",
                 onClose: closeReferencesPanel
             )
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Add photos of people, places, objects, or scenery you want the storyboard to reference. Any person in these photos will be added to your storyboard. To isolate a specific person or pet, use Characters instead.")
+                    Text("Add anything you want the storyboard to visually reference in your story.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.storyInk.opacity(0.68))
                         .fixedSize(horizontal: false, vertical: true)
 
-                    if hasStoryboardPhotos {
-                        referencePhotoFanPreview
-                            .frame(maxWidth: .infinity)
+                    storyReferencesSegmentedControl
 
-                        referencePhotosSheetStripRow
-
-                        Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Color.storyInk.opacity(0.58))
-                            .frame(maxWidth: .infinity, alignment: .center)
+                    switch selectedStoryReferencesTab {
+                    case .photos:
+                        storyReferencePhotosTabContent
+                    case .characters:
+                        storyReferenceCharactersTabContent
                     }
-
-                    if nextAvailablePhotoSlot != nil {
-                        referencePhotoSourceChoices
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 18)
-            }
-        }
-        .background(Color.white)
-        .frame(maxHeight: customizePanelMaxHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
-    }
-
-    private var charactersOptionsPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            bottomOptionsPanelHeader(
-                title: "Characters",
-                systemName: "person.2.fill",
-                closeLabel: "Close characters panel",
-                onClose: closeCharactersPanel
-            )
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text("Add people or pets who appear in this story. Character references help keep them recognizable throughout your storyboard.")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.storyInk.opacity(0.68))
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if entryCharacters.isEmpty {
-                        characterPhotoSourceSection
-                    } else {
-                        VStack(alignment: .leading, spacing: 11) {
-                            Text("Characters in this Entry")
-                                .font(.system(size: 16, weight: .bold, design: .serif))
-                                .foregroundStyle(Color.storyInk)
-
-                            entryCharactersSheetStripRow
-                        }
-
-                        if isEntryCharacterAddChoicesVisible {
-                            characterPhotoSourceSection
-                        }
-                    }
-
-                    entryCharactersReusableLibrarySection
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -6783,6 +6644,113 @@ struct CreateEntryView: View {
                 ? mergedReusableCharacters(reusableCharacters)
                 : mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
             refreshReusableCharacters()
+        }
+    }
+
+    private var storyReferencesSegmentedControl: some View {
+        HStack(spacing: 4) {
+            ForEach(StoryReferencesTab.allCases) { tab in
+                let isSelected = selectedStoryReferencesTab == tab
+
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        selectedStoryReferencesTab = tab
+                    }
+                } label: {
+                    Text(storyReferencesTabTitle(for: tab))
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(isSelected ? Color.white : Color.storyInk.opacity(0.72))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .background(
+                            isSelected ? Color.storyPurple : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(storyReferencesTabAccessibilityLabel(for: tab))
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .background(Color.homeCardGray.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
+        )
+    }
+
+    private func storyReferencesTabTitle(for tab: StoryReferencesTab) -> String {
+        switch tab {
+        case .photos:
+            "Photos \(storyboardPhotos.compactMap { $0 }.count)"
+        case .characters:
+            "Characters \(entryCharacters.count)"
+        }
+    }
+
+    private func storyReferencesTabAccessibilityLabel(for tab: StoryReferencesTab) -> String {
+        switch tab {
+        case .photos:
+            "\(storyboardPhotos.compactMap { $0 }.count) photos"
+        case .characters:
+            "\(entryCharacters.count) characters attached to this entry"
+        }
+    }
+
+    private var storyReferencePhotosTabContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            referencePhotoExplainerText
+
+            if nextAvailablePhotoSlot != nil {
+                referencePhotoSourceChoices
+            }
+
+            if hasStoryboardPhotos {
+                VStack(alignment: .leading, spacing: 11) {
+                    Text("Selected Photos")
+                        .font(.system(size: 16, weight: .bold, design: .serif))
+                        .foregroundStyle(Color.storyInk)
+
+                    referencePhotoFanPreview
+                        .frame(maxWidth: .infinity)
+
+                    referencePhotosSheetStripRow
+
+                    Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.58))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+        }
+    }
+
+    private var storyReferenceCharactersTabContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            characterPhotoExplainerText
+
+            characterPhotoSourceSection
+
+            VStack(alignment: .leading, spacing: 11) {
+                Text("Characters in this Entry")
+                    .font(.system(size: 16, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+
+                if entryCharacters.isEmpty {
+                    reusableCharacterStatusRow(
+                        systemName: "person.crop.circle.badge.plus",
+                        text: "No characters attached to this entry yet.",
+                        showsProgress: false
+                    )
+                } else {
+                    entryCharactersSheetStripRow
+                }
+            }
+
+            entryCharactersReusableLibrarySection
         }
     }
 
@@ -7033,26 +7001,15 @@ struct CreateEntryView: View {
         }
     }
 
-    private func openReferencesPanel(expandPhotos: Bool) {
+    private func openReferencesPanel(tab: StoryReferencesTab = .photos) {
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.2)) {
-            isShowingReferencePhotosSheet.toggle()
-            isShowingEntryCharactersSheet = false
-            isShowingCustomizeSheet = false
-            isShowingJournalsPanel = false
-            isShowingJournalPromptsSheet = false
-            isPhotosPanelVisible = false
-        }
-    }
-
-    private func openCharactersFromShelf() {
-        dismissKeyboard()
-        withAnimation(.snappy(duration: 0.2)) {
-            isShowingEntryCharactersSheet.toggle()
-            if isShowingEntryCharactersSheet {
-                isEntryCharacterAddChoicesVisible = entryCharacters.isEmpty
+            if isShowingStoryReferencesSheet {
+                isShowingStoryReferencesSheet = false
+            } else {
+                selectedStoryReferencesTab = tab
+                isShowingStoryReferencesSheet = true
             }
-            isShowingReferencePhotosSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
@@ -7065,8 +7022,7 @@ struct CreateEntryView: View {
         prepareJournalSelection()
         withAnimation(.snappy(duration: 0.2)) {
             isShowingJournalsPanel.toggle()
-            isShowingReferencePhotosSheet = false
-            isShowingEntryCharactersSheet = false
+            isShowingStoryReferencesSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalPromptsSheet = false
             isPhotosPanelVisible = false
@@ -7099,8 +7055,7 @@ struct CreateEntryView: View {
         dismissKeyboard()
         withAnimation(.snappy(duration: 0.2)) {
             isShowingJournalPromptsSheet.toggle()
-            isShowingReferencePhotosSheet = false
-            isShowingEntryCharactersSheet = false
+            isShowingStoryReferencesSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalsPanel = false
             isPhotosPanelVisible = false
@@ -7847,8 +7802,7 @@ struct CreateEntryView: View {
             }
             isShowingJournalPromptsSheet = false
             isShowingJournalsPanel = false
-            isShowingReferencePhotosSheet = false
-            isShowingEntryCharactersSheet = false
+            isShowingStoryReferencesSheet = false
             isPhotosPanelVisible = false
         }
     }
@@ -9322,7 +9276,7 @@ struct CreateEntryView: View {
                 }
 
                 Button {
-                    isEntryCharacterAddChoicesVisible = true
+                    selectedStoryReferencesTab = .characters
                 } label: {
                     StoryboardPhotoStripAddButton(
                         systemName: "plus",
@@ -9669,8 +9623,7 @@ struct CreateEntryView: View {
     private func togglePhotosPanel() {
         withAnimation(.snappy(duration: 0.2)) {
             isPhotosPanelVisible.toggle()
-            isShowingReferencePhotosSheet = false
-            isShowingEntryCharactersSheet = false
+            isShowingStoryReferencesSheet = false
             isShowingCustomizeSheet = false
             isShowingJournalsPanel = false
             isShowingJournalPromptsSheet = false
@@ -9697,13 +9650,7 @@ struct CreateEntryView: View {
 
     private func closeReferencesPanel() {
         withAnimation(.snappy(duration: 0.2)) {
-            isShowingReferencePhotosSheet = false
-        }
-    }
-
-    private func closeCharactersPanel() {
-        withAnimation(.snappy(duration: 0.2)) {
-            isShowingEntryCharactersSheet = false
+            isShowingStoryReferencesSheet = false
         }
     }
 
