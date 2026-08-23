@@ -6612,12 +6612,12 @@ struct CreateEntryView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
-Text("Add up to 10 reference photos of people,\nplaces, or things in your story. \nThese will be used to create your storyboard image")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.storyInk.opacity(0.68))
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // Text("Add up to 10 reference photos of people,\nplaces, or things in your story. \nThese will be used to create your storyboard image. \nGroup photos will add all people in the photo to the storyboard image. To single out people, use the Characters tab.")
+                    //     .font(.system(size: 13, weight: .medium))
+                    //     .foregroundStyle(Color.storyInk.opacity(0.68))
+                    //     .multilineTextAlignment(.center)
+                    //     .frame(maxWidth: .infinity)
+                    //     .fixedSize(horizontal: false, vertical: true)
 
                     storyReferencesSegmentedControl
 
@@ -6704,7 +6704,11 @@ Text("Add up to 10 reference photos of people,\nplaces, or things in your story.
 
     private var storyReferencePhotosTabContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            referencePhotoExplainerText
+            storyReferenceEmptyStateIntro(
+                imageName: "add_reference_photos",
+                title: "Add reference photos",
+                subtitle: "Photos help bring your story to life in your storyboard."
+            )
 
             if nextAvailablePhotoSlot != nil {
                 referencePhotoSourceChoices
@@ -6732,7 +6736,11 @@ Text("Add up to 10 reference photos of people,\nplaces, or things in your story.
 
     private var storyReferenceCharactersTabContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            characterPhotoExplainerText
+            storyReferenceEmptyStateIntro(
+                imageName: "add_character_photos",
+                title: "Add a character",
+                subtitle: "Add a portrait so your character can appear consistently."
+            )
 
             characterPhotoSourceSection
 
@@ -6754,6 +6762,36 @@ Text("Add up to 10 reference photos of people,\nplaces, or things in your story.
 
             entryCharactersReusableLibrarySection
         }
+    }
+
+    private func storyReferenceEmptyStateIntro(
+        imageName: String,
+        title: String,
+        subtitle: String
+    ) -> some View {
+        VStack(spacing: 8) {
+            Image(imageName)
+                .resizable()
+                .scaledToFit()
+                .frame(height: 92)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 16, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
+                    .multilineTextAlignment(.center)
+
+                Text(subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.storyInk.opacity(0.64))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(1)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 2)
     }
 
     private func bottomOptionsPanelHeader(
@@ -9042,16 +9080,10 @@ Text("Add up to 10 reference photos of people,\nplaces, or things in your story.
     }
 
     private var referencePhotoExplainerText: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("Use this to add reference photos: scenery, objects, or people. These help build your storyboard image.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.storyInk.opacity(0.62))
-
-            Text("Any people or group photos added here may be included in your storyboard image, even if they are not part of this story. To single out people, use the Characters tab.")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.storyInk.opacity(0.72))
-        }
-        .fixedSize(horizontal: false, vertical: true)
+        Text("Use this to add reference photos: scenery, objects, or people. These help build your storyboard image.")
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(Color.storyInk.opacity(0.62))
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var storyDetailsHeader: some View {
@@ -9262,14 +9294,33 @@ Text("Add up to 10 reference photos of people,\nplaces, or things in your story.
                 }
             }
 
-            entryInputActionCard(
-                title: "Photo Library",
-                subtitle: "Choose from library",
-                systemName: "photo.on.rectangle.angled"
-            ) {
-                presentPhotoLibraryFromReferencePhotosSheet()
+            VStack(alignment: .leading, spacing: 8) {
+                entryInputActionCard(
+                    title: "Photo Library",
+                    subtitle: "Choose from library",
+                    systemName: "photo.on.rectangle.angled"
+                ) {
+                    presentPhotoLibraryFromReferencePhotosSheet()
+                }
+
+                referencePhotoCharactersDisclaimer
             }
         }
+    }
+
+    private var referencePhotoCharactersDisclaimer: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.58))
+                .padding(.top, 1)
+
+            Text("Group photos will add all people in the photo to the storyboard image. To single out people, use the Characters tab.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.62))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var entryCharactersSheetStripRow: some View {
@@ -9310,11 +9361,7 @@ Text("Add up to 10 reference photos of people,\nplaces, or things in your story.
     }
 
     private var characterPhotoSourceSection: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            Text("Add Character")
-                .font(.system(size: 16, weight: .bold, design: .serif))
-                .foregroundStyle(Color.storyInk)
-
+        VStack(alignment: .leading, spacing: 0) {
             VStack(spacing: 10) {
                 if UIImagePickerController.isSourceTypeAvailable(.camera) {
                     entryInputActionCard(
