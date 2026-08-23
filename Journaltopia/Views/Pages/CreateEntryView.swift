@@ -6612,7 +6612,7 @@ struct CreateEntryView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Add up to 5 reference photos of people,\nplaces, or things in your story.")
+Text("Add up to 10 reference photos of people,\nplaces, or things in your story. \nThese will be used to create your storyboard image")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.storyInk.opacity(0.68))
                         .multilineTextAlignment(.center)
@@ -6634,7 +6634,7 @@ struct CreateEntryView: View {
             }
         }
         .background(Color.white)
-        .frame(maxHeight: customizePanelMaxHeight)
+        .frame(height: storyReferencesPanelHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -6850,6 +6850,10 @@ struct CreateEntryView: View {
 
     private var customizePanelMaxHeight: CGFloat {
         min(UIScreen.main.bounds.height * 0.62, 560)
+    }
+
+    private var storyReferencesPanelHeight: CGFloat {
+        max(440, min(UIScreen.main.bounds.height - 180, 760))
     }
 
     private var journalsPanelMaxHeight: CGFloat {
@@ -9038,10 +9042,16 @@ struct CreateEntryView: View {
     }
 
     private var referencePhotoExplainerText: some View {
-        Text("Use this to add reference photos: scenery, objects, or people. These help build your storyboard image.")
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(Color.storyInk.opacity(0.62))
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Use this to add reference photos: scenery, objects, or people. These help build your storyboard image.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.62))
+
+            Text("Any people or group photos added here may be included in your storyboard image, even if they are not part of this story. To single out people, use the Characters tab.")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.72))
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var storyDetailsHeader: some View {
@@ -9544,7 +9554,7 @@ struct CreateEntryView: View {
 
     private var characterPhotoExplainerText: some View {
         Text("Use this to add character references, and single out people from group photos. If your story has more than one character, reference them here.")
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(Color.storyInk.opacity(0.62))
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -14228,7 +14238,7 @@ private struct EntryDetailsCharactersCard: View {
             header
 
             Text("Use this to add character references, and single out people from group photos. If your story has more than one character, reference them here.")
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.storyInk.opacity(0.62))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 16)
