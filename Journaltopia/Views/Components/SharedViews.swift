@@ -2,6 +2,14 @@ import SwiftUI
 
 private let isBottomNavigationVisible = true
 
+/// Width-to-height ratio shared by every journal cover and entry preview card.
+///
+/// Covers and entry pages sit side by side on Home, in the Journals grid, and in a journal's Pages
+/// tab, so they are laid out from one number rather than each surface picking its own.
+enum JournalPaperGeometry {
+    static let aspectRatio: CGFloat = 0.72
+}
+
 struct WatercolorPaperPageBackground: View {
     static let assetName = "watercolor-paper"
 

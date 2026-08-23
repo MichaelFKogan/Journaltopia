@@ -903,8 +903,8 @@ private enum HomeRecentContentLayout {
         GridItem(.flexible(), spacing: gridSpacing),
         GridItem(.flexible(), spacing: gridSpacing)
     ]
-    static let entryAspectRatio: CGFloat = 260.0 / 340.0
-    static let journalAspectRatio: CGFloat = 0.72
+    static let entryAspectRatio = JournalPaperGeometry.aspectRatio
+    static let journalAspectRatio = JournalPaperGeometry.aspectRatio
 }
 
 private struct HomeRecentEntry: Identifiable {

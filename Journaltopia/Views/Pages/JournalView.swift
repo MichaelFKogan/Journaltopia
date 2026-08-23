@@ -2340,7 +2340,7 @@ private extension StoryJournal {
 }
 
 private struct JournalOpeningBook: View {
-    static let compactAspectRatio: CGFloat = 0.72
+    static let compactAspectRatio = JournalPaperGeometry.aspectRatio
 
     let chapter: PrototypeChapter
     let coverImage: UIImage?
@@ -2586,6 +2586,36 @@ private struct ReorderHintText: View {
     }
 }
 
+/// Cover geometry shared by the Journals grid and the journal detail hero.
+private enum JournalCoverStyle {
+    /// Matches the Home "Most Recent" journal card, which keeps corners tight enough that small
+    /// grid tiles still read as books rather than rounded chips.
+    static let cornerRadius: CGFloat = 10
+
+    /// Edge for the detail hero, where the near-white ``Color/homeBorder`` glowed against the dark
+    /// tinted banner. A muted gray still separates cover from backdrop without ringing it in white.
+    static let heroBorder = Color(white: 0.5).opacity(0.45)
+}
+
+/// Hard-edged binder band shared by the journal covers on Home, Journals, and journal detail.
+///
+/// A narrow dark band with a bright hairline on its inner edge reads as a bound spine at any cover
+/// size, where the older soft 22pt gradient washed out on small grid tiles.
+private struct JournalCoverBinder: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.black.opacity(0.18))
+            .frame(width: 12)
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.22))
+                    .frame(width: 1)
+            }
+            .frame(maxHeight: .infinity)
+            .allowsHitTesting(false)
+    }
+}
+
 private struct JournalCoverCard: View {
     let chapter: PrototypeChapter
     let coverImage: UIImage?
@@ -2609,7 +2639,7 @@ private struct JournalCoverCard: View {
                 }
                 .clipShape(Rectangle())
                 .overlay(alignment: .leading) {
-                    journalSpine
+                    JournalCoverBinder()
                 }
                 .overlay(alignment: .bottomLeading) {
                     journalTitleScrim
@@ -2618,7 +2648,7 @@ private struct JournalCoverCard: View {
             if isSample && !isEditing {
                 EntrySampleBadge()
                     .padding(.top, 8)
-                    .padding(.leading, 26)
+                    .padding(.leading, 16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .allowsHitTesting(false)
             }
@@ -2663,12 +2693,12 @@ private struct JournalCoverCard: View {
         }
         .background(
             usesWideGridStyle ? Color.clear : Color.white,
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            in: RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous))
         .overlay {
             if !hidesBorder {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous)
                     .stroke(Color.homeBorder, lineWidth: 1)
             }
         }
@@ -2698,7 +2728,7 @@ private struct JournalCoverCard: View {
                     .foregroundStyle(Color.white.opacity(0.92))
                     .lineLimit(1)
             }
-            .padding(.leading, 28)
+            .padding(.leading, 18)
             .padding(.trailing, 11)
             .padding(.bottom, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2750,38 +2780,6 @@ private struct JournalCoverCard: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
         }
-    }
-
-    private var journalSpine: some View {
-        ZStack(alignment: .leading) {
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.42),
-                    Color.black.opacity(0.28),
-                    Color.black.opacity(0.16),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-
-            LinearGradient(
-                colors: [
-                    Color.clear,
-                    Color.white.opacity(0.16),
-                    Color.white.opacity(0.08),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-                .frame(width: 12.5)
-                .padding(.leading, 14.25)
-                .blendMode(.screen)
-        }
-        .frame(width: 22)
-        .frame(maxHeight: .infinity)
-        .allowsHitTesting(false)
     }
 }
 
@@ -4200,14 +4198,15 @@ private struct JournalCoverPreview: View {
             .frame(maxWidth: .infinity)
             .clipped()
 
-            journalSpine
+            JournalCoverBinder()
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             titleScrim
         }
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous)
                 .stroke(Color.homeBorder, lineWidth: 1)
         )
         .shadow(color: Color.storyInk.opacity(0.09), radius: 8, y: 4)
@@ -4233,7 +4232,7 @@ private struct JournalCoverPreview: View {
                             .lineLimit(1)
                     }
                 }
-                .padding(.leading, 28)
+                .padding(.leading, 18)
                 .padding(.trailing, 12)
                 .padding(.bottom, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4269,39 +4268,6 @@ private struct JournalCoverPreview: View {
 
     private var hasImageCover: Bool {
         coverImage != nil || remoteCoverURL != nil || fallbackImageName != nil
-    }
-
-    private var journalSpine: some View {
-        ZStack(alignment: .leading) {
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.42),
-                    Color.black.opacity(0.28),
-                    Color.black.opacity(0.16),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-
-            LinearGradient(
-                colors: [
-                    Color.clear,
-                    Color.white.opacity(0.26),
-                    Color.white.opacity(0.16),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: 12.5)
-            .padding(.leading, 14.25)
-            .blendMode(.screen)
-        }
-        .frame(width: 22)
-        .frame(maxHeight: .infinity)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .allowsHitTesting(false)
     }
 }
 
@@ -13388,7 +13354,7 @@ private struct EntryGridLoadingCard: View {
                     .opacity(0.62)
                     .offset(y: -7)
             }
-            .aspectRatio(260.0 / 340.0, contentMode: .fit)
+            .aspectRatio(JournalPaperGeometry.aspectRatio, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .shadow(color: Color.storyInk.opacity(0.05), radius: 8, y: 4)
             .opacity(isPulsing ? 0.54 : 0.9)
@@ -13437,7 +13403,7 @@ private struct JournalCoverLoadingCard: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(Color.homeBorder.opacity(0.76), lineWidth: 1)
                 )
-                .aspectRatio(usesWideGridStyle ? 168.0 / 208.0 : 104.0 / 136.0, contentMode: .fit)
+                .aspectRatio(JournalPaperGeometry.aspectRatio, contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .shadow(color: Color.storyInk.opacity(0.05), radius: 8, y: 4)
 
@@ -13592,7 +13558,7 @@ private struct EntryGridPreviewCard: View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topTrailing) {
                 previewImage
-                    .aspectRatio(260.0 / 340.0, contentMode: .fit)
+                    .aspectRatio(JournalPaperGeometry.aspectRatio, contentMode: .fit)
                     .frame(minWidth: 0, maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
@@ -13874,7 +13840,7 @@ private struct CompletedEntryGridCard: View {
                     }
                 }
             }
-                .aspectRatio(260.0 / 340.0, contentMode: .fit)
+                .aspectRatio(JournalPaperGeometry.aspectRatio, contentMode: .fit)
                 .frame(minWidth: 0, maxWidth: .infinity)
                 .shadow(color: Color.storyInk.opacity(0.09), radius: 9, y: 5)
 
@@ -14090,7 +14056,7 @@ private struct EntryOpeningOverlay: View {
     private var openingPreviewCard: some View {
         ZStack(alignment: .top) {
             previewImage
-                .aspectRatio(260.0 / 340.0, contentMode: .fit)
+                .aspectRatio(JournalPaperGeometry.aspectRatio, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(alignment: .top) {
                     StoryPhotoTape(width: 48, height: 14, rotation: -2)
@@ -14101,7 +14067,7 @@ private struct EntryOpeningOverlay: View {
                 GeometryReader { proxy in
                     completedStoryboardOverlay(storyboardImage, in: proxy.size)
                 }
-                .aspectRatio(260.0 / 340.0, contentMode: .fit)
+                .aspectRatio(JournalPaperGeometry.aspectRatio, contentMode: .fit)
             }
         }
     }
@@ -14787,20 +14753,20 @@ private struct JournalDetailCoverImage: View {
 
     private var coverSurface: some View {
         cover
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous))
             .overlay(alignment: .leading) {
-                journalSpine
+                JournalCoverBinder()
             }
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.white, in: RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder, lineWidth: 1)
+                RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous)
+                    .stroke(JournalCoverStyle.heroBorder, lineWidth: 1)
             )
     }
 
     private var hintPages: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous)
             .fill(Color.white)
             .overlay(alignment: .leading) {
                 LinearGradient(
@@ -14826,8 +14792,8 @@ private struct JournalDetailCoverImage: View {
                 .opacity(0.52)
             }
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder.opacity(0.82), lineWidth: 1)
+                RoundedRectangle(cornerRadius: JournalCoverStyle.cornerRadius, style: .continuous)
+                    .stroke(JournalCoverStyle.heroBorder, lineWidth: 1)
             )
     }
 
@@ -14852,38 +14818,6 @@ private struct JournalDetailCoverImage: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
         }
-    }
-
-    private var journalSpine: some View {
-        ZStack(alignment: .leading) {
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.42),
-                    Color.black.opacity(0.28),
-                    Color.black.opacity(0.16),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-
-            LinearGradient(
-                colors: [
-                    Color.clear,
-                    Color.white.opacity(0.16),
-                    Color.white.opacity(0.08),
-                    Color.clear
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: 12.5)
-            .padding(.leading, 14.25)
-            .blendMode(.screen)
-        }
-        .frame(width: 22)
-        .frame(maxHeight: .infinity)
-        .allowsHitTesting(false)
     }
 }
 
