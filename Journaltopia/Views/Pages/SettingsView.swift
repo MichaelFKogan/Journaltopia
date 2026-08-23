@@ -46,6 +46,22 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Extra") {
+                SettingsNavigationRow(
+                    systemName: "slider.horizontal.3",
+                    title: "Extra",
+                    subtitle: "Testing tools and hidden pages",
+                    accessibilityLabel: "Open extra settings"
+                ) {
+                    SettingsExtraView(
+                        selectedPage: $selectedPage,
+                        generatedStoryboards: $generatedStoryboards,
+                        contentMode: contentMode,
+                        showsBottomNavigation: showsBottomNavigation
+                    )
+                }
+            }
+
             Section("Journaltopia+") {
                 subscriptionStatusRow
                 generationCreditsRow
