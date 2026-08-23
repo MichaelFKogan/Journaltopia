@@ -3777,26 +3777,25 @@ struct CreateEntryView: View {
             HStack(spacing: 6) {
                 if isToolbarSaveInProgress {
                     ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
+                        .controlSize(.mini)
+                        .tint(Color.storyPurple)
                 } else {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 13, weight: .heavy))
+                        .font(.system(size: 14, weight: .heavy))
                 }
 
                 Text(toolbarSaveButtonTitle)
-                    .font(.system(size: 13, weight: .bold, design: .serif))
+                    .font(.system(size: 15, weight: .heavy))
                     .lineLimit(1)
 
             }
-            .frame(width: 92, height: 38)
-            .foregroundStyle(.white)
-            .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(width: 104, height: 42)
+            .foregroundStyle(Color.storyPurple)
+            .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.white.opacity(0.44), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
             )
-            .shadow(color: Color.storyInk.opacity(0.16), radius: 7, y: 3)
             .frame(width: toolbarSaveActionWidth, height: 48)
             .contentShape(Rectangle())
             .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
