@@ -6206,7 +6206,11 @@ struct MyStoryView: View {
 
             if showsSettingsButton {
                 NavigationLink {
-                    SettingsView()
+                    SettingsView(
+                        selectedPage: $selectedPage,
+                        generatedStoryboards: $generatedStoryboards,
+                        contentMode: contentMode
+                    )
                         .environment(\.colorScheme, .light)
                         .preferredColorScheme(.light)
                         .enableInteractivePopGesture()

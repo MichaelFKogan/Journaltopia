@@ -247,7 +247,11 @@ struct ProfileView: View {
 
     private var settingsButton: some View {
         NavigationLink {
-            SettingsView()
+            SettingsView(
+                selectedPage: $selectedPage,
+                generatedStoryboards: $generatedStoryboards,
+                contentMode: contentMode
+            )
                 .enableInteractivePopGesture()
         } label: {
             Image(systemName: "gearshape")

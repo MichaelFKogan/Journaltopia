@@ -249,12 +249,12 @@ struct BottomNavigationBar: View {
                     selectedPage = .journal
                 }
                 NavItem(
-                    title: "Profile",
-                    systemName: selectedPage == .profile ? "person.fill" : "person",
-                    isSelected: selectedPage == .profile,
+                    title: "Settings",
+                    systemName: selectedPage == .settings ? "gearshape.fill" : "gearshape",
+                    isSelected: selectedPage == .settings,
                     selectedColor: .homeAccent
                 ) {
-                    selectedPage = .profile
+                    selectedPage = .settings
                 }
             }
             .padding(.horizontal, 22)

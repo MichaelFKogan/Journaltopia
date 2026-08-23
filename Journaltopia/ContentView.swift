@@ -380,7 +380,12 @@ struct ContentView: View {
             .zIndex(0)
         case .settings:
             NavigationStack {
-                SettingsView()
+                SettingsView(
+                    selectedPage: pageSelection,
+                    generatedStoryboards: $generatedStoryboards,
+                    contentMode: contentMode,
+                    showsBottomNavigation: true
+                )
             }
                 .transition(.identity)
                 .zIndex(0)

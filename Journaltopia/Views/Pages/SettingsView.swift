@@ -10,6 +10,10 @@ struct SettingsView: View {
     }
 
     var presentation: Presentation = .page
+    @Binding var selectedPage: StoryPage
+    @Binding var generatedStoryboards: [GeneratedStoryboard]
+    var contentMode: JournaltopiaContentMode = .user
+    var showsBottomNavigation = false
 
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var generationCreditStore: GenerationCreditStore
@@ -82,14 +86,24 @@ struct SettingsView: View {
                     subtitle: "Account, plans, credits, and create tools",
                     accessibilityLabel: "Open extra settings"
                 ) {
-                    SettingsExtraView()
-                        .enableInteractivePopGesture()
+                    SettingsExtraView(
+                        selectedPage: $selectedPage,
+                        generatedStoryboards: $generatedStoryboards,
+                        contentMode: contentMode,
+                        showsBottomNavigation: showsBottomNavigation
+                    )
+                    .enableInteractivePopGesture()
                 }
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(WatercolorPaperPageBackground())
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if showsBottomNavigation {
+                BottomNavigationBar(selectedPage: $selectedPage)
+            }
+        }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
@@ -635,6 +649,11 @@ struct SettingsView: View {
 }
 
 private struct SettingsExtraView: View {
+    @Binding var selectedPage: StoryPage
+    @Binding var generatedStoryboards: [GeneratedStoryboard]
+    var contentMode: JournaltopiaContentMode = .user
+    var showsBottomNavigation = false
+
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @EnvironmentObject private var subscriptionStore: SubscriptionStore
     @EnvironmentObject private var entitlementGate: EntitlementGate
@@ -658,6 +677,21 @@ private struct SettingsExtraView: View {
             }
 
             Section("Pages") {
+                SettingsNavigationRow(
+                    systemName: "person.fill",
+                    title: "Profile",
+                    subtitle: "Your storyboards and account",
+                    accessibilityLabel: "Open profile"
+                ) {
+                    ProfileView(
+                        selectedPage: $selectedPage,
+                        generatedStoryboards: $generatedStoryboards,
+                        embedsInNavigationStack: false,
+                        contentMode: contentMode
+                    )
+                    .enableInteractivePopGesture()
+                }
+
                 SettingsNavigationRow(
                     systemName: "book.pages",
                     title: "Start Your Story",
@@ -751,6 +785,11 @@ private struct SettingsExtraView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(WatercolorPaperPageBackground())
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if showsBottomNavigation {
+                BottomNavigationBar(selectedPage: $selectedPage)
+            }
+        }
         .navigationTitle("Extra")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
