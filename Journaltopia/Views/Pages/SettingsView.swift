@@ -32,27 +32,23 @@ struct SettingsView: View {
     @State private var isDeleteAccountConfirmationPresented = false
     @State private var isDeletingAccount = false
     @State private var showsAccountDeletedConfirmation = false
+    @State private var isHelpPresented = false
+    @State private var isAboutPresented = false
+    @State private var isPrivacyPolicyPresented = false
 
     var body: some View {
         List {
             Section("Account") {
-                // Signed out there is no status worth a row of its own: "Signed Out" only restates
-                // what the single action below already says, so the section is just the action.
-                if !isSignedOut {
-                    accountStatusRow
-                }
-
-                accountActionRow
-
-                // Below the sign-out row, and only for an account that exists to be deleted. Its own
-                // confirmation carries the warning; this row is a door, not the action.
                 if case .signedIn = authStore.status {
-                    deleteAccountRow
+                    accountStatusRow
+                } else {
+                    accountActionRow
                 }
             }
 
             Section("Journaltopia+") {
                 subscriptionStatusRow
+                generationCreditsRow
 
                 if authStore.userID != nil {
                     switch subscriptionStore.state {
@@ -75,25 +71,57 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Credits") {
-                generationCreditsRow
+            Section("App") {
+                Button {
+                    isHelpPresented = true
+                } label: {
+                    SettingsRowContent(
+                        systemName: "questionmark.circle",
+                        title: "Help & Support",
+                        subtitle: "Contact and troubleshooting",
+                        showsChevron: true
+                    )
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Help and support")
+
+                Button {
+                    isAboutPresented = true
+                } label: {
+                    SettingsRowContent(
+                        systemName: "info.circle",
+                        title: "About",
+                        subtitle: appVersionSubtitle,
+                        showsChevron: true
+                    )
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("About Journaltopia")
+
+                Button {
+                    isPrivacyPolicyPresented = true
+                } label: {
+                    SettingsRowContent(
+                        systemName: "hand.raised",
+                        title: "Privacy Policy",
+                        subtitle: "How your data is handled",
+                        showsChevron: true
+                    )
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Privacy policy")
             }
 
-            Section {
-                SettingsNavigationRow(
-                    systemName: "ellipsis.circle",
-                    title: "Extra",
-                    subtitle: "Account, plans, credits, and create tools",
-                    accessibilityLabel: "Open extra settings"
-                ) {
-                    SettingsExtraView(
-                        selectedPage: $selectedPage,
-                        generatedStoryboards: $generatedStoryboards,
-                        contentMode: contentMode,
-                        showsBottomNavigation: showsBottomNavigation
-                    )
-                    .enableInteractivePopGesture()
+            if case .signedIn = authStore.status {
+                Section {
+                    accountFooterActions
                 }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 10, leading: 20, bottom: 28, trailing: 20))
+                .listRowSeparator(.hidden)
             }
         }
         .listStyle(.insetGrouped)
@@ -138,6 +166,21 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(deleteAccountConfirmationMessage)
+        }
+        .alert("Help & Support", isPresented: $isHelpPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(helpSupportPlaceholderMessage)
+        }
+        .alert("About Journaltopia", isPresented: $isAboutPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(appAboutMessage)
+        }
+        .alert("Privacy Policy", isPresented: $isPrivacyPolicyPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(privacyPolicyPlaceholderMessage)
         }
         .environment(\.colorScheme, .light)
         .preferredColorScheme(.light)
@@ -254,7 +297,7 @@ struct SettingsView: View {
                         .font(.system(size: 24, weight: .bold, design: .serif))
                         .foregroundStyle(Color.storyInk)
 
-                    Text("This device is back in signed-out mode. Your local samples stay available to browse.")
+                    Text("This device is signed-out. You can sign in again to continue using your account.")
                         .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(Color.homeMutedText)
                         .multilineTextAlignment(.center)
@@ -290,36 +333,78 @@ struct SettingsView: View {
         .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
     }
 
-    /// The destructive entry point. Tapping it only opens the confirmation — nothing is deleted
-    /// until the alert's own destructive button is pressed.
-    private var deleteAccountRow: some View {
-        Button(role: .destructive) {
-            isDeleteAccountConfirmationPresented = true
-        } label: {
-            HStack(spacing: 12) {
-                SettingsRowContent(
-                    systemName: "trash",
-                    title: isDeletingAccount ? "Deleting Account" : "Delete Account",
-                    subtitle: isDeletingAccount
-                        ? "Removing your journals, photos, and storyboards"
-                        : "Permanently delete your account and its content",
-                    showsChevron: false,
-                    iconColor: .red
-                )
+    @ViewBuilder
+    private var accountFooterActions: some View {
+        if case .signedIn = authStore.status {
+            VStack(spacing: 16) {
+                Button {
+                    signOut()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSigningOut {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
 
-                if isDeletingAccount {
-                    ProgressView()
-                        .controlSize(.small)
+                        Text(isSigningOut ? "Signing Out" : "Sign Out")
+                    }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.storyPurple)
+                    .frame(height: 44)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.storyInk.opacity(0.08), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                // Also disabled mid-deletion: signing out first would strand a live account behind a
+                // signed-out screen, since the deletion only completes when the server says so.
+                .disabled(isSigningOut || isDeletingAccount)
+
+                Button(role: .destructive) {
+                    isDeleteAccountConfirmationPresented = true
+                } label: {
+                    HStack(spacing: 8) {
+                        if isDeletingAccount {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.red)
+                        }
+
+                        Text(isDeletingAccount ? "Deleting Account" : "Delete Account")
+                    }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.red)
+                    .frame(height: 44)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white.opacity(0.66), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.red.opacity(0.58), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // Both halves of "no duplicate submissions": the button cannot be tapped again while
+                // a deletion is in flight, and `deleteAccount()` refuses a second run even if it were.
+                .disabled(isDeletingAccount || isSigningOut)
+                .accessibilityLabel(isDeletingAccount ? "Deleting account" : "Delete account")
+                .accessibilityHint("Asks for confirmation before permanently deleting your account")
+
+                Text("Permanently delete your account and all of your entries, journals, references, characters, and generated storyboards.")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.homeMutedText)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 42)
+                    .padding(.top, -6)
             }
-            .padding(.vertical, 4)
+            .padding(.top, 8)
         }
-        .buttonStyle(.plain)
-        // Both halves of "no duplicate submissions": the row cannot be tapped again while a deletion
-        // is in flight, and `deleteAccount()` refuses a second run even if it were.
-        .disabled(isDeletingAccount || isSigningOut)
-        .accessibilityLabel(isDeletingAccount ? "Deleting account" : "Delete account")
-        .accessibilityHint("Asks for confirmation before permanently deleting your account")
     }
 
     private var accountDeletedConfirmationCard: some View {
@@ -372,7 +457,7 @@ struct SettingsView: View {
 
     private var accountStatusRow: some View {
         SettingsRowContent(
-            systemName: accountStatusIconName,
+            systemName: "person.crop.circle",
             title: accountStatusTitle,
             subtitle: accountStatusSubtitle,
             showsChevron: false
@@ -409,10 +494,7 @@ struct SettingsView: View {
                 showsChevron: false,
                 trailingContent: {
                     if subscriptionStore.state.isSubscribed {
-                        CreditBalanceBadge(
-                            balance: generationCreditStore.balance,
-                            isRefreshing: generationCreditStore.isRefreshing
-                        )
+                        SettingsStatusBadge(title: "Active")
                     }
                 }
             )
@@ -447,7 +529,7 @@ struct SettingsView: View {
                 systemName: "creditcard",
                 title: "Manage Subscription",
                 subtitle: "Change or cancel in the App Store",
-                showsChevron: false
+                showsChevron: true
             )
             .padding(.vertical, 4)
         }
@@ -569,22 +651,7 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
         case .signedIn:
-            Button(role: .destructive) {
-                signOut()
-            } label: {
-                SettingsRowContent(
-                    systemName: "rectangle.portrait.and.arrow.right",
-                    title: isSigningOut ? "Signing Out" : "Sign Out",
-                    subtitle: "Return this device to signed-out mode",
-                    showsChevron: false,
-                    iconColor: .red
-                )
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(.plain)
-            // Also disabled mid-deletion: signing out first would strand a live account behind a
-            // signed-out screen, since the deletion only completes when the server says so.
-            .disabled(isSigningOut || isDeletingAccount)
+            EmptyView()
         }
 
         if let errorMessage = authStore.errorMessage {
@@ -592,19 +659,6 @@ struct SettingsView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.red)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var accountStatusIconName: String {
-        switch authStore.status {
-        case .loading:
-            return "person.crop.circle.badge.clock"
-        case .misconfigured:
-            return "exclamationmark.triangle"
-        case .signedOut:
-            return "person.crop.circle.badge.xmark"
-        case .signedIn:
-            return "checkmark.seal"
         }
     }
 
@@ -617,7 +671,7 @@ struct SettingsView: View {
         case .signedOut:
             return "Signed Out"
         case .signedIn:
-            return "Signed In"
+            return authStore.email ?? authStore.displayName
         }
     }
 
@@ -630,14 +684,14 @@ struct SettingsView: View {
         case .signedOut:
             return "Local entries stay on this device"
         case .signedIn:
-            return authStore.email ?? authStore.displayName
+            return authStore.accountProviderName
         }
     }
 
     private var generationCreditsSubtitle: String {
         switch authStore.status {
         case .signedIn:
-            return "Standard storyboards cost 1 credit; HD costs 2"
+            return "Standard storyboards cost 1 credit"
         case .loading:
             return "Checking your account"
         case .misconfigured:
@@ -645,6 +699,32 @@ struct SettingsView: View {
         case .signedOut:
             return "Sign in to use credits"
         }
+    }
+
+    private var appVersionSubtitle: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+
+        switch (version, build) {
+        case (.some(let version), .some(let build)):
+            return "Version \(version) (\(build))"
+        case (.some(let version), nil):
+            return "Version \(version)"
+        default:
+            return "App information"
+        }
+    }
+
+    private var appAboutMessage: String {
+        "\(appVersionSubtitle)\n\nJournaltopia turns your memories into private illustrated storyboards."
+    }
+
+    private var helpSupportPlaceholderMessage: String {
+        "Support contact details are coming soon.\n\nTODO: Replace this placeholder with your support email, help center link, or in-app support flow."
+    }
+
+    private var privacyPolicyPlaceholderMessage: String {
+        "Privacy policy details are coming soon.\n\nTODO: Replace this placeholder with the final Journaltopia privacy policy text or policy URL."
     }
 }
 
@@ -856,8 +936,21 @@ private struct SettingsNavigationRow<Destination: View>: View {
     }
 }
 
+private struct SettingsStatusBadge: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Color.storyPurple)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Color.storyPurple.opacity(0.1), in: Capsule())
+    }
+}
+
 private struct SettingsRowContent: View {
-    let systemName: String
+    let systemName: String?
     let title: String
     let subtitle: String
     var showsChevron = true
@@ -865,7 +958,7 @@ private struct SettingsRowContent: View {
     var trailingContent: (() -> AnyView)?
 
     init(
-        systemName: String,
+        systemName: String? = nil,
         title: String,
         subtitle: String,
         showsChevron: Bool = true,
@@ -882,11 +975,13 @@ private struct SettingsRowContent: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: systemName)
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(iconColor)
-                .frame(width: 38, height: 38)
-                .background(iconColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            if let systemName {
+                Image(systemName: systemName)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 38, height: 38)
+                    .background(iconColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)

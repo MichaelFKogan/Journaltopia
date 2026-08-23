@@ -44,6 +44,24 @@ final class SupabaseAuthStore: ObservableObject {
         currentUser?.email
     }
 
+    var accountProviderName: String {
+        let providers = currentUser?.identities?.map(\.provider) ?? []
+
+        if providers.contains("google") {
+            return "Google Account"
+        }
+
+        if providers.contains("apple") {
+            return "Apple Account"
+        }
+
+        if providers.contains("email") {
+            return "Email Account"
+        }
+
+        return "Journaltopia Account"
+    }
+
     init(
         client: SupabaseClient = SupabaseService.shared,
         startsListening: Bool = true,
