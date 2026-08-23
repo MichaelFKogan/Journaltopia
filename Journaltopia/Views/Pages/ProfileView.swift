@@ -25,9 +25,8 @@ struct ProfileView: View {
     @State private var isLoadingMoreProfileStoryboards = false
     @State private var hasMoreProfileStoryboards = true
     @State private var nextProfileStoryboardOffset = 0
-    /// Creation dates of *every* storyboard this profile owns, not just the pages loaded into
-    /// the grid, so the header stats count the whole account instead of the first page.
-    @State private var profileStoryboardCreatedDates: [Date]?
+    /// Server-side account totals; the grid itself is paged and only holds what has been viewed.
+    @State private var profileStoryboardCounts: (total: Int, month: Int)?
     @State private var profileStoryboardErrorMessage: String?
     @State private var pendingStoryboardDeletion: PendingStoryboardDeletion?
     @State private var isPreparingStoryboardDeletion = false
@@ -306,30 +305,25 @@ struct ProfileView: View {
         generationCreditStore.balance.map(String.init) ?? "-"
     }
 
-    /// Dates the stats count over.
-    ///
-    /// The grid is paged nine at a time, so `generatedStoryboards` is only what has been scrolled to
-    /// — counting it reported "9" to an account with far more. Account mode counts the full set of
-    /// storyboard rows once they have loaded; sample mode already holds its whole pack in memory.
-    private var storyboardStatDates: [Date] {
-        if !showsSampleProfileContent, let profileStoryboardCreatedDates {
-            return profileStoryboardCreatedDates
+    private var totalStoryboardCount: Int {
+        if !showsSampleProfileContent, let profileStoryboardCounts {
+            return profileStoryboardCounts.total
         }
 
-        return generatedStoryboards.map(\.createdAt)
-    }
-
-    private var totalStoryboardCount: Int {
-        storyboardStatDates.count
+        return generatedStoryboards.count
     }
 
     private var thisMonthStoryboardCount: Int {
+        if !showsSampleProfileContent, let profileStoryboardCounts {
+            return profileStoryboardCounts.month
+        }
+
         let calendar = Calendar.current
         guard let month = calendar.dateInterval(of: .month, for: Date()) else {
             return 0
         }
 
-        return storyboardStatDates.filter { month.contains($0) }.count
+        return generatedStoryboards.map(\.createdAt).filter { month.contains($0) }.count
     }
 
     private var storyboardsSection: some View {
@@ -392,7 +386,7 @@ struct ProfileView: View {
                             if isSelecting {
                                 toggleSelection(for: storyboard)
                             } else {
-                                selectedStoryboardIndex = index
+                                openStoryboard(at: index)
                             }
                         } label: {
                             GeneratedStoryboardThumbnail(
@@ -586,18 +580,9 @@ struct ProfileView: View {
 
         // The header stats count the whole account, not the loaded grid, so what was deleted has to
         // come off that tally too — otherwise the count outlives the storyboards it counted.
-        let deletedDates = generatedStoryboards
+        let deletedStoryboards = generatedStoryboards
             .filter { outcome.deletedStoryboardIDs.contains($0.id) }
-            .map(\.createdAt)
-        if let profileStoryboardCreatedDates {
-            var remainingDates = profileStoryboardCreatedDates
-            for date in deletedDates {
-                if let index = remainingDates.firstIndex(of: date) {
-                    remainingDates.remove(at: index)
-                }
-            }
-            applyProfileStoryboardCreatedDates(remainingDates)
-        }
+        decrementProfileStoryboardCounts(deletedStoryboards)
 
         withAnimation(.snappy(duration: 0.24)) {
             generatedStoryboards.removeAll { outcome.deletedStoryboardIDs.contains($0.id) }
@@ -675,11 +660,53 @@ struct ProfileView: View {
         }
     }
 
+    private func openStoryboard(at index: Int) {
+        guard generatedStoryboards.indices.contains(index) else {
+            return
+        }
+
+        selectedStoryboardIndex = index
+
+        let storyboard = generatedStoryboards[index]
+        guard let storagePath = storyboard.storagePath else {
+            return
+        }
+
+        Task {
+            do {
+                let image = try await SupabaseStoryboardService().downloadStoryboardImage(storagePath: storagePath)
+                await MainActor.run {
+                    guard let currentIndex = generatedStoryboards.firstIndex(where: { $0.id == storyboard.id }) else {
+                        return
+                    }
+
+                    generatedStoryboards[currentIndex] = GeneratedStoryboard(
+                        id: storyboard.id,
+                        clientEntryID: storyboard.clientEntryID,
+                        image: image,
+                        promptText: storyboard.promptText,
+                        artStyle: storyboard.artStyle,
+                        generationQuality: storyboard.generationQuality,
+                        panelLayout: storyboard.panelLayout,
+                        sourcePhotoCount: storyboard.sourcePhotoCount,
+                        createdAt: storyboard.createdAt,
+                        imageFileName: storyboard.imageFileName,
+                        storagePath: storyboard.storagePath,
+                        cloudSyncState: storyboard.cloudSyncState,
+                        isPrimary: storyboard.isPrimary
+                    )
+                }
+            } catch {
+                print("[Journaltopia] Profile storyboard full image load failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     @MainActor
     private func loadProfileStoryboards(forceReload: Bool = false) async {
         if let unavailableMessage = contentMode.unavailableMessage {
             generatedStoryboards = []
-            profileStoryboardCreatedDates = nil
+            profileStoryboardCounts = nil
             isLoadingProfileStoryboards = false
             profileStoryboardErrorMessage = unavailableMessage
             return
@@ -699,7 +726,7 @@ struct ProfileView: View {
 
         guard authStore.userID != nil else {
             generatedStoryboards = []
-            profileStoryboardCreatedDates = nil
+            profileStoryboardCounts = nil
             profileStoryboardErrorMessage = nil
             isLoadingProfileStoryboards = false
             return
@@ -714,7 +741,7 @@ struct ProfileView: View {
             generatedStoryboards = cachedPage.storyboards
             nextProfileStoryboardOffset = cachedPage.nextOffset
             hasMoreProfileStoryboards = cachedPage.hasMore
-            profileStoryboardCreatedDates = ProfileStoryboardSessionCache.createdDates(for: profileLoadModeID)
+            profileStoryboardCounts = ProfileStoryboardSessionCache.counts(for: profileLoadModeID)
             profileStoryboardErrorMessage = nil
             isLoadingProfileStoryboards = false
             hasRestoredCachedPage = true
@@ -742,17 +769,20 @@ struct ProfileView: View {
             // Filtering the metadata before downloading, rather than filtering a downloaded page,
             // is what makes the paging exact: a page is nine *eligible* storyboards, and the total
             // is known without downloading the images behind it.
-            let eligibleRows = try await service.loadCompletedJournalStoryboardRows()
-                .filter { isProfileEligibleStoryboardRow($0, sampleEntryIDs: sampleEntryIDs) }
-            applyProfileStoryboardCreatedDates(eligibleRows.map(\.createdAt))
-
-            let pageRows = Array(eligibleRows.prefix(profileStoryboardPageSize))
-            let loadedStoryboards = await service.downloadStoryboards(from: pageRows)
+            let counts = try await service.loadCompletedJournalStoryboardCounts()
+            applyProfileStoryboardCounts(counts)
+            let pageRows = try await service.loadCompletedJournalStoryboardRowsPage(
+                limit: profileStoryboardPageSize + 1,
+                offset: 0
+            )
+            .filter { isProfileEligibleStoryboardRow($0, sampleEntryIDs: sampleEntryIDs) }
+            let visiblePageRows = Array(pageRows.prefix(profileStoryboardPageSize))
+            let loadedStoryboards = await service.downloadStoryboardPreviews(from: visiblePageRows)
                 .sorted(by: profileStoryboardSort)
 
             generatedStoryboards = loadedStoryboards
-            nextProfileStoryboardOffset = pageRows.count
-            hasMoreProfileStoryboards = eligibleRows.count > nextProfileStoryboardOffset
+            nextProfileStoryboardOffset = visiblePageRows.count
+            hasMoreProfileStoryboards = pageRows.count > visiblePageRows.count
             profileStoryboardErrorMessage = nil
             ProfileStoryboardSessionCache.store(
                 storyboards: loadedStoryboards,
@@ -801,22 +831,22 @@ struct ProfileView: View {
         do {
             let service = SupabaseStoryboardService()
             let sampleEntryIDs = await activeSampleEntryIDsForProfileFilter()
-            let eligibleRows = try await service.loadCompletedJournalStoryboardRows()
-                .filter { isProfileEligibleStoryboardRow($0, sampleEntryIDs: sampleEntryIDs) }
-            applyProfileStoryboardCreatedDates(eligibleRows.map(\.createdAt))
-
-            let pageRows = Array(
-                eligibleRows
-                    .dropFirst(nextProfileStoryboardOffset)
-                    .prefix(profileStoryboardPageSize)
+            if profileStoryboardCounts == nil {
+                applyProfileStoryboardCounts(try await service.loadCompletedJournalStoryboardCounts())
+            }
+            let pageRows = try await service.loadCompletedJournalStoryboardRowsPage(
+                limit: profileStoryboardPageSize + 1,
+                offset: nextProfileStoryboardOffset
             )
+            .filter { isProfileEligibleStoryboardRow($0, sampleEntryIDs: sampleEntryIDs) }
+            let visiblePageRows = Array(pageRows.prefix(profileStoryboardPageSize))
             let existingIDs = Set(generatedStoryboards.map(\.id))
-            let newStoryboards = await service.downloadStoryboards(from: pageRows)
+            let newStoryboards = await service.downloadStoryboardPreviews(from: visiblePageRows)
                 .filter { !existingIDs.contains($0.id) }
             generatedStoryboards.append(contentsOf: newStoryboards)
             generatedStoryboards.sort(by: profileStoryboardSort)
-            nextProfileStoryboardOffset += pageRows.count
-            hasMoreProfileStoryboards = eligibleRows.count > nextProfileStoryboardOffset
+            nextProfileStoryboardOffset += visiblePageRows.count
+            hasMoreProfileStoryboards = pageRows.count > visiblePageRows.count
             profileStoryboardErrorMessage = nil
             // Cached with the pages already scrolled through, so coming back to Profile restores how
             // far down the grid was rather than snapping to the first page.
@@ -862,7 +892,7 @@ struct ProfileView: View {
         isLoadingMoreProfileStoryboards = false
         hasMoreProfileStoryboards = false
         nextProfileStoryboardOffset = 0
-        profileStoryboardCreatedDates = nil
+        profileStoryboardCounts = nil
         profileStoryboardErrorMessage = nil
 
         // The pack another sample screen already loaded, applied before anything is awaited. Same
@@ -949,9 +979,28 @@ struct ProfileView: View {
         return !row.storagePath.hasPrefix("journaltopia-first-run/")
     }
 
-    private func applyProfileStoryboardCreatedDates(_ dates: [Date]) {
-        profileStoryboardCreatedDates = dates
-        ProfileStoryboardSessionCache.storeCreatedDates(dates, for: profileLoadModeID)
+    private func applyProfileStoryboardCounts(_ counts: (total: Int, month: Int)) {
+        profileStoryboardCounts = counts
+        ProfileStoryboardSessionCache.storeCounts(counts, for: profileLoadModeID)
+    }
+
+    private func decrementProfileStoryboardCounts(_ deletedStoryboards: [GeneratedStoryboard]) {
+        guard !showsSampleProfileContent, let profileStoryboardCounts else {
+            return
+        }
+
+        let calendar = Calendar.current
+        let month = calendar.dateInterval(of: .month, for: Date())
+        let deletedThisMonth = deletedStoryboards.filter { storyboard in
+            guard let month else {
+                return false
+            }
+            return month.contains(storyboard.createdAt)
+        }.count
+        applyProfileStoryboardCounts((
+            total: max(profileStoryboardCounts.total - deletedStoryboards.count, 0),
+            month: max(profileStoryboardCounts.month - deletedThisMonth, 0)
+        ))
     }
 
     private func profileSortedStoryboards(_ storyboards: [GeneratedStoryboard]) -> [GeneratedStoryboard] {
@@ -2597,9 +2646,9 @@ private struct LegacyStoryboardImageViewer: View {
 private enum ProfileStoryboardSessionCache {
     private static let freshnessInterval: TimeInterval = 300
     private static var pagesByLoadID: [String: Page] = [:]
-    /// Creation dates for the whole account, kept alongside the cached page so a rebuilt Profile
-    /// draws its header stats from the full set rather than falling back to the page it restored.
-    private static var createdDatesByLoadID: [String: [Date]] = [:]
+    /// Server-side counts for the whole account, kept alongside the cached page so a rebuilt
+    /// Profile draws its header stats without fetching every metadata row.
+    private static var countsByLoadID: [String: (total: Int, month: Int)] = [:]
 
     /// Registered once, for the process, rather than on the view.
     ///
@@ -2652,14 +2701,14 @@ private enum ProfileStoryboardSessionCache {
         )
     }
 
-    static func createdDates(for loadID: String) -> [Date]? {
+    static func counts(for loadID: String) -> (total: Int, month: Int)? {
         startObservingIfNeeded()
-        return createdDatesByLoadID[loadID]
+        return countsByLoadID[loadID]
     }
 
-    static func storeCreatedDates(_ dates: [Date], for loadID: String) {
+    static func storeCounts(_ counts: (total: Int, month: Int), for loadID: String) {
         startObservingIfNeeded()
-        createdDatesByLoadID[loadID] = dates
+        countsByLoadID[loadID] = counts
     }
 
     private static func markAllStale() {
@@ -2685,7 +2734,7 @@ private enum ProfileStoryboardSessionCache {
 
     static func removeAll() {
         pagesByLoadID.removeAll()
-        createdDatesByLoadID.removeAll()
+        countsByLoadID.removeAll()
     }
 }
 

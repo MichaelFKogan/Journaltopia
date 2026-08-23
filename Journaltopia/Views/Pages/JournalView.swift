@@ -229,6 +229,9 @@ struct JournalView: View {
     @State private var journalBeingRenamed: PrototypeChapter?
     @State private var renamedJournalTitle = ""
     @State private var journalsPendingDeletion: [PrototypeChapter] = []
+    /// Set when "Delete Journal & Entries" could not finish in the cloud. The journal is gone by
+    /// then, so this reports what survived rather than offering a retry of the whole thing.
+    @State private var journalEntryDeletionFailureMessage: String?
     @State private var journalBeingCustomized: PrototypeChapter?
     @State private var isShowingJournalBackgroundPicker = false
     @State private var journalPageBackground = JournalPageBackgroundStore.load()
@@ -243,6 +246,10 @@ struct JournalView: View {
     @State private var isJournalOpening = false
     @State private var journalNavigationPath: [JournalRoute] = []
     @State private var sampleJournalLoadTask: Task<Void, Never>?
+    /// Held so each load can cancel the one before it. Every trigger — appear, page change,
+    /// scene activation — used to start another unguarded read, and whichever finished last
+    /// wrote its snapshot into `UserChapterStore`, however stale that snapshot had become.
+    @State private var cloudJournalLoadTask: Task<Void, Never>?
     /// Whether the sample pack is still on its way. Without it an empty `chapters` reads as "this
     /// library has no journals", which is how "No journals yet" ended up on screen for the whole
     /// length of the load.
@@ -423,11 +430,38 @@ struct JournalView: View {
                 journalsPendingDeletion = []
             }
 
-            Button("Delete", role: .destructive) {
-                deletePendingJournals()
+            if pendingJournalDeletionImpact.hasEntries {
+                Button(deleteJournalOnlyButtonTitle, role: .destructive) {
+                    deletePendingJournals(deletesEntries: false)
+                }
+
+                Button(deleteJournalAndEntriesButtonTitle, role: .destructive) {
+                    deletePendingJournals(deletesEntries: true)
+                }
+            } else {
+                Button("Delete", role: .destructive) {
+                    deletePendingJournals(deletesEntries: false)
+                }
             }
         } message: {
             Text(deleteJournalAlertMessage)
+        }
+        .alert(
+            "Some Entries Weren't Deleted",
+            isPresented: Binding(
+                get: { journalEntryDeletionFailureMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        journalEntryDeletionFailureMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                journalEntryDeletionFailureMessage = nil
+            }
+        } message: {
+            Text(journalEntryDeletionFailureMessage ?? "")
         }
         .sheet(item: $journalBeingCustomized) { chapter in
             JournalCustomizationSheet(
@@ -1177,12 +1211,90 @@ struct JournalView: View {
         journalsPendingDeletion.count == 1 ? "Delete Journal?" : "Delete Journals?"
     }
 
-    private var deleteJournalAlertMessage: String {
-        if let journal = journalsPendingDeletion.first, journalsPendingDeletion.count == 1 {
-            return "Are you sure you want to delete \"\(journal.title)\"? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in a Journal."
+    /// What deleting the journals in `journalsPendingDeletion` would actually cost.
+    ///
+    /// Worked out from the entry store rather than from `chapter.entries`, because the alert can be
+    /// raised from the grid where the chapters carry no loaded entries at all.
+    private struct PendingJournalDeletionImpact {
+        let entryIDs: [UUID]
+        /// Entries that are *also* filed in a journal not being deleted. Deleting the entries takes
+        /// them out of those journals too, and that is the one consequence of this alert a user
+        /// cannot see from the journal they are looking at — so it gets said out loud.
+        let sharedEntryIDs: [UUID]
+
+        var entryCount: Int { entryIDs.count }
+        var sharedEntryCount: Int { sharedEntryIDs.count }
+        var hasEntries: Bool { !entryIDs.isEmpty }
+    }
+
+    private var pendingJournalDeletionImpact: PendingJournalDeletionImpact {
+        // Sample journals are the shared preview pack, not a library of the visitor's own entries,
+        // so there is nothing here to offer deleting.
+        guard !usesSampleJournalContent else {
+            return PendingJournalDeletionImpact(entryIDs: [], sharedEntryIDs: [])
         }
 
-        return "Are you sure you want to delete these journals? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in a Journal."
+        let pendingTitles = Set(journalsPendingDeletion.map(\.title))
+        var seenEntryIDs = Set<UUID>()
+        var entryIDs: [UUID] = []
+        for title in journalsPendingDeletion.map(\.title) {
+            for entryID in StoryEntryStore.clientEntryIDs(for: title) where seenEntryIDs.insert(entryID).inserted {
+                entryIDs.append(entryID)
+            }
+        }
+
+        // Shared with a journal that survives this delete. A journal also in `pendingTitles` does
+        // not count — it is going too, so the entry is not being taken away from anything the user
+        // is keeping.
+        let sharedEntryIDs = entryIDs.filter { entryID in
+            !StoryEntryStore.journalTitles(containingEntryID: entryID)
+                .subtracting(pendingTitles)
+                .isEmpty
+        }
+
+        return PendingJournalDeletionImpact(entryIDs: entryIDs, sharedEntryIDs: sharedEntryIDs)
+    }
+
+    private var deleteJournalOnlyButtonTitle: String {
+        journalsPendingDeletion.count == 1 ? "Remove Journal Only" : "Remove Journals Only"
+    }
+
+    private var deleteJournalAndEntriesButtonTitle: String {
+        journalsPendingDeletion.count == 1 ? "Delete Journal & Entries" : "Delete Journals & Entries"
+    }
+
+    private var deleteJournalAlertMessage: String {
+        let journalPhrase: String
+        if let journal = journalsPendingDeletion.first, journalsPendingDeletion.count == 1 {
+            journalPhrase = "\"\(journal.title)\""
+        } else {
+            journalPhrase = "These \(journalsPendingDeletion.count) journals"
+        }
+
+        let impact = pendingJournalDeletionImpact
+        guard impact.hasEntries else {
+            return "Are you sure you want to delete \(journalPhrase)? This can't be undone."
+        }
+
+        let entryCountPhrase = impact.entryCount == 1 ? "1 entry" : "\(impact.entryCount) entries"
+        var message = """
+            \(journalPhrase) \(journalsPendingDeletion.count == 1 ? "holds" : "hold") \(entryCountPhrase). This can't be undone.
+
+            \(deleteJournalOnlyButtonTitle) keeps the \(impact.entryCount == 1 ? "entry" : "entries") in your library. Anything not in another journal moves to Not in a Journal.
+
+            \(deleteJournalAndEntriesButtonTitle) permanently deletes \(impact.entryCount == 1 ? "it" : "all \(impact.entryCount)") from Journaltopia, along with any storyboards.
+            """
+
+        // The warning the second option needs and the first does not: these entries are not only
+        // here, and deleting them empties them out of journals the user is not deleting.
+        if impact.sharedEntryCount > 0 {
+            let sharedPhrase = impact.sharedEntryCount == 1
+                ? "1 of these entries is also in another journal and will be deleted from there too."
+                : "\(impact.sharedEntryCount) of these entries are also in other journals and will be deleted from those too."
+            message += "\n\n\(sharedPhrase)"
+        }
+
+        return message
     }
 
     private func requestDeleteJournals(_ journals: [PrototypeChapter]) {
@@ -1193,10 +1305,49 @@ struct JournalView: View {
         journalsPendingDeletion = journals
     }
 
-    private func deletePendingJournals() {
+    private func deletePendingJournals(deletesEntries: Bool) {
         let journalsToDelete = journalsPendingDeletion
+        // Read before anything is removed: `deleteJournal` clears the journal's entry records, and
+        // once those are gone there is no way left to ask what was in it.
+        let entryIDsToDelete = deletesEntries ? pendingJournalDeletionImpact.entryIDs : []
         journalsPendingDeletion = []
         journalsToDelete.forEach(deleteJournal)
+
+        guard !entryIDsToDelete.isEmpty else {
+            return
+        }
+
+        deleteEntriesFromLibrary(entryIDsToDelete)
+    }
+
+    /// The second half of "Delete Journal & Entries": take the entries out of the library entirely,
+    /// not just out of the journal that was holding them.
+    ///
+    /// Local records go first so the rest of the app stops showing entries the user has already
+    /// watched disappear, then the cloud delete catches up. An entry the cloud refuses to delete is
+    /// still in the library and still findable under Entries, which is why the failure message says
+    /// so rather than pretending the whole thing worked.
+    private func deleteEntriesFromLibrary(_ entryIDs: [UUID]) {
+        entryIDs.forEach { entryID in
+            StoryEntryStore.delete(entryID: entryID)
+            EntryJournalLinkStore.remove(for: entryID)
+        }
+
+        Task {
+            let failedEntryIDs = await EntrySaveService().deleteEntries(
+                clientEntryIDs: entryIDs,
+                isSignedIn: authStore.userID != nil
+            )
+            generatedStoryboards = loadedStoryboardsForEntryOpening()
+
+            guard !failedEntryIDs.isEmpty else {
+                return
+            }
+
+            journalEntryDeletionFailureMessage = failedEntryIDs.count == 1
+                ? "1 entry could not be deleted from Journaltopia cloud. It is still in your library under Entries — check your connection and delete it from there."
+                : "\(failedEntryIDs.count) entries could not be deleted from Journaltopia cloud. They are still in your library under Entries — check your connection and delete them from there."
+        }
     }
 
     private func deleteJournal(_ journal: PrototypeChapter) {
@@ -1210,6 +1361,9 @@ struct JournalView: View {
         }
 
         let isUserJournal = UserChapterStore.contains(title: journal.title)
+        // Before the local removal, because the cloud delete below is fire-and-forget: the tombstone
+        // is what keeps this journal off screen until the cloud actually reports it gone.
+        DeletedJournalStore.add(journal.id)
         UserChapterStore.delete(title: journal.title)
         UserChapterStore.deleteFromCloud(journal)
         JournalCoverStore.delete(for: journal)
@@ -1465,6 +1619,8 @@ struct JournalView: View {
     private func resetJournalSessionState() {
         sampleJournalLoadTask?.cancel()
         sampleJournalLoadTask = nil
+        cloudJournalLoadTask?.cancel()
+        cloudJournalLoadTask = nil
         isLoadingSampleJournals = false
         removeSampleJournalDrafts()
         sampleJournalsByID = [:]
@@ -1828,7 +1984,8 @@ struct JournalView: View {
             return
         }
 
-        Task {
+        cloudJournalLoadTask?.cancel()
+        cloudJournalLoadTask = Task {
             do {
                 let journalRepository = SupabaseJournalRepository()
                 let entryRepository = SupabaseEntryRepository()
@@ -1843,11 +2000,29 @@ struct JournalView: View {
                 let cloudEntryIDs = try await cloudEntryIDsTask
                 let memberships = try await membershipsTask
 
-                let cloudChapters = cloudJournals
+                // Read the tombstones *after* the fetch, so a delete made while these reads were in
+                // flight is still honoured by the snapshot they came back with.
+                let deletedJournalIDs = await MainActor.run { DeletedJournalStore.ids }
+                let unconfirmedDeletionIDs = deletedJournalIDs.intersection(cloudJournals.map(\.id))
+
+                // The cloud still has rows the user deleted: either this read predates the delete,
+                // or the fire-and-forget delete failed and swallowed the error. Retrying here is the
+                // only thing that ever notices the second case.
+                for journalID in unconfirmedDeletionIDs {
+                    try? await journalRepository.deleteJournal(id: journalID)
+                }
+
+                await MainActor.run {
+                    DeletedJournalStore.forget(deletedJournalIDs.subtracting(unconfirmedDeletionIDs))
+                }
+
+                let visibleCloudJournals = cloudJournals
+                    .filter { !deletedJournalIDs.contains($0.id) }
+                let cloudChapters = visibleCloudJournals
                     .filter { !LegacySystemJournalIDs.all.contains($0.id) }
                     .map(PrototypeChapter.init(cloudJournal:))
                 await Self.reconcileCloudJournalCovers(
-                    cloudJournals,
+                    visibleCloudJournals,
                     repository: journalRepository
                 )
                 let membershipRepairs = await MainActor.run {
@@ -1872,9 +2047,17 @@ struct JournalView: View {
                 )
                 let memberEntries = try await entryRepository.getEntryDigests(clientEntryIDs: memberEntryIDs)
 
+                guard !Task.isCancelled else {
+                    return
+                }
+
                 await MainActor.run {
+                    // Re-read rather than reuse the set above: deletes are recorded on this actor,
+                    // and everything between that read and here — cover downloads, membership
+                    // repairs, the digest fetch — is time the user can spend deleting a journal.
+                    let deletedByNow = DeletedJournalStore.ids
                     let mergedCloudChapters = Self.cloudChapters(
-                        cloudChapters,
+                        cloudChapters.filter { !deletedByNow.contains($0.id) },
                         preservingOrderOf: chapters
                     )
                     UserChapterStore.replace(with: mergedCloudChapters)
@@ -1885,6 +2068,8 @@ struct JournalView: View {
                     )
                     chapters = DailyJournalData.allChapters()
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 print("[Journaltopia] Cloud journals load failed: \(error.localizedDescription)")
             }
@@ -4770,10 +4955,10 @@ struct ClassicJournalView: View {
 
     private var deleteJournalAlertMessage: String {
         if let journal = journalsPendingDeletion.first, journalsPendingDeletion.count == 1 {
-            return "Are you sure you want to delete \"\(journal.title)\"? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in a Journal."
+            return "Are you sure you want to delete \"\(journal.title)\"? This can't be undone. Entries won't be deleted, they'll stay in your library, and any that aren't in another journal will appear in the Not in a Journal category."
         }
 
-        return "Are you sure you want to delete these journals? This can't be undone. Entries won't be deleted — they'll stay in your library, and any that aren't in another journal will appear under Not in a Journal."
+        return "Are you sure you want to delete these journals? This can't be undone. Entries won't be deleted, they'll stay in your library, and any that aren't in another journal will appear in the Not in a Journal category."
     }
 
     private func requestDeleteJournals(_ journals: [PrototypeChapter]) {
@@ -4788,6 +4973,9 @@ struct ClassicJournalView: View {
 
     private func deleteJournal(_ journal: PrototypeChapter) {
         let isUserJournal = UserChapterStore.contains(title: journal.title)
+        // Before the local removal, because the cloud delete below is fire-and-forget: the tombstone
+        // is what keeps this journal off screen until the cloud actually reports it gone.
+        DeletedJournalStore.add(journal.id)
         UserChapterStore.delete(title: journal.title)
         UserChapterStore.deleteFromCloud(journal)
         JournalCoverStore.delete(for: journal)
@@ -4904,7 +5092,7 @@ struct ClassicJournalView: View {
     }
 }
 
-/// Interior comic-reader pages. Empty journals use `blank_storyboard`; real storyboards replace it.
+/// Interior comic-reader pages. Empty journals keep one placeholder page so the reader still opens.
 private enum JournalComicReaderPages {
     static let emptyPlaceholderImageName = "blank_storyboard"
     static let emptyPlaceholderID = UUID()
@@ -5130,7 +5318,8 @@ private struct JournalStoryboardComicReaderView: View {
                             currentPageIndex: $currentPageIndex,
                             programmaticTurnOffset: programmaticTurnOffset,
                             programmaticTurnProgress: programmaticTurnProgress,
-                            isPageTurnActive: $isPageTurnActive
+                            isPageTurnActive: $isPageTurnActive,
+                            showsEmptyPlaceholder: storyboards.isEmpty
                         )
                         .frame(width: pageSize.width, height: pageSize.height)
                         .scaleEffect(isMagnifying ? zoomScale : 1)
@@ -5165,6 +5354,8 @@ private struct JournalStoryboardComicReaderView: View {
                 pageCountText: pageCountText,
                 storyboardCountText: storyboardCountText
             )
+        } else if storyboards.isEmpty {
+            JournalStoryboardEmptyComicPage()
         } else if let image = image(for: pageIndex) {
             storyboardPage(image)
         }
@@ -5251,6 +5442,7 @@ private struct JournalStoryboardComicReaderView: View {
                 zoomInOneStep()
             }
         }
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 24)
         .padding(.top, 10)
         .padding(.bottom, 8)
@@ -5322,11 +5514,15 @@ private struct JournalStoryboardComicReaderView: View {
                                     currentPageIndex = pageIndex
                                 }
                             } label: {
-                                readerThumbnail(for: page.image, at: pageIndex)
+                                if storyboards.isEmpty {
+                                    readerEmptyThumbnail(at: pageIndex)
+                                } else {
+                                    readerThumbnail(for: page.image, at: pageIndex)
+                                }
                             }
                             .buttonStyle(.plain)
                             .id(pageIndex)
-                            .accessibilityLabel("Go to storyboard \(index + 1)")
+                            .accessibilityLabel(storyboards.isEmpty ? "No storyboards yet" : "Go to storyboard \(index + 1)")
                             .accessibilityAddTraits(pageIndex == currentPageIndex ? .isSelected : [])
                         }
                     }
@@ -5397,6 +5593,32 @@ private struct JournalStoryboardComicReaderView: View {
             .opacity(isSelected ? 1 : 0.74)
             .scaleEffect(isSelected ? 1.05 : 1)
             .animation(.easeInOut(duration: 0.18), value: currentPageIndex)
+    }
+
+    private func readerEmptyThumbnail(at index: Int) -> some View {
+        let isSelected = index == currentPageIndex
+        let thumbnailWidth = max(28, thumbnailHeight * readerPageAspectRatio)
+
+        return ZStack {
+            Color.black
+
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.55))
+        }
+        .frame(width: thumbnailWidth, height: thumbnailHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(
+                    isSelected ? Color.white : Color.white.opacity(0.22),
+                    lineWidth: isSelected ? 2.5 : 1
+                )
+        }
+        .shadow(color: .black.opacity(isSelected ? 0.42 : 0.2), radius: isSelected ? 8 : 4, y: 2)
+        .opacity(isSelected ? 1 : 0.74)
+        .scaleEffect(isSelected ? 1.05 : 1)
+        .animation(.easeInOut(duration: 0.18), value: currentPageIndex)
     }
 
     private var gestureHintOverlay: some View {
@@ -5766,9 +5988,16 @@ struct MyStoryView: View {
     @Binding var selectedPage: StoryPage
     @Binding var generatedStoryboards: [GeneratedStoryboard]
     var contentMode: JournaltopiaContentMode = .user
+    var showsSettingsButton = true
+    var showsBottomNavigation = true
+    var embedsInNavigationStack = true
 
     @State private var currentPageIndex = 0
     @State private var isLoadingStoryboards = false
+    @State private var isLoadingMoreStoryboards = false
+    @State private var hasMoreStoryboards = true
+    @State private var nextStoryboardOffset = 0
+    @State private var storyboardTotalCount: Int?
     @State private var loadErrorMessage: String?
     @State private var isShowingVerticalView = false
     @State private var isPageTurnActive = false
@@ -5783,82 +6012,120 @@ struct MyStoryView: View {
     private let readerTopToolbarClearance: CGFloat = 62
     private let readerBottomToolbarClearance: CGFloat = 150
     private let thumbnailHeight: CGFloat = 56
+    private let myStoryStoryboardPageSize = 6
     private static let coverChapterID = UUID(uuidString: "00000000-0000-4000-8000-000000000101")!
 
     var body: some View {
-        NavigationStack {
-            ZStack(alignment: .bottom) {
-                Color.black
-                    .ignoresSafeArea()
-
-                readerContent
-
-                VStack(spacing: 0) {
-                    if !generatedStoryboards.isEmpty {
-                        readerBottomBar
-                        readerThumbnailStrip
-                            .padding(.bottom, 8)
-                    }
-
-                    BottomNavigationBar(selectedPage: $selectedPage)
+        Group {
+            if embedsInNavigationStack {
+                NavigationStack {
+                    standaloneMyStoryContent
                 }
-                .background {
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.34), .black.opacity(0.62)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .allowsHitTesting(false)
-                }
-            }
-            .toolbar(.hidden, for: .navigationBar)
-            .overlay(alignment: .top) {
-                readerTopBar
-            }
-            .fullScreenCover(isPresented: $isShowingVerticalView) {
-                JournalStoryboardVerticalComicViewer(
-                    storyboards: generatedStoryboards,
-                    currentPageIndex: $currentPageIndex,
-                    journalTitle: "My Story",
-                    journalColor: myStoryCoverColor,
-                    coverImage: myStoryCoverImage,
-                    remoteCoverURL: coverSettings.remoteCover?.thumbnailNSURL ?? coverSettings.remoteCover?.imageNSURL,
-                    fallbackCoverImageName: myStoryFallbackCoverImageName,
-                    pageCountText: pageCountText,
-                    storyboardCountText: storyboardCountText,
-                    readerPageAspectRatio: readerPageAspectRatio
-                )
-            }
-            .sheet(isPresented: $isShowingCoverCustomization) {
-                JournalCustomizationSheet(
-                    chapter: myStoryCoverChapter,
-                    initialStoryboardCovers: myStoryStoryboardCoverCandidates,
-                    title: "My Story Cover",
-                    onSave: applyMyStoryCoverCustomization
-                )
-            }
-            .onChange(of: generatedStoryboards.count) { _ in
-                currentPageIndex = clampedPageIndex(currentPageIndex)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
-                Task {
-                    await loadMyStoryboards(forceReload: true)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
-                guard contentMode.showsSampleContent, !contentMode.isSampleAuthoring else {
-                    return
-                }
-
-                Task {
-                    await loadSampleStoryboards()
-                }
-            }
-            .task(id: contentMode.loadIdentity(userID: authStore.userID)) {
-                await loadMyStoryboards()
-                await loadMyStoryCoverSettings()
+            } else {
+                embeddedMyStoryContent
             }
         }
+        .fullScreenCover(isPresented: $isShowingVerticalView) {
+            JournalStoryboardVerticalComicViewer(
+                storyboards: generatedStoryboards,
+                currentPageIndex: $currentPageIndex,
+                journalTitle: "My Story",
+                journalColor: myStoryCoverColor,
+                coverImage: myStoryCoverImage,
+                remoteCoverURL: coverSettings.remoteCover?.thumbnailNSURL ?? coverSettings.remoteCover?.imageNSURL,
+                fallbackCoverImageName: myStoryFallbackCoverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: storyboardCountText,
+                readerPageAspectRatio: readerPageAspectRatio
+            )
+        }
+        .sheet(isPresented: $isShowingCoverCustomization) {
+            JournalCustomizationSheet(
+                chapter: myStoryCoverChapter,
+                initialStoryboardCovers: myStoryStoryboardCoverCandidates,
+                title: "My Story Cover",
+                onSave: applyMyStoryCoverCustomization
+            )
+        }
+        .onChange(of: generatedStoryboards.count) { _ in
+            currentPageIndex = clampedPageIndex(currentPageIndex)
+        }
+        .onChange(of: currentPageIndex) { pageIndex in
+            loadMoreMyStoryboardsIfNeeded(currentPageIndex: pageIndex)
+            loadFullMyStoryStoryboardIfNeeded(pageIndex: pageIndex)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
+            Task {
+                await loadMyStoryboards(forceReload: true)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
+            guard contentMode.showsSampleContent, !contentMode.isSampleAuthoring else {
+                return
+            }
+
+            Task {
+                await loadSampleStoryboards()
+            }
+        }
+        .task(id: contentMode.loadIdentity(userID: authStore.userID)) {
+            await loadMyStoryboards()
+            await loadMyStoryCoverSettings()
+        }
+    }
+
+    private var standaloneMyStoryContent: some View {
+        ZStack(alignment: .bottom) {
+            Color.black
+                .ignoresSafeArea()
+
+            readerContent
+
+            VStack(spacing: 0) {
+                if !generatedStoryboards.isEmpty {
+                    readerBottomBar
+                    readerThumbnailStrip
+                        .padding(.bottom, 8)
+                }
+
+                if showsBottomNavigation {
+                    BottomNavigationBar(selectedPage: $selectedPage)
+                }
+            }
+            .background {
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.34), .black.opacity(0.62)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .overlay(alignment: .top) {
+            readerTopBar
+        }
+    }
+
+    private var embeddedMyStoryContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            readerTopBar
+
+            HStack {
+                Spacer(minLength: 0)
+
+                readerContent
+                    .frame(width: embeddedReaderWidth, height: embeddedReaderWidth / readerDisplayAspectRatio)
+
+                Spacer(minLength: 0)
+            }
+
+            if !generatedStoryboards.isEmpty {
+                readerBottomBar
+                readerThumbnailStrip
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -5873,8 +6140,8 @@ struct MyStoryView: View {
             GeometryReader { proxy in
                 let pageSize = fittedPageSize(in: proxy.size)
 
-                JournalStoryboardPageTurnView(
-                    images: generatedStoryboards.map(\.image),
+                MyStoryBookSpreadView(
+                    storyboards: generatedStoryboards,
                     journalTitle: "My Story",
                     journalColor: myStoryCoverColor,
                     coverImage: myStoryCoverImage,
@@ -5882,15 +6149,12 @@ struct MyStoryView: View {
                     fallbackCoverImageName: myStoryFallbackCoverImageName,
                     pageCountText: pageCountText,
                     storyboardCountText: storyboardCountText,
-                    currentPageIndex: $currentPageIndex,
-                    programmaticTurnOffset: programmaticTurnOffset,
-                    programmaticTurnProgress: programmaticTurnProgress,
-                    isPageTurnActive: $isPageTurnActive
+                    currentPageIndex: $currentPageIndex
                 )
                 .frame(width: pageSize.width, height: pageSize.height)
                 .shadow(color: .black.opacity(0.24), radius: 18, y: 8)
-                .padding(.top, readerTopToolbarClearance)
-                .padding(.bottom, readerBottomToolbarClearance)
+                .padding(.top, readerTopClearance)
+                .padding(.bottom, readerBottomClearance)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
@@ -5900,26 +6164,26 @@ struct MyStoryView: View {
         HStack(spacing: 12) {
             Text("My Story")
                 .font(.system(size: 24, weight: .bold, design: .serif))
-                .foregroundStyle(.white)
+                .foregroundStyle(readerChromePrimaryColor)
 
             Spacer(minLength: 0)
 
             if !generatedStoryboards.isEmpty {
-                Text("\(currentPageIndex + 1) / \(totalPageCount)")
+                Text("\(currentPageIndex + 1) / \(displayTotalPageCount)")
                     .font(.system(size: 13, weight: .heavy, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.92))
+                    .foregroundStyle(readerChromePrimaryColor.opacity(0.92))
                     .padding(.horizontal, 10)
                     .frame(height: 30)
-                    .background(Color.white.opacity(0.12), in: Capsule())
+                    .background(readerChromeControlBackground, in: Capsule())
 
                 Button {
                     isShowingVerticalView = true
                 } label: {
                     Image(systemName: "list.bullet.rectangle")
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(readerChromePrimaryColor)
                         .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.14), in: Circle())
+                        .background(readerChromeControlBackground, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open vertical comic view")
@@ -5933,32 +6197,35 @@ struct MyStoryView: View {
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(readerChromePrimaryColor)
                         .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.14), in: Circle())
+                        .background(readerChromeControlBackground, in: Circle())
                 }
                 .accessibilityLabel("My Story options")
             }
 
-            NavigationLink {
-                SettingsView()
-                    .environment(\.colorScheme, .light)
-                    .preferredColorScheme(.light)
-                    .enableInteractivePopGesture()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.14), in: Circle())
+            if showsSettingsButton {
+                NavigationLink {
+                    SettingsView()
+                        .environment(\.colorScheme, .light)
+                        .preferredColorScheme(.light)
+                        .enableInteractivePopGesture()
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(readerChromePrimaryColor)
+                        .frame(width: 36, height: 36)
+                        .background(readerChromeControlBackground, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open settings")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open settings")
         }
         .padding(.horizontal, 16)
-        .padding(.top, 10)
+        .padding(.top, embedsInNavigationStack ? 10 : 0)
         .padding(.bottom, 12)
-            .background {
+        .background {
+            if embedsInNavigationStack {
                 LinearGradient(
                     colors: [.black.opacity(0.78), .black.opacity(0.34), .clear],
                     startPoint: .top,
@@ -5966,39 +6233,63 @@ struct MyStoryView: View {
                 )
                 .ignoresSafeArea(edges: .top)
             }
+        }
     }
 
     private var readerBottomBar: some View {
-        HStack(spacing: 14) {
-            readerControlButton(
-                isEnabled: currentPageIndex > 0 && !isTurningProgrammatically,
-                accessibilityLabel: "Previous page"
-            ) {
-                Image(systemName: "chevron.left")
-            } action: {
-                turnPage(by: -1)
+        HStack {
+            Spacer(minLength: 0)
+
+            HStack(spacing: 12) {
+                readerControlButton(
+                    isEnabled: currentPageIndex > 0 && !isTurningProgrammatically,
+                    accessibilityLabel: "Previous page"
+                ) {
+                    Image(systemName: "chevron.left")
+                } action: {
+                    turnPage(by: -1)
+                }
+
+                Text(storyboardCountText)
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .foregroundStyle(readerChromePrimaryColor.opacity(0.82))
+                    .frame(minWidth: 104)
+
+                readerControlButton(
+                    isEnabled: currentPageIndex < totalPageCount - 1 && !isTurningProgrammatically,
+                    accessibilityLabel: "Next page"
+                ) {
+                    Image(systemName: "chevron.right")
+                } action: {
+                    turnPage(by: 1)
+                }
             }
 
             Spacer(minLength: 0)
-
-            Text(storyboardCountText)
-                .font(.system(size: 13, weight: .heavy, design: .rounded))
-                .foregroundStyle(.white.opacity(0.82))
-
-            Spacer(minLength: 0)
-
-            readerControlButton(
-                isEnabled: currentPageIndex < totalPageCount - 1 && !isTurningProgrammatically,
-                accessibilityLabel: "Next page"
-            ) {
-                Image(systemName: "chevron.right")
-            } action: {
-                turnPage(by: 1)
-            }
         }
         .padding(.horizontal, 24)
         .padding(.top, 10)
         .padding(.bottom, 8)
+    }
+
+    private var readerBottomClearance: CGFloat {
+        embedsInNavigationStack ? readerBottomToolbarClearance : 0
+    }
+
+    private var readerTopClearance: CGFloat {
+        embedsInNavigationStack ? readerTopToolbarClearance : 0
+    }
+
+    private var readerChromePrimaryColor: Color {
+        embedsInNavigationStack ? .white : Color.storyInk
+    }
+
+    private var readerChromeControlBackground: Color {
+        embedsInNavigationStack ? Color.white.opacity(0.14) : Color.white.opacity(0.72)
+    }
+
+    private var embeddedReaderWidth: CGFloat {
+        max(1, UIScreen.main.bounds.width - 32)
     }
 
     private func readerControlButton<Label: View>(
@@ -6010,13 +6301,37 @@ struct MyStoryView: View {
         Button(action: action) {
             label()
                 .font(.system(size: 15, weight: .heavy))
-                .foregroundStyle(isEnabled ? .white : Color.white.opacity(0.28))
+                .foregroundStyle(readerControlForeground(isEnabled: isEnabled))
                 .frame(width: 44, height: 40)
-                .background(Capsule().fill(Color.white.opacity(isEnabled ? 0.14 : 0.06)))
+                .background(Capsule().fill(readerControlBackground(isEnabled: isEnabled)))
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func readerControlBackground(isEnabled: Bool) -> Color {
+        if embedsInNavigationStack {
+            return Color.white.opacity(isEnabled ? 0.14 : 0.06)
+        }
+
+        return Color.white.opacity(isEnabled ? 0.82 : 0.46)
+    }
+
+    private func readerControlForeground(isEnabled: Bool) -> Color {
+        if embedsInNavigationStack {
+            return isEnabled ? .white : Color.white.opacity(0.28)
+        }
+
+        return isEnabled ? Color.storyInk : Color.storyInk.opacity(0.34)
+    }
+
+    private var readerThumbnailSelectedStroke: Color {
+        embedsInNavigationStack ? .white : Color.storyPurple
+    }
+
+    private var readerThumbnailStroke: Color {
+        embedsInNavigationStack ? Color.white.opacity(0.22) : Color.storyBorder.opacity(0.72)
     }
 
     private var readerThumbnailStrip: some View {
@@ -6083,7 +6398,7 @@ struct MyStoryView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(
-                    isSelected ? Color.white : Color.white.opacity(0.22),
+                    isSelected ? readerThumbnailSelectedStroke : readerThumbnailStroke,
                     lineWidth: isSelected ? 2.5 : 1
                 )
         }
@@ -6106,7 +6421,7 @@ struct MyStoryView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(
-                        isSelected ? Color.white : Color.white.opacity(0.22),
+                        isSelected ? readerThumbnailSelectedStroke : readerThumbnailStroke,
                         lineWidth: isSelected ? 2.5 : 1
                     )
             }
@@ -6196,6 +6511,9 @@ struct MyStoryView: View {
     private func loadMyStoryboards(forceReload: Bool = false) async {
         if let unavailableMessage = contentMode.unavailableMessage {
             generatedStoryboards = []
+            nextStoryboardOffset = 0
+            hasMoreStoryboards = false
+            storyboardTotalCount = nil
             loadErrorMessage = unavailableMessage
             isLoadingStoryboards = false
             return
@@ -6213,6 +6531,9 @@ struct MyStoryView: View {
 
         guard authStore.userID != nil else {
             generatedStoryboards = []
+            nextStoryboardOffset = 0
+            hasMoreStoryboards = false
+            storyboardTotalCount = nil
             loadErrorMessage = nil
             isLoadingStoryboards = false
             return
@@ -6223,23 +6544,37 @@ struct MyStoryView: View {
         }
 
         isLoadingStoryboards = generatedStoryboards.isEmpty
+        if forceReload {
+            nextStoryboardOffset = 0
+            hasMoreStoryboards = true
+            storyboardTotalCount = nil
+        }
         loadErrorMessage = nil
         defer { isLoadingStoryboards = false }
 
         do {
             let service = SupabaseStoryboardService()
             let sampleEntryIDs = await activeSampleEntryIDs()
-            let rows = try await service.loadCompletedJournalStoryboardRows()
+            let counts = try await service.loadCompletedJournalStoryboardCounts()
+            storyboardTotalCount = counts.total
+            let rows = try await service.loadCompletedJournalStoryboardRowsPage(
+                limit: myStoryStoryboardPageSize + 1,
+                offset: 0
+            )
                 .filter { row in
                     !sampleEntryIDs.contains(row.clientEntryID)
                         && !row.storagePath.hasPrefix("journaltopia-first-run/")
                 }
-            let downloadedStoryboards = await service.downloadStoryboards(from: rows)
+            let visibleRows = Array(rows.prefix(myStoryStoryboardPageSize))
+            let downloadedStoryboards = await service.downloadStoryboardPreviews(from: visibleRows)
                 .sorted(by: myStoryStoryboardSort)
 
             generatedStoryboards = downloadedStoryboards
+            nextStoryboardOffset = visibleRows.count
+            hasMoreStoryboards = rows.count > visibleRows.count
             cacheSelectedStoryboardCoverIfNeeded()
             currentPageIndex = clampedPageIndex(currentPageIndex)
+            loadFullMyStoryStoryboardIfNeeded(pageIndex: currentPageIndex)
         } catch {
             print("[Journaltopia] My Story storyboard load failed: \(error.localizedDescription)")
             if generatedStoryboards.isEmpty {
@@ -6248,8 +6583,106 @@ struct MyStoryView: View {
         }
     }
 
+    private func loadMoreMyStoryboardsIfNeeded(currentPageIndex: Int) {
+        guard currentPageIndex >= generatedStoryboards.count - 1 else {
+            return
+        }
+        guard hasMoreStoryboards, !isLoadingStoryboards, !isLoadingMoreStoryboards else {
+            return
+        }
+
+        Task {
+            await loadMoreMyStoryboards()
+        }
+    }
+
+    @MainActor
+    private func loadMoreMyStoryboards() async {
+        guard !contentMode.showsSampleContent, authStore.userID != nil else {
+            return
+        }
+        guard hasMoreStoryboards, !isLoadingStoryboards, !isLoadingMoreStoryboards else {
+            return
+        }
+
+        isLoadingMoreStoryboards = true
+        defer { isLoadingMoreStoryboards = false }
+
+        do {
+            let service = SupabaseStoryboardService()
+            let sampleEntryIDs = await activeSampleEntryIDs()
+            let rows = try await service.loadCompletedJournalStoryboardRowsPage(
+                limit: myStoryStoryboardPageSize + 1,
+                offset: nextStoryboardOffset
+            )
+            .filter { row in
+                !sampleEntryIDs.contains(row.clientEntryID)
+                    && !row.storagePath.hasPrefix("journaltopia-first-run/")
+            }
+            let visibleRows = Array(rows.prefix(myStoryStoryboardPageSize))
+            let existingIDs = Set(generatedStoryboards.map(\.id))
+            let downloadedStoryboards = await service.downloadStoryboardPreviews(from: visibleRows)
+                .filter { !existingIDs.contains($0.id) }
+
+            generatedStoryboards.append(contentsOf: downloadedStoryboards)
+            generatedStoryboards.sort(by: myStoryStoryboardSort)
+            nextStoryboardOffset += visibleRows.count
+            hasMoreStoryboards = rows.count > visibleRows.count
+            cacheSelectedStoryboardCoverIfNeeded()
+            currentPageIndex = clampedPageIndex(currentPageIndex)
+            loadFullMyStoryStoryboardIfNeeded(pageIndex: currentPageIndex)
+        } catch {
+            print("[Journaltopia] My Story storyboard page load failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadFullMyStoryStoryboardIfNeeded(pageIndex: Int) {
+        let storyboardIndex = pageIndex - 1
+        guard generatedStoryboards.indices.contains(storyboardIndex) else {
+            return
+        }
+
+        let storyboard = generatedStoryboards[storyboardIndex]
+        guard let storagePath = storyboard.storagePath else {
+            return
+        }
+
+        Task {
+            do {
+                let image = try await SupabaseStoryboardService().downloadStoryboardImage(storagePath: storagePath)
+                await MainActor.run {
+                    guard let currentIndex = generatedStoryboards.firstIndex(where: { $0.id == storyboard.id }) else {
+                        return
+                    }
+
+                    generatedStoryboards[currentIndex] = GeneratedStoryboard(
+                        id: storyboard.id,
+                        clientEntryID: storyboard.clientEntryID,
+                        image: image,
+                        promptText: storyboard.promptText,
+                        artStyle: storyboard.artStyle,
+                        generationQuality: storyboard.generationQuality,
+                        panelLayout: storyboard.panelLayout,
+                        sourcePhotoCount: storyboard.sourcePhotoCount,
+                        createdAt: storyboard.createdAt,
+                        imageFileName: storyboard.imageFileName,
+                        storagePath: storyboard.storagePath,
+                        cloudSyncState: storyboard.cloudSyncState,
+                        isPrimary: storyboard.isPrimary
+                    )
+                }
+            } catch {
+                print("[Journaltopia] My Story full storyboard load failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     @MainActor
     private func loadSampleStoryboards() async {
+        isLoadingMoreStoryboards = false
+        hasMoreStoryboards = false
+        nextStoryboardOffset = 0
+        storyboardTotalCount = nil
         loadErrorMessage = nil
 
         if !contentMode.isSampleAuthoring, let seededPack = SampleContentStore.pack {
@@ -6513,15 +6946,27 @@ struct MyStoryView: View {
     }
 
     private var pageCountText: String {
-        generatedStoryboards.count == 1 ? "1 Page" : "\(generatedStoryboards.count) Pages"
+        displayStoryboardCount == 1 ? "1 Page" : "\(displayStoryboardCount) Pages"
     }
 
     private var storyboardCountText: String {
-        generatedStoryboards.count == 1 ? "1 Storyboard" : "\(generatedStoryboards.count) Storyboards"
+        displayStoryboardCount == 1 ? "1 Storyboard" : "\(displayStoryboardCount) Storyboards"
     }
 
     private var totalPageCount: Int {
         generatedStoryboards.count + 1
+    }
+
+    private var displayStoryboardCount: Int {
+        if !contentMode.showsSampleContent, let storyboardTotalCount {
+            return max(storyboardTotalCount, generatedStoryboards.count)
+        }
+
+        return generatedStoryboards.count
+    }
+
+    private var displayTotalPageCount: Int {
+        displayStoryboardCount + 1
     }
 
     private var readerPageAspectRatio: CGFloat {
@@ -6533,13 +6978,17 @@ struct MyStoryView: View {
         return firstStoryboard.image.size.width / firstStoryboard.image.size.height
     }
 
+    private var readerDisplayAspectRatio: CGFloat {
+        readerPageAspectRatio * 2
+    }
+
     private var isTurningProgrammatically: Bool {
         isPageTurnActive || programmaticTurnOffset != 0
     }
 
     private func fittedPageSize(in viewport: CGSize) -> CGSize {
         let width = max(viewport.width, 1)
-        let height = width / readerPageAspectRatio
+        let height = width / readerDisplayAspectRatio
         return CGSize(width: width, height: height)
     }
 
@@ -6548,52 +6997,258 @@ struct MyStoryView: View {
     }
 
     private func turnPage(by offset: Int) {
-        guard !isTurningProgrammatically else {
-            return
-        }
-
-        let nextPageIndex = clampedPageIndex(currentPageIndex + offset)
+        let nextPageIndex = clampedSpreadPageIndex(currentPageIndex + offset)
         guard nextPageIndex != currentPageIndex else {
             return
         }
 
-        programmaticTurnOffset = offset
-        programmaticTurnProgress = 0.02
-
         programmaticTurnTask?.cancel()
-        programmaticTurnTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 40_000_000)
-            guard !Task.isCancelled, programmaticTurnOffset == offset else {
-                return
-            }
+        programmaticTurnOffset = 0
+        programmaticTurnProgress = 0
 
-            let frameCount = 24
-            for frame in 1...frameCount {
-                guard !Task.isCancelled, programmaticTurnOffset == offset else {
-                    return
+        withAnimation(.easeInOut(duration: 0.22)) {
+            currentPageIndex = nextPageIndex
+        }
+    }
+
+    private func clampedPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, totalPageCount - 1))
+    }
+
+    private func clampedSpreadPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, totalPageCount - 2))
+    }
+}
+
+private struct MyStoryBookSpreadView: View {
+    let storyboards: [GeneratedStoryboard]
+    let journalTitle: String
+    let journalColor: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackCoverImageName: String?
+    let pageCountText: String
+    let storyboardCountText: String
+    @Binding var currentPageIndex: Int
+    @State private var dragTranslation: CGFloat = 0
+    @State private var pendingTurnOffset = 0
+    @State private var pendingTurnProgress: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { proxy in
+            let pageTurn = pageTurnState(width: proxy.size.width)
+
+            bookContent(pageTurn: pageTurn)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+            .gesture(pageSwipeGesture)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("My Story page \(leftPageIndex + 1) of \(totalPageCount)")
+    }
+
+    @ViewBuilder
+    private func bookContent(
+        pageTurn: (progress: CGFloat, isTurningForward: Bool, isTurningBackward: Bool)
+    ) -> some View {
+        if pageTurn.isTurningForward, canTurnForward {
+            spreadView(leftPageIndex: leftPageIndex, rightPageIndex: leftPageIndex + 2)
+                .overlay {
+                    turningPage(pageIndex: leftPageIndex + 1, progress: pageTurn.progress, turnsForward: true)
                 }
+        } else if pageTurn.isTurningBackward, canTurnBackward {
+            spreadView(leftPageIndex: leftPageIndex - 1, rightPageIndex: leftPageIndex + 1)
+                .overlay {
+                    turningPage(pageIndex: leftPageIndex, progress: pageTurn.progress, turnsForward: false)
+                }
+        } else {
+            spreadView(leftPageIndex: leftPageIndex)
+        }
+    }
 
-                let linearProgress = CGFloat(frame) / CGFloat(frameCount)
-                let remainingProgress = 1 - linearProgress
-                let easedProgress = 1 - (remainingProgress * remainingProgress)
-                programmaticTurnProgress = min(1, max(0.02, easedProgress))
-                try? await Task.sleep(nanoseconds: 20_000_000)
+    private func spreadView(leftPageIndex: Int) -> some View {
+        spreadView(leftPageIndex: leftPageIndex, rightPageIndex: leftPageIndex + 1)
+    }
+
+    private func spreadView(leftPageIndex: Int, rightPageIndex: Int) -> some View {
+        GeometryReader { proxy in
+            let pageWidth = proxy.size.width / 2
+            let pageHeight = proxy.size.height
+            let clampedLeftPageIndex = clampedSpreadPageIndex(leftPageIndex)
+            let clampedRightPageIndex = clampedPageIndex(rightPageIndex)
+
+            HStack(spacing: 0) {
+                pageView(at: clampedLeftPageIndex)
+                    .frame(width: pageWidth, height: pageHeight)
+
+                pageView(at: clampedRightPageIndex)
+                    .frame(width: pageWidth, height: pageHeight)
+            }
+            .frame(width: proxy.size.width, height: pageHeight)
+            .overlay(alignment: .center) {
+                bookCenterShadow(height: pageHeight)
+            }
+        }
+    }
+
+    private func turningPage(pageIndex: Int, progress: CGFloat, turnsForward: Bool) -> some View {
+        GeometryReader { proxy in
+            let pageWidth = proxy.size.width / 2
+            let pageHeight = proxy.size.height
+            let clampedProgress = min(1, max(0.02, progress))
+            let rotation = turnsForward
+                ? -180 * Double(clampedProgress)
+                : 180 * Double(clampedProgress)
+
+            pageView(at: pageIndex)
+                .frame(width: pageWidth, height: pageHeight)
+                .rotation3DEffect(
+                    .degrees(rotation),
+                    axis: (x: 0, y: 1, z: 0),
+                    anchor: turnsForward ? .leading : .trailing,
+                    perspective: 0.62
+                )
+                .opacity(clampedProgress < 0.98 ? 1 : 0)
+                .shadow(color: Color.storyInk.opacity(0.18), radius: 12, x: turnsForward ? -4 : 4, y: 5)
+                .frame(width: proxy.size.width, height: pageHeight, alignment: turnsForward ? .trailing : .leading)
+        }
+    }
+
+    private func bookCenterShadow(height: CGFloat) -> some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [.black.opacity(0.24), .black.opacity(0.05), .clear, .black.opacity(0.05), .black.opacity(0.24)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(width: 16, height: height)
+            .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func pageView(at pageIndex: Int) -> some View {
+        if pageIndex == 0 {
+            JournalStoryboardReaderCoverPage(
+                title: journalTitle,
+                color: journalColor,
+                coverImage: coverImage,
+                remoteCoverURL: remoteCoverURL,
+                fallbackImageName: fallbackCoverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: storyboardCountText
+            )
+        } else if let image = image(at: pageIndex) {
+            JournalStoryboardComicPage(image: image)
+        }
+    }
+
+    private var pageSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onChanged { value in
+                dragTranslation = value.translation.width
+            }
+            .onEnded { value in
+                let predicted = value.predictedEndTranslation.width
+                let threshold: CGFloat = 72
+
+                if predicted < -threshold, canTurnForward {
+                    completeTurn(offset: 1, from: releaseProgress(translation: value.translation.width))
+                } else if predicted > threshold, canTurnBackward {
+                    completeTurn(offset: -1, from: releaseProgress(translation: value.translation.width))
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.88)) {
+                        dragTranslation = 0
+                    }
+                }
+            }
+    }
+
+    private func completeTurn(offset: Int, from releaseProgress: CGFloat) {
+        pendingTurnOffset = offset
+        pendingTurnProgress = max(0.02, releaseProgress)
+        dragTranslation = 0
+
+        let remaining = max(0, 1 - releaseProgress)
+        let duration = max(0.28, 0.62 * remaining)
+
+        withAnimation(.easeInOut(duration: duration)) {
+            pendingTurnProgress = 1
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+            guard pendingTurnOffset == offset else {
+                return
             }
 
             var transaction = Transaction()
             transaction.animation = nil
 
             withTransaction(transaction) {
-                currentPageIndex = nextPageIndex
-                programmaticTurnOffset = 0
-                programmaticTurnProgress = 0
-                programmaticTurnTask = nil
+                currentPageIndex = clampedSpreadPageIndex(currentPageIndex + offset)
+                pendingTurnOffset = 0
+                pendingTurnProgress = 0
             }
         }
     }
 
+    private func pageTurnState(width: CGFloat) -> (progress: CGFloat, isTurningForward: Bool, isTurningBackward: Bool) {
+        if pendingTurnOffset != 0 {
+            return (
+                min(1, max(0.02, pendingTurnProgress)),
+                pendingTurnOffset > 0,
+                pendingTurnOffset < 0
+            )
+        }
+
+        let progress = pageTurnProgress(width: width, translation: dragTranslation)
+        return (
+            max(0.02, progress),
+            dragTranslation < -4,
+            dragTranslation > 4
+        )
+    }
+
+    private func pageTurnProgress(width: CGFloat, translation: CGFloat) -> CGFloat {
+        min(1, abs(translation) / (max(1, width) * 0.58))
+    }
+
+    private func releaseProgress(translation: CGFloat) -> CGFloat {
+        min(0.82, max(0.02, abs(translation) / 260))
+    }
+
+    private func image(at pageIndex: Int) -> UIImage? {
+        let index = clampedPageIndex(pageIndex) - 1
+        guard storyboards.indices.contains(index) else {
+            return nil
+        }
+
+        return storyboards[index].image
+    }
+
     private func clampedPageIndex(_ pageIndex: Int) -> Int {
         min(max(0, pageIndex), max(0, totalPageCount - 1))
+    }
+
+    private func clampedSpreadPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, totalPageCount - 2))
+    }
+
+    private var totalPageCount: Int {
+        storyboards.count + 1
+    }
+
+    private var leftPageIndex: Int {
+        clampedSpreadPageIndex(currentPageIndex)
+    }
+
+    private var canTurnForward: Bool {
+        leftPageIndex < max(0, totalPageCount - 2)
+    }
+
+    private var canTurnBackward: Bool {
+        leftPageIndex > 0
     }
 }
 
@@ -6658,13 +7313,22 @@ private struct JournalStoryboardVerticalComicViewer: View {
 
                                 pageBoundary(pageIndex: pageIndex)
 
-                                Image(uiImage: page.image)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxWidth: .infinity)
-                                    .background(Color.black)
-                                    .id(pageIndex)
-                                    .background(pagePositionReader(index: pageIndex))
+                                Group {
+                                    if storyboards.isEmpty {
+                                        JournalStoryboardEmptyComicPage()
+                                            .aspectRatio(readerPageAspectRatio, contentMode: .fit)
+                                            .frame(maxWidth: .infinity)
+                                            .background(Color.black)
+                                    } else {
+                                        Image(uiImage: page.image)
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(maxWidth: .infinity)
+                                            .background(Color.black)
+                                    }
+                                }
+                                .id(pageIndex)
+                                .background(pagePositionReader(index: pageIndex))
                             }
 
                             Color.black
@@ -6807,6 +7471,7 @@ private struct JournalStoryboardTurningPage: View {
     let pageIndex: Int
     let progress: CGFloat
     let style: DaybookPageFoldStyle
+    var showsEmptyPlaceholder = false
 
     private let perspective: CGFloat = 0.34
 
@@ -6847,6 +7512,8 @@ private struct JournalStoryboardTurningPage: View {
                 pageCountText: pageCountText,
                 storyboardCountText: storyboardCountText
             )
+        } else if showsEmptyPlaceholder {
+            JournalStoryboardEmptyComicPage()
         } else if let image = image(at: pageIndex) {
             JournalStoryboardComicPage(image: image)
         }
@@ -6924,6 +7591,7 @@ private struct JournalStoryboardPageTurnView: View {
     let programmaticTurnOffset: Int
     let programmaticTurnProgress: CGFloat
     @Binding var isPageTurnActive: Bool
+    var showsEmptyPlaceholder = false
     @State private var dragTranslation: CGFloat = 0
     @State private var pendingTurnOffset = 0
     @State private var pendingTurnProgress: CGFloat = 0
@@ -6978,7 +7646,8 @@ private struct JournalStoryboardPageTurnView: View {
                         storyboardCountText: storyboardCountText,
                         pageIndex: folding,
                         progress: pageTurn.progress,
-                        style: .foldLeft
+                        style: .foldLeft,
+                        showsEmptyPlaceholder: showsEmptyPlaceholder
                     )
                     .zIndex(1)
 
@@ -6996,7 +7665,8 @@ private struct JournalStoryboardPageTurnView: View {
                         storyboardCountText: storyboardCountText,
                         pageIndex: folding,
                         progress: pageTurn.progress,
-                        style: .unfoldFromLeft
+                        style: .unfoldFromLeft,
+                        showsEmptyPlaceholder: showsEmptyPlaceholder
                     )
                     .zIndex(1)
 
@@ -7014,7 +7684,8 @@ private struct JournalStoryboardPageTurnView: View {
                         storyboardCountText: storyboardCountText,
                         pageIndex: folding,
                         progress: pageTurn.progress,
-                        style: .foldRight
+                        style: .foldRight,
+                        showsEmptyPlaceholder: showsEmptyPlaceholder
                     )
                     .zIndex(1)
                 }
@@ -7038,6 +7709,9 @@ private struct JournalStoryboardPageTurnView: View {
                 storyboardCountText: storyboardCountText
             )
             .id(pageIndex)
+        } else if showsEmptyPlaceholder {
+            JournalStoryboardEmptyComicPage()
+                .id(pageIndex)
         } else if let image = image(at: pageIndex) {
             JournalStoryboardComicPage(image: image)
                 .id(pageIndex)
@@ -7148,6 +7822,56 @@ private struct JournalStoryboardPageTurnView: View {
 
     private var totalPageCount: Int {
         images.count + 1
+    }
+}
+
+private struct JournalStoryboardEmptyComicPage: View {
+    var body: some View {
+        GeometryReader { proxy in
+            let titleSize = max(15, min(22, proxy.size.width * 0.062))
+            let subtitleSize = max(12, min(15, proxy.size.width * 0.04))
+            let iconSize = max(26, min(42, proxy.size.width * 0.11))
+
+            ZStack {
+                Color.black
+
+                VStack(spacing: max(8, min(14, proxy.size.height * 0.02))) {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: iconSize, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.55))
+
+                    Text("No storyboards yet")
+                        .font(.system(size: titleSize, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.88))
+                        .multilineTextAlignment(.center)
+
+                    Text("Create a storyboard and it will appear here.")
+                        .font(.system(size: subtitleSize, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, max(16, proxy.size.width * 0.1))
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .overlay(alignment: .leading) {
+                LinearGradient(
+                    colors: [.black.opacity(0.16), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 20)
+            }
+            .overlay(
+                LinearGradient(
+                    colors: [.black.opacity(0.12), .clear],
+                    startPoint: .bottom,
+                    endPoint: .center
+                )
+                .allowsHitTesting(false)
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("No storyboards yet")
+        }
     }
 }
 
@@ -7611,34 +8335,7 @@ private struct EntryOpeningPreview: Identifiable {
     }
 }
 
-private extension CreateEntryDraft {
-    func prototypeEntry() -> PrototypeEntry {
-        let weekdayFormatter = DateFormatter()
-        weekdayFormatter.dateFormat = "EEE"
-
-        let dayFormatter = DateFormatter()
-        dayFormatter.dateFormat = "d"
-
-        let timeFormatter = DateFormatter()
-        timeFormatter.timeStyle = .short
-
-        let displayDate = datePrecision == .noDate ? createdAt : date
-        let trimmedLocation = location.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return PrototypeEntry(
-            id: id,
-            weekday: weekdayFormatter.string(from: displayDate).uppercased(),
-            day: dayFormatter.string(from: displayDate),
-            title: entryDisplayTitle(self),
-            body: text,
-            richText: richText,
-            time: timeFormatter.string(from: displayDate),
-            location: trimmedLocation.isEmpty ? nil : trimmedLocation,
-            imageNames: [],
-            createdAt: createdAt
-        )
-    }
-
+extension CreateEntryDraft {
     static func fromCloud(_ entry: JournalEntry, thumbnail: UIImage? = nil) -> CreateEntryDraft {
         CreateEntryDraft(
             id: entry.clientEntryID,
@@ -7668,6 +8365,35 @@ private extension CreateEntryDraft {
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt,
             displayOrder: entry.displayOrder
+        )
+    }
+}
+
+private extension CreateEntryDraft {
+    func prototypeEntry() -> PrototypeEntry {
+        let weekdayFormatter = DateFormatter()
+        weekdayFormatter.dateFormat = "EEE"
+
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "d"
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.timeStyle = .short
+
+        let displayDate = datePrecision == .noDate ? createdAt : date
+        let trimmedLocation = location.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return PrototypeEntry(
+            id: id,
+            weekday: weekdayFormatter.string(from: displayDate).uppercased(),
+            day: dayFormatter.string(from: displayDate),
+            title: entryDisplayTitle(self),
+            body: text,
+            richText: richText,
+            time: timeFormatter.string(from: displayDate),
+            location: trimmedLocation.isEmpty ? nil : trimmedLocation,
+            imageNames: [],
+            createdAt: createdAt
         )
     }
 
@@ -8244,6 +8970,13 @@ struct EntriesView: View {
     @State private var sampleContentLoadTask: Task<Void, Never>?
     @State private var cloudThumbnailIDsBeingLoaded: Set<UUID> = []
     @State private var selectedEntryTabRawValue = EntriesTab.all.rawValue
+    /// Search lives behind the header's magnifying glass rather than sitting open above the grid:
+    /// the header already carries the title, the filter pills and Edit, and a permanently visible
+    /// field would push the first row of entries off the first screen for the majority of visits
+    /// that never search at all.
+    @State private var isShowingEntrySearchField = false
+    @State private var entrySearchQuery = ""
+    @FocusState private var isEntrySearchFieldFocused: Bool
     private let cloudEntriesPageSize = 30
     @AppStorage("JournaltopiaSelectedEntryLayout") private var selectedEntryLayoutRawValue = JournalEntryLayout.grid.rawValue
     @AppStorage("JournaltopiaSelectedEntrySort") private var selectedEntrySortRawValue = EntrySortOption.cloudCreated.rawValue
@@ -8349,6 +9082,9 @@ struct EntriesView: View {
             }
             .onChange(of: selectedEntrySortRawValue) { _ in
                 refreshEntries()
+            }
+            .task(id: trimmedEntrySearchQuery) {
+                await loadMoreEntriesForActiveSearchIfNeeded()
             }
             .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
                 handleGeneratedStoryboardsChanged()
@@ -8610,6 +9346,7 @@ struct EntriesView: View {
             isFinishingEntryOpening = false
             if !(newPage == .create && isOpeningEntryFromEntries) {
                 selectedEntryTab = .all
+                closeEntrySearchField()
             }
         }
 
@@ -8697,30 +9434,189 @@ struct EntriesView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 14) {
-            Text("Entries")
-                .font(.system(size: 24, weight: .bold, design: .serif))
-                .foregroundStyle(Color.storyInk)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .lastTextBaseline, spacing: 14) {
+                Text("Entries")
+                    .font(.system(size: 24, weight: .bold, design: .serif))
+                    .foregroundStyle(Color.storyInk)
 
-            Spacer()
+                Spacer()
 
-            if canEditEntries {
-                Button(editMode == .active ? "Done" : "Edit") {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        if editMode == .active {
-                            editMode = .inactive
-                            selectedEntryIDs = []
-                        } else {
-                            editMode = .active
+                HStack(spacing: 14) {
+                    entrySearchToggleButton
+
+                    if canEditEntries {
+                        Button(editMode == .active ? "Done" : "Edit") {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                if editMode == .active {
+                                    editMode = .inactive
+                                    selectedEntryIDs = []
+                                } else {
+                                    editMode = .active
+                                }
+                            }
                         }
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Color.homeAccent)
+                        .disabled(filteredEntryItems.isEmpty && !isEntrySearchActive)
                     }
                 }
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(Color.homeAccent)
-                .disabled(filteredEntryItems.isEmpty)
+            }
+
+            if isShowingEntrySearchField {
+                entrySearchField
             }
         }
         .padding(.top, 12)
+    }
+
+    private var entrySearchToggleButton: some View {
+        Button {
+            toggleEntrySearchField()
+        } label: {
+            Image(systemName: isShowingEntrySearchField ? "xmark" : "magnifyingglass")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Color.homeAccent)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isShowingEntrySearchField ? "Close search" : "Search entries")
+    }
+
+    private var entrySearchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.homeMutedText)
+
+            TextField("Search entries", text: $entrySearchQuery)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.storyInk)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($isEntrySearchFieldFocused)
+                .onSubmit {
+                    isEntrySearchFieldFocused = false
+                }
+
+            if !entrySearchQuery.isEmpty {
+                Button {
+                    entrySearchQuery = ""
+                    isEntrySearchFieldFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.homeMutedText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.homeBorder, lineWidth: 1)
+        )
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private func toggleEntrySearchField() {
+        let willShow = !isShowingEntrySearchField
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isShowingEntrySearchField = willShow
+            if !willShow {
+                entrySearchQuery = ""
+            }
+        }
+
+        // Focus is set outside the animation because raising the keyboard inside one animates the
+        // whole layout against the keyboard's own transition.
+        isEntrySearchFieldFocused = willShow
+    }
+
+    private func closeEntrySearchField() {
+        guard isShowingEntrySearchField || !entrySearchQuery.isEmpty else {
+            return
+        }
+
+        isEntrySearchFieldFocused = false
+        isShowingEntrySearchField = false
+        entrySearchQuery = ""
+    }
+
+    /// The trimmed query, or an empty string when nothing is being searched for.
+    private var trimmedEntrySearchQuery: String {
+        entrySearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isEntrySearchActive: Bool {
+        !trimmedEntrySearchQuery.isEmpty
+    }
+
+    /// Every whitespace-separated word has to match somewhere in the entry, so "beach trip" finds
+    /// an entry titled "Trip" that mentions the beach in its body rather than only exact phrases.
+    private var entrySearchTerms: [String] {
+        trimmedEntrySearchQuery
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+    }
+
+    private func entrySearchHaystack(for item: EntryDisplayItem) -> String {
+        switch item {
+        case .local(let entry, let cloudEntry):
+            // The local draft and its cloud row can disagree while a save is in flight, so both are
+            // searched rather than picking one and missing the newer text.
+            return [
+                entry.title,
+                entry.text,
+                entry.location,
+                cloudEntry?.title ?? "",
+                cloudEntry?.content ?? "",
+                cloudEntry?.location ?? ""
+            ].joined(separator: "\n").lowercased()
+        case .cloud(let entry):
+            return [
+                entry.title ?? "",
+                entry.content ?? "",
+                entry.location ?? ""
+            ].joined(separator: "\n").lowercased()
+        }
+    }
+
+    private func entrySearchHaystack(for entry: CreateEntryDraft) -> String {
+        [entry.title, entry.text, entry.location]
+            .joined(separator: "\n")
+            .lowercased()
+    }
+
+    private func searchFiltered(_ items: [EntryDisplayItem]) -> [EntryDisplayItem] {
+        let terms = entrySearchTerms
+        guard !terms.isEmpty else {
+            return items
+        }
+
+        return items.filter { item in
+            let haystack = entrySearchHaystack(for: item)
+            return terms.allSatisfy(haystack.contains)
+        }
+    }
+
+    private func searchFiltered(_ entries: [CreateEntryDraft]) -> [CreateEntryDraft] {
+        let terms = entrySearchTerms
+        guard !terms.isEmpty else {
+            return entries
+        }
+
+        return entries.filter { entry in
+            let haystack = entrySearchHaystack(for: entry)
+            return terms.allSatisfy(haystack.contains)
+        }
     }
 
     /// Sample browsing has nothing of the visitor's to select, rename or delete — Edit belongs to
@@ -8838,6 +9734,7 @@ struct EntriesView: View {
     private var entriesReorderHint: some View {
         if selectedEntrySort == .manual
             && !showsSampleEntries
+            && !isEntrySearchActive
             && !filteredEntryItems.isEmpty
             && (selectedEntryLayout != .list || editMode == .active) {
             ReorderHintText()
@@ -9849,17 +10746,19 @@ struct EntriesView: View {
 
     private var emptyEntriesState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "doc.badge.plus")
+            Image(systemName: isEntrySearchActive ? "magnifyingglass" : "doc.badge.plus")
                 .font(.system(size: 30))
                 .foregroundStyle(Color.homeAccent.opacity(0.65))
 
-            Text("No entries")
+            Text(isEntrySearchActive ? "No matches" : "No entries")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(Color.storyInk)
 
-            Text("Entries you save will appear here.")
+            Text(emptyEntriesMessage)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.homeMutedText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 38)
@@ -9870,7 +10769,25 @@ struct EntriesView: View {
         )
     }
 
+    /// Search only sees entries that have been loaded, and the cloud list arrives a page at a
+    /// time, so the message says so rather than claiming nothing matches anywhere.
+    private var emptyEntriesMessage: String {
+        guard isEntrySearchActive else {
+            return "Entries you save will appear here."
+        }
+
+        if hasMoreCloudEntries && !showsSampleEntries {
+            return "Nothing matches \u{201C}\(trimmedEntrySearchQuery)\u{201D} yet \u{2014} still checking older entries."
+        }
+
+        return "No entries match \u{201C}\(trimmedEntrySearchQuery)\u{201D}."
+    }
+
     private var filteredEntries: [CreateEntryDraft] {
+        searchFiltered(tabFilteredEntries)
+    }
+
+    private var tabFilteredEntries: [CreateEntryDraft] {
         let sourceEntries: [CreateEntryDraft]
         switch selectedEntryTab {
         case .all:
@@ -9893,9 +10810,17 @@ struct EntriesView: View {
             .map(\.entry)
     }
 
+    /// What the screen actually shows: the tab's entries, narrowed by the header search field.
     private var filteredEntryItems: [EntryDisplayItem] {
+        searchFiltered(tabFilteredEntryItems)
+    }
+
+    /// The tab's entries before search narrows them, for the places that need to know whether the
+    /// tab itself is empty — a loading placeholder must not appear just because a query matched
+    /// nothing.
+    private var tabFilteredEntryItems: [EntryDisplayItem] {
         if showsSampleEntries {
-            return filteredEntries.map { .local($0, cloudEntry: nil) }
+            return tabFilteredEntries.map { .local($0, cloudEntry: nil) }
         }
 
         switch selectedEntryTab {
@@ -10269,7 +11194,7 @@ struct EntriesView: View {
     private var showsCloudLoadingPlaceholder: Bool {
         (isLoadingCloudEntries || isLoadingSampleContent || !hasAttemptedEntriesLoad)
             && !showsSampleEntries
-            && filteredEntryItems.isEmpty
+            && tabFilteredEntryItems.isEmpty
             && cloudEntriesErrorMessage == nil
     }
 
@@ -10566,7 +11491,9 @@ struct EntriesView: View {
     }
 
     private func moveEntries(from source: IndexSet, to destination: Int) {
-        guard selectedEntrySort == .manual else {
+        // Reordering a searched-down list would write an order derived from the handful of visible
+        // rows over the order of every entry, so manual reordering waits until search is cleared.
+        guard selectedEntrySort == .manual, !isEntrySearchActive else {
             return
         }
 
@@ -10576,7 +11503,7 @@ struct EntriesView: View {
     }
 
     private func moveEntryItem(_ draggedID: UUID, before targetID: UUID) {
-        guard selectedEntrySort == .manual else {
+        guard selectedEntrySort == .manual, !isEntrySearchActive else {
             return
         }
 
@@ -11060,7 +11987,7 @@ struct EntriesView: View {
         hasLoadedEntriesForSession = true
         loadedEntryQueryKey = queryKey
 
-        entries = CreateEntryDraftStore.loadAll()
+        entries = CreateEntryDraftStore.loadAll(includeMedia: false)
         completedStoryboards = GeneratedStoryboardStore.load().filter { !$0.isSampleContent }
         scheduleCompletedStoryboardLoad()
         loadRemoteSampleContentIfNeeded()
@@ -11076,7 +12003,7 @@ struct EntriesView: View {
         // comparing versions, which is the narrower thing this was reaching for.
 
         let didHydrateCachedEntries = forceCloudReload ? false : hydrateCachedCloudEntries(for: queryKey)
-        isLoadingCloudEntries = !didHydrateCachedEntries && filteredEntryItems.isEmpty
+        isLoadingCloudEntries = !didHydrateCachedEntries && tabFilteredEntryItems.isEmpty
         storeCurrentEntriesSessionSnapshot()
 
         Task {
@@ -11255,6 +12182,39 @@ struct EntriesView: View {
         }
     }
 
+    /// Search matches against the entries already in memory, and the cloud list arrives a page at a
+    /// time — so a query whose only match sits on page four would come back empty with no rows on
+    /// screen to trigger the usual scroll-driven paging. This pulls pages in the background until a
+    /// match shows up, the list runs out, or the cap is hit; rows appear as soon as one matches.
+    ///
+    /// `task(id:)` cancels this when the query changes, which is also what makes the leading sleep
+    /// a debounce rather than a delay.
+    private func loadMoreEntriesForActiveSearchIfNeeded() async {
+        guard authStore.userID != nil, selectedPage == .entries, isEntrySearchActive else {
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: 350_000_000)
+
+        var pagesLoaded = 0
+        while !Task.isCancelled,
+              pagesLoaded < 20,
+              isEntrySearchActive,
+              hasMoreCloudEntries,
+              filteredEntryItems.isEmpty {
+            let offsetBeforeLoad = nextCloudEntryOffset
+            await loadMoreCloudEntries()
+
+            // Nothing moved — another load is already in flight, or the page came back empty.
+            // Either way, spinning on it would just busy-loop.
+            guard nextCloudEntryOffset != offsetBeforeLoad else {
+                return
+            }
+
+            pagesLoaded += 1
+        }
+    }
+
     private func loadMoreCloudEntries() async {
         guard let userID = authStore.userID else {
             return
@@ -11429,8 +12389,8 @@ struct EntriesView: View {
         }
 
         let openingStartedAt = Date()
-        let minimumOpeningDuration: TimeInterval = 1.15
-        let finishingZoomDuration: TimeInterval = 0.42
+        let minimumOpeningDuration: TimeInterval = item.cloudEntry == nil ? 0.2 : 0.55
+        let finishingZoomDuration: TimeInterval = item.cloudEntry == nil ? 0.18 : 0.32
         let displayEntry = entryForDisplay(item)
         isFinishingEntryOpening = false
         withAnimation(.spring(response: 0.56, dampingFraction: 0.82)) {
@@ -11795,7 +12755,7 @@ struct EntriesView: View {
         }
 
         if didCreateThumbnail {
-            entries = CreateEntryDraftStore.loadAll()
+            entries = CreateEntryDraftStore.loadAll(includeMedia: false)
         }
     }
 
@@ -15406,18 +16366,14 @@ private struct PrototypeChapterDetailView: View {
         do {
             let cloudClientEntryIDs = try await mediaClientEntryIDsFromCloudEntries()
             let allClientEntryIDs = clientEntryIDs.union(cloudClientEntryIDs)
-            // Media tab needs every storyboard for an entry (viewer + counts); query is membership-scoped.
-            let cloudStoryboards = try await SupabaseStoryboardService().loadStoryboardImages(for: allClientEntryIDs)
-            let cachedCloudStoryboards = GeneratedStoryboardStore.cachedStoryboards(cloudStoryboards)
-            var persistedStoryboards = GeneratedStoryboardStore.load()
-            for storyboard in cachedCloudStoryboards {
-                persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
-            }
-            GeneratedStoryboardStore.save(persistedStoryboards)
+            // Media tab cards only need preview-sized images; full storyboards are fetched by the
+            // viewer path when a specific image is opened.
+            let cloudStoryboards = try await SupabaseStoryboardService().loadStoryboardPreviewImages(for: allClientEntryIDs)
+            let persistedStoryboards = GeneratedStoryboardStore.load()
 
             let refreshedLocalStoryboards = storyboardsForMedia(
                 clientEntryIDs: allClientEntryIDs,
-                in: persistedStoryboards
+                in: persistedStoryboards + cloudStoryboards
             )
             mediaStoryboards = mergedMediaStoryboards(cardSizedMediaStoryboards(refreshedLocalStoryboards))
             updateDisplayedMediaStoryboardCount()
@@ -16042,24 +16998,28 @@ private struct JournalDetailEntryBrowser: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
+        // Both choices, always. "Delete" used to appear only when the entry happened to be in
+        // another journal, which left the common case — an entry filed in exactly one journal —
+        // with a single button that said Remove and meant Delete Forever.
+        //
+        // Only that second button is destructive: removing an entry from a journal takes nothing
+        // away, and colouring both red would say otherwise.
         .alert(deleteEntryAlertTitle, isPresented: isDeleteEntryAlertPresented) {
             Button("Cancel", role: .cancel) {
                 entriesPendingDeletion = []
             }
 
-            Button("Remove from this Journal", role: .destructive) {
-                let itemsToDelete = entriesPendingDeletion
+            Button("Remove from this Journal") {
+                let itemsToRemove = entriesPendingDeletion
                 Task {
-                    await deletePendingEntriesFromCurrentJournal(itemsToDelete)
+                    await removePendingEntriesFromCurrentJournal(itemsToRemove)
                 }
             }
 
-            if hasEntriesPendingDeletionOutsideCurrentJournal {
-                Button("Delete in All", role: .destructive) {
-                    let itemsToDelete = entriesPendingDeletion
-                    Task {
-                        await deletePendingEntriesEverywhere(itemsToDelete)
-                    }
+            Button(deletePendingEntriesButtonTitle, role: .destructive) {
+                let itemsToDelete = entriesPendingDeletion
+                Task {
+                    await deletePendingEntriesEverywhere(itemsToDelete)
                 }
             }
         } message: {
@@ -16289,10 +17249,11 @@ private struct JournalDetailEntryBrowser: View {
         }
     }
 
-    /// On a journal page the destructive action is ambiguous — the confirmation alert is what
-    /// offers "Remove from this Journal" versus "Delete in All", so the row action stays neutral.
+    /// On a journal page the row action leads to a choice rather than an outcome — the confirmation
+    /// alert is what offers "Remove from this Journal" versus "Delete Entry" — so the row itself
+    /// stays neutral about which one the user is heading for.
     private var journalDetailDeleteActionTitle: String {
-        "Remove from Journal"
+        "Remove or Delete"
     }
 
     private var entryGridAvailableWidth: CGFloat {
@@ -16651,15 +17612,7 @@ private struct JournalDetailEntryBrowser: View {
                     }
                 }
 
-                let downloadedStoryboards = await storyboardService.downloadStoryboards(from: rowsToDownload)
-                let cachedCloudStoryboards = GeneratedStoryboardStore.cachedStoryboards(downloadedStoryboards)
-                var persistedStoryboards = GeneratedStoryboardStore.load()
-                for storyboard in cachedCloudStoryboards {
-                    persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
-                }
-                if !cachedCloudStoryboards.isEmpty {
-                    GeneratedStoryboardStore.save(persistedStoryboards)
-                }
+                let downloadedStoryboards = await storyboardService.downloadStoryboardPreviews(from: rowsToDownload)
 
                 await MainActor.run {
                     let currentCompletedClientEntryIDs = Set(visibleItems.filter { isCompleted($0) }.map(\.id))
@@ -16668,7 +17621,7 @@ private struct JournalDetailEntryBrowser: View {
                     }
 
                     var mergedStoryboards = completedStoryboards
-                    for storyboard in locallyCachedStoryboards + cachedCloudStoryboards {
+                    for storyboard in locallyCachedStoryboards + downloadedStoryboards {
                         let cardStoryboard = GeneratedStoryboard(
                             id: storyboard.id,
                             clientEntryID: storyboard.clientEntryID,
@@ -16698,7 +17651,7 @@ private struct JournalDetailEntryBrowser: View {
                         )
                     }
 
-                    let downloadedClientEntryIDs = Set(cachedCloudStoryboards.compactMap(\.clientEntryID))
+                    let downloadedClientEntryIDs = Set(downloadedStoryboards.compactMap(\.clientEntryID))
                     let clientEntryIDsWithCloudRows = Set(countsByClientEntryID.keys)
                     let failedClientEntryIDs = clientEntryIDsNeedingImages
                         .subtracting(downloadedClientEntryIDs)
@@ -16888,27 +17841,47 @@ private struct JournalDetailEntryBrowser: View {
     }
 
     private var deleteEntryAlertTitle: String {
-        "Are u sure?"
+        entriesPendingDeletion.count == 1 ? "Remove or Delete Entry?" : "Remove or Delete Entries?"
     }
 
-    private var hasEntriesPendingDeletionOutsideCurrentJournal: Bool {
-        entriesPendingDeletion.contains { !otherJournalTitles(for: $0).isEmpty }
+    private var deletePendingEntriesButtonTitle: String {
+        entriesPendingDeletion.count == 1 ? "Delete Entry" : "Delete \(entriesPendingDeletion.count) Entries"
+    }
+
+    /// How many of the pending entries are also filed in a journal that is not this one.
+    ///
+    /// Only "Delete" cares: removing an entry here never touches another journal, but deleting it
+    /// empties it out of every journal holding it — which is the one consequence of this alert the
+    /// user cannot see from the journal they are looking at.
+    private var pendingDeletionEntriesInOtherJournalsCount: Int {
+        entriesPendingDeletion.filter { !otherJournalTitles(for: $0).isEmpty }.count
     }
 
     private var deleteEntryAlertMessage: String {
+        let subject: String
+        let pronoun: String
         if let entry = entriesPendingDeletion.first, entriesPendingDeletion.count == 1 {
-            if otherJournalTitles(for: entry).isEmpty {
-                return "\"\(entryDisplayTitle(entry.entry))\" is only in \(chapter.title). Removing it here will delete it permanently."
-            }
-
-            return "Remove \"\(entryDisplayTitle(entry.entry))\" from \(chapter.title), or delete it from every journal?"
+            subject = "\"\(entryDisplayTitle(entry.entry))\""
+            pronoun = "it"
+        } else {
+            subject = "these \(entriesPendingDeletion.count) entries"
+            pronoun = "them"
         }
 
-        if hasEntriesPendingDeletionOutsideCurrentJournal {
-            return "Remove these entries from \(chapter.title), or delete them from every journal? Entries with no other journals will be deleted permanently."
+        var message = """
+            Remove from this Journal takes \(subject) out of \(chapter.title) but keeps \(pronoun) in your library. Anything left in no journal appears under Not in a Journal.
+
+            \(deletePendingEntriesButtonTitle) permanently deletes \(pronoun) from Journaltopia, along with any storyboards. This can't be undone.
+            """
+
+        let otherJournalCount = pendingDeletionEntriesInOtherJournalsCount
+        if otherJournalCount > 0 {
+            message += entriesPendingDeletion.count == 1
+                ? "\n\nThis entry is also in another journal and will be deleted from there too."
+                : "\n\n\(otherJournalCount) of these entries are also in other journals and will be deleted from those too."
         }
 
-        return "These entries are only in \(chapter.title). Removing them here will delete them permanently."
+        return message
     }
 
     private func handleItemTap(_ item: EntryDisplayItem, displayEntry: CreateEntryDraft, fallbackIndex: Int) {
@@ -17129,40 +18102,40 @@ private struct JournalDetailEntryBrowser: View {
         entriesPendingDeletion = [item]
     }
 
-    private func deletePendingEntriesFromCurrentJournal(_ itemsToDelete: [EntryDisplayItem]) async {
-        guard !itemsToDelete.isEmpty else {
+    /// "Remove from this Journal": drops this journal's link to each entry, and nothing else.
+    ///
+    /// It used to do more. Entries that were not also filed in another journal took the
+    /// `permanentItems` path and were deleted outright — cloud row, storyboards and all — on the
+    /// reasoning that an entry belonging to no journal has nowhere left to live. It does have
+    /// somewhere: the library lists it under Not in a Journal. So the old split made the single most
+    /// common case, an entry filed in exactly one journal, a button labelled Remove that silently
+    /// destroyed the entry. Deleting is now its own clearly labelled button, and this one only ever
+    /// unfiles.
+    private func removePendingEntriesFromCurrentJournal(_ itemsToRemove: [EntryDisplayItem]) async {
+        guard !itemsToRemove.isEmpty else {
             return
         }
 
-        let scopedItems = itemsToDelete.filter { !otherJournalTitles(for: $0).isEmpty }
-        let permanentItems = itemsToDelete.filter { otherJournalTitles(for: $0).isEmpty }
-
-        guard await deleteItemsEverywhereInCloud(permanentItems) else {
-            return
-        }
-
-        if authStore.userID != nil && !scopedItems.isEmpty {
+        if authStore.userID != nil {
             do {
                 try await SupabaseJournalRepository().deleteJournalEntryMemberships(
                     journalID: chapter.id,
-                    clientEntryIDs: scopedItems.map(\.id)
+                    clientEntryIDs: itemsToRemove.map(\.id)
                 )
             } catch {
-                entriesPendingDeletion = itemsToDelete
-                errorMessage = "Could not delete from Journaltopia cloud. Check your connection and try again."
+                entriesPendingDeletion = itemsToRemove
+                errorMessage = "Could not update Journaltopia cloud. Check your connection and try again."
                 return
             }
         }
 
-        scopedItems.forEach { item in
+        itemsToRemove.forEach { item in
             let entry = entryForDisplay(item).prototypeEntry()
             StoryEntryStore.delete(entry, from: chapter.title)
             EntryJournalLinkStore.remove(journalTitle: chapter.title, for: item.id)
         }
 
-        permanentlyDeleteLocalItems(permanentItems)
-
-        completePendingDelete(itemsToDelete)
+        completePendingDelete(itemsToRemove)
         await UserChapterStore.syncJournalAndEntriesToCloud(title: chapter.title)
     }
 
@@ -18826,6 +19799,50 @@ enum UserChapterStore {
     }
 }
 
+/// Journals the user has deleted, kept until the cloud confirms the row is gone.
+///
+/// The journal list is a straight mirror of ``UserChapterStore``, and `loadCloudJournalsIfNeeded`
+/// rewrites that store wholesale from whatever `getJournals()` returned. Two things then put a
+/// deleted journal back on screen: a read that was already in flight when the delete landed and
+/// finishes holding a pre-delete snapshot, and a cloud delete that failed — it is fired into an
+/// unawaited `Task` with `try?`, so nothing notices. A tombstone closes both. The id is filtered out
+/// of every cloud read, the delete is retried on each load while the cloud still returns the row,
+/// and the tombstone is dropped the moment the cloud comes back without it.
+private enum DeletedJournalStore {
+    private static let storageKey = "JournaltopiaDeletedJournals"
+
+    static var ids: Set<UUID> {
+        let storedIDs = UserDefaults.standard.stringArray(forKey: scopedStorageKey) ?? []
+        return Set(storedIDs.compactMap(UUID.init(uuidString:)))
+    }
+
+    static func add(_ id: UUID) {
+        var updatedIDs = ids
+        updatedIDs.insert(id)
+        write(updatedIDs)
+    }
+
+    /// Drops tombstones the cloud has confirmed, so the set stays the size of what is genuinely
+    /// still in flight rather than growing for the life of the account.
+    static func forget(_ confirmedIDs: Set<UUID>) {
+        let storedIDs = ids
+        let remainingIDs = storedIDs.subtracting(confirmedIDs)
+        guard remainingIDs != storedIDs else {
+            return
+        }
+
+        write(remainingIDs)
+    }
+
+    private static func write(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: scopedStorageKey)
+    }
+
+    private static var scopedStorageKey: String {
+        JournaltopiaLocalAccountScope.scopedUserDefaultsKey(storageKey)
+    }
+}
+
 private enum DeletedSampleChapterStore {
     private static let storageKey = "JournaltopiaDeletedSampleChapters"
 
@@ -18980,6 +19997,15 @@ enum StoryEntryStore {
 
     static func journalTitles(containing entry: PrototypeEntry) -> Set<String> {
         Set(records.filter { $0.id == entry.id || $0.matchesContent(of: entry) }.map(\.chapterTitle))
+    }
+
+    /// Which journals an entry is filed in, by id.
+    ///
+    /// The `PrototypeEntry` overload above also matches on content, which is what the older
+    /// sample-content paths need. Deleting is not a place to guess: an id either is in a journal or
+    /// it is not, and a content match that guessed wrong would warn about the wrong journals.
+    static func journalTitles(containingEntryID entryID: UUID) -> Set<String> {
+        Set(records.filter { $0.id == entryID }.map(\.chapterTitle))
     }
 
     static func clientEntryIDs(for chapterTitle: String) -> [UUID] {

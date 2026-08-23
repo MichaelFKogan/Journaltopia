@@ -32,8 +32,6 @@ struct ContentView: View {
     @State private var openedStoryboardGenerationImage: UIImage?
     @State private var isOpeningEntryFromEntries: Bool
     @State private var isOpeningCompletedEntryFromEntries: Bool
-    @State private var homeStorySoFarPresentation: HomeStorySoFarPresentation?
-    @State private var homeStorySoFarPageIndex: Int
     @State private var pendingHomeJournalID: UUID?
     @AppStorage("JournaltopiaHasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("JournaltopiaSampleAuthorModeEnabled") private var isSampleAuthorModeEnabled = false
@@ -53,8 +51,6 @@ struct ContentView: View {
         _openedStoryboardGenerationImage = State(initialValue: nil)
         _isOpeningEntryFromEntries = State(initialValue: false)
         _isOpeningCompletedEntryFromEntries = State(initialValue: false)
-        _homeStorySoFarPresentation = State(initialValue: nil)
-        _homeStorySoFarPageIndex = State(initialValue: 0)
         _pendingHomeJournalID = State(initialValue: nil)
     }
 
@@ -63,18 +59,6 @@ struct ContentView: View {
             basePage
                 .navigationDestination(isPresented: isCreatePagePresented) {
                     createPage
-                }
-                .navigationDestination(isPresented: isHomeStorySoFarPresented) {
-                    if let homeStorySoFarPresentation {
-                        HomeStoryboardVerticalViewer(
-                            storyboards: homeStorySoFarPresentation.storyboards,
-                            currentPageIndex: $homeStorySoFarPageIndex,
-                            title: "The Story So Far..."
-                        )
-                        .navigationBarBackButtonHidden(true)
-                        .toolbar(.hidden, for: .navigationBar)
-                        .enableInteractivePopGesture()
-                    }
                 }
         }
         .overlay(alignment: .bottom) {
@@ -285,17 +269,6 @@ struct ContentView: View {
         )
     }
 
-    private var isHomeStorySoFarPresented: Binding<Bool> {
-        Binding(
-            get: { homeStorySoFarPresentation != nil },
-            set: { isPresented in
-                if !isPresented {
-                    homeStorySoFarPresentation = nil
-                }
-            }
-        )
-    }
-
     private var isInitialSignedOutSignInPresented: Binding<Bool> {
         Binding(
             get: {
@@ -364,7 +337,6 @@ struct ContentView: View {
                 openCreatePage: openCreatePageFromHome,
                 openEntriesPage: openEntriesPageFromHome,
                 openJournalsPage: openJournalsPage,
-                openStorySoFarPage: openStorySoFarPage,
                 openRecentEntry: openRecentEntryFromHome,
                 openRecentJournal: openRecentJournalFromHome
             )
@@ -398,14 +370,6 @@ struct ContentView: View {
             )
                 .transition(.identity)
                 .zIndex(0)
-        case .myStory:
-            MyStoryView(
-                selectedPage: pageSelection,
-                generatedStoryboards: $generatedStoryboards,
-                contentMode: contentMode
-            )
-            .transition(.identity)
-            .zIndex(0)
         case .profile:
             ProfileView(
                 selectedPage: pageSelection,
@@ -489,18 +453,7 @@ struct ContentView: View {
         selectPage(.journal)
     }
 
-    private func openStorySoFarPage() {
-        guard !generatedStoryboards.isEmpty else {
-            return
-        }
-
-        // Snapshot at open time so a Home reload can't wipe the pushed page.
-        homeStorySoFarPageIndex = 0
-        homeStorySoFarPresentation = HomeStorySoFarPresentation(storyboards: generatedStoryboards)
-    }
-
     private func openRecentEntryFromHome(_ entry: CreateEntryDraft, storyboardImage: UIImage?) {
-        homeStorySoFarPresentation = nil
         journalCreatePresentation = nil
         activeDraftID = entry.id
         entryText = entry.text
@@ -557,7 +510,6 @@ struct ContentView: View {
     }
 
     private func resetHomeCardState() {
-        homeStorySoFarPresentation = nil
         journalCreatePresentation = nil
         pendingHomeJournalID = nil
         isOpeningEntryFromEntries = false
@@ -593,7 +545,7 @@ struct ContentView: View {
         }
 
         isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
-        if selectedPage == .create || pageBehindCreate == .myStory || pageBehindCreate == .profile {
+        if selectedPage == .create || pageBehindCreate == .profile {
             generatedStoryboards = GeneratedStoryboardStore.load()
         }
         activeDraftID = nil
@@ -602,11 +554,6 @@ struct ContentView: View {
         isOpeningEntryFromEntries = false
         isOpeningCompletedEntryFromEntries = false
     }
-}
-
-private struct HomeStorySoFarPresentation: Identifiable {
-    let id = UUID()
-    let storyboards: [GeneratedStoryboard]
 }
 
 private struct StoryboardGenerationBottomBanner: View {

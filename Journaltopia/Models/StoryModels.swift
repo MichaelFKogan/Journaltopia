@@ -6,7 +6,6 @@ enum StoryPage {
     case create
     case entries
     case journal
-    case myStory
     case profile
     case settings
 }
@@ -536,7 +535,7 @@ enum CreateEntryDraftStore {
     private static let metadataFileName = "draft.json"
     private static let thumbnailFileName = "thumbnail.jpg"
 
-    static func loadAll() -> [CreateEntryDraft] {
+    static func loadAll(includeMedia: Bool = true) -> [CreateEntryDraft] {
         migrateLegacyDraftIfNeeded()
 
         guard
@@ -550,7 +549,7 @@ enum CreateEntryDraftStore {
         }
 
         return draftURLs
-            .compactMap { loadDraft(at: $0, includeMedia: true) }
+            .compactMap { loadDraft(at: $0, includeMedia: includeMedia) }
             .sorted(by: sortDrafts)
     }
 

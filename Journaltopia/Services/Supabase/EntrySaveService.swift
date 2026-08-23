@@ -305,6 +305,7 @@ struct EntryStoryboard: Identifiable, Codable, Equatable, Sendable {
     let userID: UUID
     let clientEntryID: UUID
     let storagePath: String
+    let thumbnailStoragePath: String?
     let createdAt: Date
     let updatedAt: Date
     let artStyle: String?
@@ -319,6 +320,7 @@ struct EntryStoryboard: Identifiable, Codable, Equatable, Sendable {
         case userID = "user_id"
         case clientEntryID = "client_entry_id"
         case storagePath = "storage_path"
+        case thumbnailStoragePath = "thumbnail_storage_path"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case artStyle = "art_style"
@@ -335,6 +337,7 @@ private struct EntryStoryboardPayload: Encodable, Sendable {
     let userID: UUID
     let clientEntryID: UUID
     let storagePath: String
+    let thumbnailStoragePath: String?
     let artStyle: String?
     let generationQuality: OpenAIImageGenerationQuality?
     let panelLayout: String?
@@ -349,6 +352,7 @@ private struct EntryStoryboardPayload: Encodable, Sendable {
         case userID = "user_id"
         case clientEntryID = "client_entry_id"
         case storagePath = "storage_path"
+        case thumbnailStoragePath = "thumbnail_storage_path"
         case artStyle = "art_style"
         case generationQuality = "generation_quality"
         case panelLayout = "panel_layout"
@@ -356,6 +360,52 @@ private struct EntryStoryboardPayload: Encodable, Sendable {
         case isPrimary = "is_primary"
     }
 }
+
+private struct LegacyEntryStoryboardPayload: Encodable, Sendable {
+    let id: UUID
+    let userID: UUID
+    let clientEntryID: UUID
+    let storagePath: String
+    let artStyle: String?
+    let generationQuality: OpenAIImageGenerationQuality?
+    let panelLayout: String?
+    let prompt: String?
+    let isPrimary: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userID = "user_id"
+        case clientEntryID = "client_entry_id"
+        case storagePath = "storage_path"
+        case artStyle = "art_style"
+        case generationQuality = "generation_quality"
+        case panelLayout = "panel_layout"
+        case prompt
+        case isPrimary = "is_primary"
+    }
+}
+
+private struct CompletedJournalStoryboardPagePayload: Encodable, Sendable {
+    let limit: Int
+    let offset: Int
+
+    enum CodingKeys: String, CodingKey {
+        case limit = "p_limit"
+        case offset = "p_offset"
+    }
+}
+
+private struct CompletedJournalStoryboardCounts: Decodable, Sendable {
+    let totalCount: Int
+    let monthCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case totalCount = "total_count"
+        case monthCount = "month_count"
+    }
+}
+
+private struct EmptyRPCPayload: Encodable, Sendable {}
 
 private struct EntryStoryboardPrimaryUpdate: Encodable, Sendable {
     let isPrimary: Bool
@@ -522,6 +572,7 @@ struct SupabaseEntryThumbnailService {
 struct SupabaseStoryboardService {
     private let client: SupabaseClient
     private let bucketName = "generated-storyboards"
+    private let previewMaxDimension: CGFloat = 640
 
     init(client: SupabaseClient = SupabaseService.shared) {
         self.client = client
@@ -542,6 +593,7 @@ struct SupabaseStoryboardService {
             clientEntryID.uuidString.lowercased(),
             "\(storyboard.id.uuidString.lowercased()).jpg"
         ].joined(separator: "/")
+        let thumbnailStoragePath = Self.thumbnailStoragePath(for: storagePath)
 
         guard let imageData = storyboard.image.journaltopiaPreparedJPEGData(compressionQuality: 0.9) else {
             throw SupabaseStoryboardError.invalidImage
@@ -561,6 +613,10 @@ struct SupabaseStoryboardService {
                     )
             )
             print("[Journaltopia] Storage upload succeeded.")
+            let uploadedThumbnailPath = try? await uploadStoryboardThumbnail(
+                from: storyboard.image,
+                storagePath: thumbnailStoragePath
+            )
 
             if storyboard.isPrimary {
                 try await markPriorStoryboardsNonPrimary(
@@ -571,7 +627,36 @@ struct SupabaseStoryboardService {
             }
 
             print("[Journaltopia] Storyboard metadata insert started.")
-            let row: EntryStoryboard = try await client
+            let row = try await upsertStoryboardMetadata(
+                storyboard: storyboard,
+                userID: userID,
+                clientEntryID: clientEntryID,
+                storagePath: storagePath,
+                thumbnailStoragePath: uploadedThumbnailPath
+            )
+            print("[Journaltopia] Storyboard metadata insert succeeded.")
+            return row
+        } catch let error as SupabaseStoryboardError {
+            print("[Journaltopia] Storyboard cloud sync failed: \(error.localizedDescription)")
+            throw error
+        } catch {
+            print("[Journaltopia] Storyboard cloud sync failed: \(error.localizedDescription)")
+            throw SupabaseStoryboardError.syncFailed
+        }
+    }
+
+    private func upsertStoryboardMetadata(
+        storyboard: GeneratedStoryboard,
+        userID: UUID,
+        clientEntryID: UUID,
+        storagePath: String,
+        thumbnailStoragePath: String?
+    ) async throws -> EntryStoryboard {
+        let artStyle = trimmedOrNil(storyboard.artStyle)
+        let panelLayout = storyboard.panelLayout.flatMap { trimmedOrNil($0) }
+
+        do {
+            return try await client
                 .from("entry_storyboards")
                 .upsert(
                     EntryStoryboardPayload(
@@ -579,9 +664,10 @@ struct SupabaseStoryboardService {
                         userID: userID,
                         clientEntryID: clientEntryID,
                         storagePath: storagePath,
-                        artStyle: trimmedOrNil(storyboard.artStyle),
+                        thumbnailStoragePath: thumbnailStoragePath,
+                        artStyle: artStyle,
                         generationQuality: storyboard.generationQuality,
-                        panelLayout: storyboard.panelLayout.flatMap { trimmedOrNil($0) },
+                        panelLayout: panelLayout,
                         prompt: nil,
                         isPrimary: storyboard.isPrimary
                     ),
@@ -591,14 +677,27 @@ struct SupabaseStoryboardService {
                 .single()
                 .execute()
                 .value
-            print("[Journaltopia] Storyboard metadata insert succeeded.")
-            return row
-        } catch let error as SupabaseStoryboardError {
-            print("[Journaltopia] Storyboard cloud sync failed: \(error.localizedDescription)")
-            throw error
         } catch {
-            print("[Journaltopia] Storyboard cloud sync failed: \(error.localizedDescription)")
-            throw SupabaseStoryboardError.syncFailed
+            return try await client
+                .from("entry_storyboards")
+                .upsert(
+                    LegacyEntryStoryboardPayload(
+                        id: storyboard.id,
+                        userID: userID,
+                        clientEntryID: clientEntryID,
+                        storagePath: storagePath,
+                        artStyle: artStyle,
+                        generationQuality: storyboard.generationQuality,
+                        panelLayout: panelLayout,
+                        prompt: nil,
+                        isPrimary: storyboard.isPrimary
+                    ),
+                    onConflict: "id"
+                )
+                .select("id,user_id,client_entry_id,storage_path,created_at,updated_at,art_style,generation_quality,panel_layout,prompt,is_primary,generation_status")
+                .single()
+                .execute()
+                .value
         }
     }
 
@@ -654,7 +753,9 @@ struct SupabaseStoryboardService {
                 return rows
             }
 
-            let storagePaths = doomedRows.map(\.storagePath)
+            let storagePaths = doomedRows.flatMap { row in
+                [row.storagePath, row.thumbnailStoragePath].compactMap { $0 }
+            }
             do {
                 try await client.storage
                     .from(bucketName)
@@ -721,14 +822,25 @@ struct SupabaseStoryboardService {
         do {
             return try await client
                 .from("entry_storyboards")
-                .select("id,user_id,client_entry_id,storage_path,created_at,updated_at,art_style,generation_quality,panel_layout,prompt,is_primary,generation_status")
+                .select("id,user_id,client_entry_id,storage_path,thumbnail_storage_path,created_at,updated_at,art_style,generation_quality,panel_layout,prompt,is_primary,generation_status")
                 .eq("is_primary", value: true)
                 .eq("generation_status", value: "completed")
                 .order("created_at", ascending: false)
                 .execute()
                 .value
         } catch {
-            throw SupabaseStoryboardError.syncFailed
+            do {
+                return try await client
+                    .from("entry_storyboards")
+                    .select("id,user_id,client_entry_id,storage_path,created_at,updated_at,art_style,generation_quality,panel_layout,prompt,is_primary,generation_status")
+                    .eq("is_primary", value: true)
+                    .eq("generation_status", value: "completed")
+                    .order("created_at", ascending: false)
+                    .execute()
+                    .value
+            } catch {
+                throw SupabaseStoryboardError.syncFailed
+            }
         }
     }
 
@@ -769,9 +881,53 @@ struct SupabaseStoryboardService {
         return Array(rows.dropFirst(offset).prefix(limit))
     }
 
+    func loadCompletedJournalStoryboardRowsPage(limit: Int, offset: Int) async throws -> [EntryStoryboard] {
+        do {
+            return try await client
+                .rpc(
+                    "completed_journal_storyboard_rows",
+                    params: CompletedJournalStoryboardPagePayload(limit: limit, offset: offset)
+                )
+                .execute()
+                .value
+        } catch {
+            let rows = try await loadCompletedJournalStoryboardRows()
+            return Array(rows.dropFirst(offset).prefix(limit))
+        }
+    }
+
+    func loadCompletedJournalStoryboardCounts() async throws -> (total: Int, month: Int) {
+        do {
+            let counts: [CompletedJournalStoryboardCounts] = try await client
+                .rpc("completed_journal_storyboard_counts", params: EmptyRPCPayload())
+                .execute()
+                .value
+            guard let first = counts.first else {
+                return (0, 0)
+            }
+            return (first.totalCount, first.monthCount)
+        } catch {
+            let rows = try await loadCompletedJournalStoryboardRows()
+            let calendar = Calendar.current
+            let month = calendar.dateInterval(of: .month, for: Date())
+            let monthCount = rows.filter { row in
+                guard let month else {
+                    return false
+                }
+                return month.contains(row.createdAt)
+            }.count
+            return (rows.count, monthCount)
+        }
+    }
+
     func loadCompletedJournalStoryboardImages(limit: Int = 9, offset: Int = 0) async throws -> [GeneratedStoryboard] {
         let rows = try await loadCompletedJournalStoryboards(limit: limit, offset: offset)
         return await downloadStoryboardImages(from: rows)
+    }
+
+    func loadCompletedJournalStoryboardPreviewImages(limit: Int, offset: Int = 0) async throws -> [GeneratedStoryboard] {
+        let rows = try await loadCompletedJournalStoryboardRowsPage(limit: limit, offset: offset)
+        return await downloadStoryboardPreviewImages(from: rows)
     }
 
     func loadStoryboardImages(for clientEntryIDs: Set<UUID>) async throws -> [GeneratedStoryboard] {
@@ -782,6 +938,16 @@ struct SupabaseStoryboardService {
         let rows = try await loadCompletedStoryboardRows(for: clientEntryIDs)
 
         return await downloadStoryboardImages(from: rows)
+    }
+
+    func loadStoryboardPreviewImages(for clientEntryIDs: Set<UUID>) async throws -> [GeneratedStoryboard] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        let rows = try await loadCompletedStoryboardRows(for: clientEntryIDs)
+
+        return await downloadStoryboardPreviewImages(from: rows)
     }
 
     func loadCompletedStoryboardRows(for clientEntryIDs: Set<UUID>) async throws -> [EntryStoryboard] {
@@ -798,8 +964,12 @@ struct SupabaseStoryboardService {
         await downloadStoryboardImages(from: rows)
     }
 
-    /// Loads journal-detail card assets: metadata for all matching storyboards, full images
-    /// persisted for primaries, and downsampled card images for UI cells.
+    func downloadStoryboardPreviews(from rows: [EntryStoryboard]) async -> [GeneratedStoryboard] {
+        await downloadStoryboardPreviewImages(from: rows)
+    }
+
+    /// Loads journal-detail card assets: metadata for all matching storyboards and preview-sized
+    /// primary images for UI cells.
     func loadJournalDetailStoryboardCards(
         for clientEntryIDs: Set<UUID>,
         cardMaxDimension: CGFloat = 640
@@ -828,28 +998,11 @@ struct SupabaseStoryboardService {
 
         let primaryRows = Array(primaryRowsByClientEntryID.values).sorted { $0.createdAt > $1.createdAt }
         var cardImages: [GeneratedStoryboard] = []
-        var persistedBatch: [GeneratedStoryboard] = []
 
         for row in primaryRows {
             do {
-                let fullImage = try await downloadStoryboardImage(storagePath: row.storagePath)
-                let fullStoryboard = GeneratedStoryboard(
-                    id: row.id,
-                    clientEntryID: row.clientEntryID,
-                    image: fullImage,
-                    promptText: row.prompt ?? "",
-                    artStyle: row.artStyle ?? "Anime",
-                    generationQuality: row.generationQuality,
-                    panelLayout: row.panelLayout,
-                    sourcePhotoCount: 0,
-                    createdAt: row.createdAt,
-                    storagePath: row.storagePath,
-                    cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
-                    isPrimary: row.isPrimary
-                )
-                persistedBatch.append(fullStoryboard)
-
-                let cardImage = fullImage.journaltopiaDownsampled(maxDimension: cardMaxDimension)
+                let previewImage = try await downloadStoryboardPreviewImage(for: row)
+                let cardImage = previewImage.journaltopiaDownsampled(maxDimension: cardMaxDimension)
                 cardImages.append(
                     GeneratedStoryboard(
                         id: row.id,
@@ -869,15 +1022,6 @@ struct SupabaseStoryboardService {
             } catch {
                 print("[Journaltopia] Journal detail storyboard card download skipped: \(row.id) \(error.localizedDescription)")
             }
-        }
-
-        if !persistedBatch.isEmpty {
-            let cached = GeneratedStoryboardStore.cachedStoryboards(persistedBatch)
-            var persisted = GeneratedStoryboardStore.load()
-            for storyboard in cached {
-                persisted = GeneratedStoryboardStore.merging(storyboard, into: persisted)
-            }
-            GeneratedStoryboardStore.save(persisted)
         }
 
         return (cardImages, countsByClientEntryID)
@@ -911,6 +1055,100 @@ struct SupabaseStoryboardService {
         }
 
         return aggregated
+    }
+
+    private static func thumbnailStoragePath(for storagePath: String) -> String {
+        guard let extensionIndex = storagePath.lastIndex(of: ".") else {
+            return "\(storagePath)-thumb.jpg"
+        }
+
+        return "\(storagePath[..<extensionIndex])-thumb\(storagePath[extensionIndex...])"
+    }
+
+    private func uploadStoryboardThumbnail(from image: UIImage, storagePath: String) async throws -> String {
+        guard let imageData = image.journaltopiaPreparedJPEGData(
+            maxDimension: previewMaxDimension,
+            compressionQuality: 0.82
+        ) else {
+            throw SupabaseStoryboardError.invalidImage
+        }
+
+        try await client.storage
+            .from(bucketName)
+            .upload(
+                storagePath,
+                data: imageData,
+                options: FileOptions(
+                    cacheControl: "31536000",
+                    contentType: CreateEntryReferencePhoto.mimeType,
+                    upsert: true
+                )
+            )
+        SupabaseStorageImageCache.store(imageData, bucketName: bucketName, storagePath: storagePath)
+        return storagePath
+    }
+
+    private func downloadStoryboardPreviewImages(from rows: [EntryStoryboard]) async -> [GeneratedStoryboard] {
+        var storyboards: [GeneratedStoryboard] = []
+
+        for row in rows {
+            do {
+                let image = try await downloadStoryboardPreviewImage(for: row)
+                storyboards.append(
+                    GeneratedStoryboard(
+                        id: row.id,
+                        clientEntryID: row.clientEntryID,
+                        image: image,
+                        promptText: row.prompt ?? "",
+                        artStyle: row.artStyle ?? "Anime",
+                        generationQuality: row.generationQuality,
+                        panelLayout: row.panelLayout,
+                        sourcePhotoCount: 0,
+                        createdAt: row.createdAt,
+                        storagePath: row.storagePath,
+                        cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                        isPrimary: row.isPrimary
+                    )
+                )
+            } catch {
+                print("[Journaltopia] Storyboard preview download skipped: \(row.id) \(error.localizedDescription)")
+            }
+        }
+
+        return storyboards
+    }
+
+    private func downloadStoryboardPreviewImage(for row: EntryStoryboard) async throws -> UIImage {
+        if let cachedFullData = SupabaseStorageImageCache.data(bucketName: bucketName, storagePath: row.storagePath),
+           let cachedFullImage = UIImage(data: cachedFullData) {
+            return cachedFullImage.journaltopiaDownsampled(maxDimension: previewMaxDimension)
+        }
+
+        if let thumbnailStoragePath = row.thumbnailStoragePath {
+            do {
+                let data: Data
+                if let cachedThumbnailData = SupabaseStorageImageCache.data(
+                    bucketName: bucketName,
+                    storagePath: thumbnailStoragePath
+                ) {
+                    data = cachedThumbnailData
+                } else {
+                    data = try await client.storage
+                        .from(bucketName)
+                        .download(path: thumbnailStoragePath)
+                    SupabaseStorageImageCache.store(data, bucketName: bucketName, storagePath: thumbnailStoragePath)
+                }
+
+                if let image = UIImage(data: data) {
+                    return image
+                }
+            } catch {
+                print("[Journaltopia] Storyboard thumbnail download fell back to full image: \(row.id) \(error.localizedDescription)")
+            }
+        }
+
+        let fullImage = try await downloadStoryboardImage(storagePath: row.storagePath)
+        return fullImage.journaltopiaDownsampled(maxDimension: previewMaxDimension)
     }
 
     private func downloadStoryboardImages(from rows: [EntryStoryboard]) async -> [GeneratedStoryboard] {
@@ -1315,6 +1553,51 @@ struct EntrySaveService {
         EntryCloudSyncFailureStore.clear(clientEntryID: localDraftID)
         UnfinishedCreateSessionStore.clearIfMatches(draftID: localDraftID)
         CreateEntryDraftStore.delete(id: localDraftID)
+    }
+
+    /// Deletes every entry in `clientEntryIDs` from everywhere it exists — the cloud row and its
+    /// storyboards, reference photos, characters and thumbnail, every journal membership pointing at
+    /// it, and the local draft.
+    ///
+    /// The batched summaries read is what makes this more than a loop over
+    /// ``deleteEntry(localDraftID:cloudEntry:isSignedIn:)``. Called without a `cloudEntry`, that
+    /// method has no way to learn the entry's `thumbnailStoragePath`, so it deletes the row and
+    /// leaves the uploaded thumbnail orphaned in the bucket. One read up front gives every entry in
+    /// the batch its real cloud record.
+    ///
+    /// Failures are collected instead of thrown at the first one. The caller has already told the
+    /// user their journal is going, so a batch that stops on entry three — leaving the rest half
+    /// deleted and the user with no idea which — is the worst available outcome. Every entry gets
+    /// its attempt and the ids that did not make it are returned for the caller to report.
+    func deleteEntries(clientEntryIDs: [UUID], isSignedIn: Bool) async -> [UUID] {
+        guard !clientEntryIDs.isEmpty else {
+            return []
+        }
+
+        var cloudEntriesByClientID: [UUID: JournalEntry] = [:]
+        if isSignedIn {
+            let summaries = (try? await repository.getEntrySummaries(clientEntryIDs: Set(clientEntryIDs))) ?? []
+            cloudEntriesByClientID = Dictionary(
+                summaries.map { ($0.clientEntryID, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+
+        var failedEntryIDs: [UUID] = []
+        for clientEntryID in clientEntryIDs {
+            do {
+                try await deleteEntry(
+                    localDraftID: clientEntryID,
+                    cloudEntry: cloudEntriesByClientID[clientEntryID],
+                    isSignedIn: isSignedIn
+                )
+            } catch {
+                print("[Journaltopia] Entry delete failed for \(clientEntryID): \(error.localizedDescription)")
+                failedEntryIDs.append(clientEntryID)
+            }
+        }
+
+        return failedEntryIDs
     }
 
     private func removeLocalStoryboards(clientEntryID: UUID) {

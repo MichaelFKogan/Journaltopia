@@ -3211,7 +3211,7 @@ struct CreateEntryView: View {
                     generatedStoryboards = storyboardsAfterLocalSave
                     GeneratedStoryboardStore.save(generatedStoryboards)
                     currentEntryStatus = .completed
-                    isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+                    isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
                     storyboardGenerationPhase = .completed
                     isGeneratingStoryboard = false
                     isShowingStoryboardGenerationProgress = false
@@ -3315,7 +3315,7 @@ struct CreateEntryView: View {
 
         generatedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: generatedStoryboards)
         currentEntryStatus = .completed
-        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+        isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
         loadedDraftSnapshot = currentDraftSnapshot(id: clientEntryID)
         toolbarSavedSnapshot = loadedDraftSnapshot
         storyboardGenerationPhase = .completed
@@ -4064,7 +4064,7 @@ struct CreateEntryView: View {
             if selectedPage != .create {
                 clearEditor()
                 activeDraftID = nil
-                isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+                isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
             }
         }
     }
@@ -4569,7 +4569,7 @@ struct CreateEntryView: View {
                 )
             }
             activeDraftID = result.localDraftID
-            isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+            isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
             recentEntryLocations = EntryLocationRecentStore.all
             setCloudSaveState(result.state)
 
@@ -4662,7 +4662,7 @@ struct CreateEntryView: View {
 
         clearEditor()
         activeDraftID = nil
-        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+        isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
         withAnimation(.snappy(duration: 0.32)) {
             dismissCreate()
         }
@@ -4785,7 +4785,7 @@ struct CreateEntryView: View {
 
         guard let draft = loadedDraft(id: activeDraftID) else {
             self.activeDraftID = nil
-            isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+            isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
             clearEditor()
             return
         }
@@ -8743,7 +8743,7 @@ struct CreateEntryView: View {
             }
 
             activeDraftID = result.localDraftID
-            isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+            isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
             setCloudSaveState(result.state)
 
             guard result.state.isConfirmedSave,
@@ -8837,7 +8837,7 @@ struct CreateEntryView: View {
             if let result {
                 setCloudSaveState(result.state)
                 activeDraftID = result.localDraftID
-                isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+                isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
 
                 if result.state.isConfirmedSave,
                    let savedEntry = currentJournalEntry(id: result.localDraftID) {
@@ -10244,7 +10244,7 @@ struct CreateEntryView: View {
         // editor itself is dismissed.
         clearEditor()
         activeDraftID = nil
-        isDraftSaved = !CreateEntryDraftStore.loadAll().isEmpty
+        isDraftSaved = CreateEntryDraftStore.hasSavedDrafts()
 
         withAnimation(.snappy(duration: 0.32)) {
             dismissCreate()

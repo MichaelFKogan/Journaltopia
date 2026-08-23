@@ -14,7 +14,6 @@ struct HomeView: View {
     var openCreatePage: () -> Void = {}
     var openEntriesPage: () -> Void = {}
     var openJournalsPage: () -> Void = {}
-    var openStorySoFarPage: () -> Void = {}
     var openRecentEntry: (CreateEntryDraft, UIImage?) -> Void = { _, _ in }
     var openRecentJournal: (PrototypeChapter) -> Void = { _ in }
 
@@ -22,8 +21,12 @@ struct HomeView: View {
     @State private var isLoadingHomeStoryboards = false
     @State private var recentEntry: HomeRecentEntry?
     @State private var recentJournal: HomeRecentJournal?
+    @State private var loadedHomeSamplePack: SampleStoryPack?
+    @State private var recentContentLoadTask: Task<Void, Never>?
 
-    private let homeStoryboardLoadLimit = 50
+    private let homeStoryboardPreviewLimit = 3
+    /// Enough of the Edited: Newest page to apply the same `createdAt` tie-break Entries uses.
+    private let homeRecentCloudEntryLimit = 8
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -35,6 +38,7 @@ struct HomeView: View {
                     homeCardGrid
                         .zIndex(2)
                     recentContentSection
+                    myStorySection
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -71,6 +75,13 @@ struct HomeView: View {
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
         .onAppear {
+            refreshRecentContent()
+        }
+        .onChange(of: selectedPage) { page in
+            guard page == .home else {
+                return
+            }
+
             refreshRecentContent()
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
@@ -196,8 +207,6 @@ struct HomeView: View {
             ) {
                 openJournalsPage()
             }
-
-            journalCoverSection
         }
     }
 
@@ -243,20 +252,12 @@ struct HomeView: View {
         .accessibilityHint("Opens Create")
     }
 
-    private var journalCoverSection: some View {
-        HomeStorySoFarCard(
-            isEnabled: !generatedStoryboards.isEmpty,
-            isLoading: isLoadingHomeStoryboards && generatedStoryboards.isEmpty,
-            action: openStorySoFarPage
-        )
-    }
-
     @ViewBuilder
     private var recentContentSection: some View {
         if recentEntry != nil || recentJournal != nil {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Most Recent")
-                    .font(.system(size: 22, weight: .bold, design: .serif))
+                    .font(.system(size: 24, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
                     .padding(.top, 6)
 
@@ -278,36 +279,112 @@ struct HomeView: View {
         }
     }
 
+    private var myStorySection: some View {
+        MyStoryView(
+            selectedPage: $selectedPage,
+            generatedStoryboards: $generatedStoryboards,
+            contentMode: contentMode,
+            showsSettingsButton: false,
+            showsBottomNavigation: false,
+            embedsInNavigationStack: false
+        )
+        .padding(.top, recentEntry == nil && recentJournal == nil ? 8 : 4)
+    }
+
     @MainActor
     private func refreshRecentContent() {
-        if showsSampleHomeContent, let pack = SampleContentStore.pack {
-            recentEntry = mostRecentSampleEntry(from: pack)
-            recentJournal = mostRecentSampleJournal(from: pack)
+        if showsSampleHomeContent {
+            let pack = isSampleAuthorMode
+                ? loadedHomeSamplePack
+                : (SampleContentStore.pack ?? loadedHomeSamplePack)
+            if let pack {
+                recentEntry = mostRecentSampleEntry(from: pack)
+                recentJournal = mostRecentSampleJournal(from: pack)
+            }
             return
         }
 
-        let localEntries = CreateEntryDraftStore.loadAll()
-        recentEntry = localEntries
-            .sorted(by: homeRecentEntrySort)
-            .first
-            .map { entry in
-                HomeRecentEntry(
-                    entry: entry,
-                    storyboardImage: primaryStoryboardImage(for: entry.id),
-                    storyboardCount: storyboardCount(for: entry.id),
+        let localEntries = visibleLocalEntries()
+        recentEntry = mostRecentLocalEntry(from: localEntries)
+        recentJournal = UserChapterStore.load()
+            .map { chapter in
+                let memberIDs = journalMemberIDs(for: chapter)
+                return HomeRecentJournal(
+                    chapter: chapter,
+                    recentDate: recentDate(for: chapter, entries: localEntries, memberIDs: memberIDs),
+                    entryCount: memberIDs.count,
                     isSample: false
                 )
             }
-
-        recentJournal = UserChapterStore.load()
-            .map { HomeRecentJournal(chapter: $0, recentDate: recentDate(for: $0, entries: localEntries), isSample: false) }
             .sorted(by: homeRecentJournalSort)
             .first
+
+        guard authStore.userID != nil else {
+            return
+        }
+
+        recentContentLoadTask?.cancel()
+        recentContentLoadTask = Task {
+            await refreshMostRecentCloudEntry()
+        }
+    }
+
+    /// Same ranking as Entries when the sort is Edited: Newest — cloud `updated_at`, not the local
+    /// draft cache. Local autosaves and sidecar writes bump on-device `updatedAt` without changing
+    /// the timestamp the Entries list sorts on, which is how Home could show a different card.
+    @MainActor
+    private func refreshMostRecentCloudEntry() async {
+        let loadID = homeStoryboardLoadID
+
+        do {
+            let page = try await SupabaseEntryRepository().getEntrySummariesPage(
+                limit: homeRecentCloudEntryLimit,
+                offset: 0,
+                sort: .updatedAt,
+                statusFilter: .all
+            )
+
+            guard !Task.isCancelled, homeStoryboardLoadID == loadID, !showsSampleHomeContent else {
+                return
+            }
+
+            guard let cloudEntry = page.sorted(by: homeRecentCloudEntrySort).first else {
+                recentEntry = nil
+                return
+            }
+
+            var recent = homeRecentEntry(from: cloudEntry)
+            recentEntry = recent
+
+            if recent.entry.thumbnail == nil,
+               let thumbnailStoragePath = cloudEntry.thumbnailStoragePath,
+               let thumbnail = try? await SupabaseEntryThumbnailService().downloadThumbnail(
+                storagePath: thumbnailStoragePath
+               ) {
+                guard !Task.isCancelled, recentEntry?.id == cloudEntry.clientEntryID else {
+                    return
+                }
+
+                recent = HomeRecentEntry(
+                    entry: CreateEntryDraft.fromCloud(cloudEntry, thumbnail: thumbnail),
+                    storyboardImage: recent.storyboardImage,
+                    storyboardCount: recent.storyboardCount,
+                    isSample: false
+                )
+                recentEntry = recent
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            print("[Journaltopia] Home most-recent entry load failed: \(error.localizedDescription)")
+        }
     }
 
     @MainActor
     private func mostRecentSampleEntry(from pack: SampleStoryPack) -> HomeRecentEntry? {
-        let entry = (pack.entries + pack.journals.flatMap(\.entries))
+        // Entries lists `pack.entries` only. Journal copies used to be mixed in here, so Home could
+        // pick a nested sample that Edited: Newest on Entries would never show first.
+        let entry = pack.entries
             .sorted(by: homeRecentEntrySort)
             .first
 
@@ -328,6 +405,7 @@ struct HomeView: View {
                 HomeRecentJournal(
                     chapter: SampleJournalDisplay.chapter(from: journal),
                     recentDate: journal.entries.map(\.updatedAt).max().map { max($0, journal.updatedAt) } ?? journal.updatedAt,
+                    entryCount: journal.entries.count,
                     isSample: true
                 )
             }
@@ -335,18 +413,70 @@ struct HomeView: View {
             .first
     }
 
-    private func recentDate(for chapter: PrototypeChapter, entries: [CreateEntryDraft]) -> Date {
-        let linkedEntryIDs = EntryJournalLinkStore.draftIDs(linkedTo: chapter.title)
+    /// Journals persist membership in `StoryEntryStore` / `EntryJournalLinkStore`, not on the
+    /// chapter itself. `UserChapterStore.load()` always hands back `entries: []`, which is why the
+    /// Home card used to read "0 stories" for a journal that actually had entries inside.
+    private func journalMemberIDs(for chapter: PrototypeChapter) -> Set<UUID> {
+        EntryJournalLinkStore.draftIDs(linkedTo: chapter.title)
             .union(Set(StoryEntryStore.clientEntryIDs(for: chapter.title)))
+            .union(Set(chapter.entries.map(\.id)))
+    }
+
+    private func recentDate(
+        for chapter: PrototypeChapter,
+        entries: [CreateEntryDraft],
+        memberIDs: Set<UUID>
+    ) -> Date {
         let linkedEntryUpdatedAt = entries
-            .filter { linkedEntryIDs.contains($0.id) }
+            .filter { memberIDs.contains($0.id) }
             .map(\.updatedAt)
             .max()
 
         return max(chapter.updatedAt, linkedEntryUpdatedAt ?? .distantPast)
     }
 
+    private func visibleLocalEntries() -> [CreateEntryDraft] {
+        CreateEntryDraftStore.loadAll(includeMedia: false)
+            .filter { $0.status != JournalEntryStatus.archived.rawValue }
+    }
+
+    @MainActor
+    private func mostRecentLocalEntry(from entries: [CreateEntryDraft]) -> HomeRecentEntry? {
+        entries
+            .sorted(by: homeRecentEntrySort)
+            .first
+            .map { entry in
+                HomeRecentEntry(
+                    entry: entry,
+                    storyboardImage: primaryStoryboardImage(for: entry.id),
+                    storyboardCount: storyboardCount(for: entry.id),
+                    isSample: false
+                )
+            }
+    }
+
+    @MainActor
+    private func homeRecentEntry(from cloudEntry: JournalEntry) -> HomeRecentEntry {
+        let localEntry = CreateEntryDraftStore.load(ids: [cloudEntry.clientEntryID], includeMedia: false).first
+        let entry = CreateEntryDraft.fromCloud(cloudEntry, thumbnail: localEntry?.thumbnail)
+
+        return HomeRecentEntry(
+            entry: entry,
+            storyboardImage: primaryStoryboardImage(for: entry.id),
+            storyboardCount: storyboardCount(for: entry.id),
+            isSample: false
+        )
+    }
+
     private func homeRecentEntrySort(_ lhs: CreateEntryDraft, _ rhs: CreateEntryDraft) -> Bool {
+        if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt > rhs.updatedAt
+        }
+
+        return lhs.createdAt > rhs.createdAt
+    }
+
+    private func homeRecentCloudEntrySort(_ lhs: JournalEntry, _ rhs: JournalEntry) -> Bool {
         if lhs.updatedAt != rhs.updatedAt {
             return lhs.updatedAt > rhs.updatedAt
         }
@@ -412,8 +542,8 @@ struct HomeView: View {
         do {
             let service = SupabaseStoryboardService()
             let sampleEntryIDs = (try? await SupabaseSampleStoryService().loadActiveSampleEntryIDs()) ?? []
-            let loadedStoryboards = try await service.loadCompletedJournalStoryboardImages(
-                limit: homeStoryboardLoadLimit,
+            let loadedStoryboards = try await service.loadCompletedJournalStoryboardPreviewImages(
+                limit: homeStoryboardPreviewLimit,
                 offset: 0
             )
             .filter { storyboard in
@@ -445,6 +575,7 @@ struct HomeView: View {
                 // Journals and the entry views can read it without any of them writing to disk.
                 SampleContentStore.replace(with: pack)
             }
+            loadedHomeSamplePack = pack
             generatedStoryboards = pack.storyboardsByEntryID.values
                 .flatMap { $0 }
                 .sorted(by: homeStoryboardSort)
@@ -756,15 +887,14 @@ private struct HomeCardNavigationIndicator: View {
 private enum HomeCardLayout {
     static let gridSpacing: CGFloat = 12
     static let gridColumns = [
-        GridItem(.flexible(), spacing: gridSpacing),
         GridItem(.flexible(), spacing: gridSpacing)
     ]
     static let primaryHeight: CGFloat = 154
     static let horizontalPadding: CGFloat = 14
     static let verticalPadding: CGFloat = 12
     static let indicatorInset: CGFloat = 12
-    static let titleSize: CGFloat = 22
-    static let subtitleSize: CGFloat = 12
+    static let titleSize: CGFloat = 26
+    static let subtitleSize: CGFloat = 15
 }
 
 private enum HomeRecentContentLayout {
@@ -791,10 +921,15 @@ private struct HomeRecentEntry: Identifiable {
 private struct HomeRecentJournal: Identifiable {
     let chapter: PrototypeChapter
     let recentDate: Date
+    let entryCount: Int
     let isSample: Bool
 
     var id: UUID {
         chapter.id
+    }
+
+    var entryCountText: String {
+        "\(entryCount) \(entryCount == 1 ? "story" : "stories")"
     }
 }
 
@@ -822,7 +957,7 @@ private struct HomeRecentEntryCard: View {
                             .clipped()
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay(alignment: .top) {
-                                HomeStoryPhotoTape(width: 48, height: 14, rotation: -2)
+                                StoryPhotoTape(width: 48, height: 14, rotation: -2)
                                     .offset(y: -7)
                             }
 
@@ -931,22 +1066,23 @@ private struct HomeRecentJournalCard: View {
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                ZStack(alignment: .leading) {
-                    journalCover
-                        .aspectRatio(HomeRecentContentLayout.journalAspectRatio, contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(alignment: .leading) {
-                            Rectangle()
-                                .fill(Color.black.opacity(0.18))
-                                .frame(width: 12)
-                                .overlay(alignment: .trailing) {
-                                    Rectangle()
-                                        .fill(Color.white.opacity(0.22))
-                                        .frame(width: 1)
-                                }
-                        }
-                        .overlay(alignment: .bottomLeading) {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        journalCover
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+
+                        Rectangle()
+                            .fill(Color.black.opacity(0.18))
+                            .frame(width: 12)
+                            .overlay(alignment: .trailing) {
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.22))
+                                    .frame(width: 1)
+                            }
+
+                        VStack {
+                            Spacer()
                             LinearGradient(
                                 colors: [.clear, .black.opacity(0.48)],
                                 startPoint: .top,
@@ -965,15 +1101,20 @@ private struct HomeRecentJournalCard: View {
                                     .homeBannerSubtitleContrast()
                             }
                         }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(Color.homeBorder, lineWidth: 1)
-                        )
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.homeBorder, lineWidth: 1)
+                    )
                 }
+                .aspectRatio(HomeRecentContentLayout.journalAspectRatio, contentMode: .fit)
+                .frame(minWidth: 0, maxWidth: .infinity)
                 .shadow(color: Color.storyInk.opacity(0.16), radius: 9, y: 5)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(recent.chapter.entryCountText)
+                    Text(recent.entryCountText)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(Color.storyInk)
                         .lineLimit(1)
@@ -1020,26 +1161,6 @@ private struct HomeRecentJournalCard: View {
                     .foregroundStyle(.white.opacity(0.82))
             }
         }
-    }
-}
-
-private struct HomeStoryPhotoTape: View {
-    let width: CGFloat
-    let height: CGFloat
-    let rotation: Double
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .fill(Color.white.opacity(0.72))
-            .frame(width: width, height: height)
-            .overlay(
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .stroke(Color.storyInk.opacity(0.06), lineWidth: 0.6)
-            )
-            .shadow(color: Color.storyInk.opacity(0.08), radius: 2, y: 1)
-            .rotationEffect(.degrees(rotation))
-            .blendMode(.plusLighter)
-            .allowsHitTesting(false)
     }
 }
 
@@ -1183,395 +1304,6 @@ private struct HomeNavigationCard: View {
                 .resizable()
                 .scaledToFill()
         }
-    }
-}
-
-private struct HomeStorySoFarCard: View {
-    let isEnabled: Bool
-    let isLoading: Bool
-    let action: () -> Void
-
-    private var subtitle: String {
-        if isLoading {
-            return "Loading your completed\nstoryboards."
-        }
-
-        if isEnabled {
-            return "Revisit your completed\nstoryboards in one view."
-        }
-
-        return "Completed storyboards\nwill appear here."
-    }
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 10) {
-                    Text("The Story\nSo Far...")
-                        .font(.system(size: HomeCardLayout.titleSize, weight: .bold, design: .serif))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.leading)
-                        .homeBannerTitleContrast()
-
-                    if isLoading {
-                        ProgressView()
-                            .tint(.white)
-                            .scaleEffect(0.92)
-                    }
-                }
-
-                Text(subtitle)
-                    .font(.system(size: HomeCardLayout.subtitleSize, weight: .semibold))
-                    .lineSpacing(2)
-                    .foregroundStyle(.white.opacity(0.96))
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .homeBannerSubtitleContrast()
-            }
-            .padding(.horizontal, HomeCardLayout.horizontalPadding)
-            .padding(.vertical, HomeCardLayout.verticalPadding)
-            .frame(
-                maxWidth: .infinity,
-                minHeight: HomeCardLayout.primaryHeight,
-                maxHeight: HomeCardLayout.primaryHeight,
-                alignment: .leading
-            )
-            .background {
-                HomeLoopingVideoBackground(resourceName: "home_story_so_far")
-                    .overlay(HomeBannerLeadingGradient())
-                    .overlay(Color.black.opacity(isEnabled ? 0 : 0.18))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(alignment: .bottomTrailing) {
-                HomeCardNavigationIndicator(isEnabled: isEnabled)
-                    .padding(HomeCardLayout.indicatorInset)
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.1), radius: 14, y: 6)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .frame(height: HomeCardLayout.primaryHeight)
-        .clipped()
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .disabled(!isEnabled)
-        .accessibilityLabel("The Story So Far")
-        .accessibilityHint(isEnabled ? "Opens your storyboards in a vertical view" : "Completed storyboards will appear here")
-    }
-}
-
-struct HomeStoryboardVerticalViewer: View {
-    let storyboards: [GeneratedStoryboard]
-    @Binding var currentPageIndex: Int
-    let title: String
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var visiblePageIndex: Int
-
-    init(
-        storyboards: [GeneratedStoryboard],
-        currentPageIndex: Binding<Int>,
-        title: String
-    ) {
-        self.storyboards = storyboards
-        _currentPageIndex = currentPageIndex
-        self.title = title
-        _visiblePageIndex = State(initialValue: currentPageIndex.wrappedValue)
-    }
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black
-                .ignoresSafeArea()
-
-            HomeZoomableVerticalStoryboardView(
-                storyboards: storyboards,
-                title: title,
-                initialPageIndex: clampedPageIndex(currentPageIndex),
-                visiblePageIndex: $visiblePageIndex
-            )
-            .background(Color.black)
-            .onChange(of: visiblePageIndex) { nextIndex in
-                currentPageIndex = clampedPageIndex(nextIndex)
-            }
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(.black.opacity(0.62), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close vertical story view")
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-        }
-        .preferredColorScheme(.dark)
-    }
-
-    private func clampedPageIndex(_ pageIndex: Int) -> Int {
-        min(max(0, pageIndex), max(0, totalPageCount - 1))
-    }
-
-    private var totalPageCount: Int {
-        storyboards.count + 1
-    }
-}
-
-private struct HomeZoomableVerticalStoryboardView: UIViewRepresentable {
-    let storyboards: [GeneratedStoryboard]
-    let title: String
-    let initialPageIndex: Int
-    @Binding var visiblePageIndex: Int
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeUIView(context: Context) -> UIScrollView {
-        let scrollView = UIScrollView()
-        scrollView.backgroundColor = .black
-        scrollView.delegate = context.coordinator
-        scrollView.minimumZoomScale = 1
-        scrollView.maximumZoomScale = 5
-        scrollView.bouncesZoom = true
-        scrollView.showsVerticalScrollIndicator = false
-        scrollView.showsHorizontalScrollIndicator = false
-
-        let stackView = UIStackView()
-        stackView.axis = .vertical
-        stackView.alignment = .fill
-        stackView.spacing = 0
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(stackView)
-
-        NSLayoutConstraint.activate([
-            stackView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
-            stackView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
-            stackView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            stackView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
-        ])
-
-        context.coordinator.stackView = stackView
-        context.coordinator.pageViews = []
-
-        let coverView = makeCoverView()
-        stackView.addArrangedSubview(coverView)
-        context.coordinator.pageViews.append(coverView)
-
-        storyboards.enumerated().forEach { index, storyboard in
-            let pageIndex = index + 1
-            stackView.addArrangedSubview(
-                makeImageBoundary(pageIndex: pageIndex, totalCount: storyboards.count)
-            )
-
-            let image = storyboard.image
-            let imageView = UIImageView(image: image)
-            imageView.contentMode = .scaleAspectFit
-            imageView.backgroundColor = .black
-            imageView.clipsToBounds = true
-            imageView.translatesAutoresizingMaskIntoConstraints = false
-
-            let pageView = UIView()
-            pageView.backgroundColor = .black
-            pageView.translatesAutoresizingMaskIntoConstraints = false
-            pageView.addSubview(imageView)
-
-            NSLayoutConstraint.activate([
-                imageView.leadingAnchor.constraint(equalTo: pageView.leadingAnchor),
-                imageView.trailingAnchor.constraint(equalTo: pageView.trailingAnchor),
-                imageView.topAnchor.constraint(equalTo: pageView.topAnchor),
-                imageView.bottomAnchor.constraint(equalTo: pageView.bottomAnchor),
-                pageView.heightAnchor.constraint(
-                    equalTo: pageView.widthAnchor,
-                    multiplier: image.size.height / max(image.size.width, 1)
-                )
-            ])
-
-            stackView.addArrangedSubview(pageView)
-            context.coordinator.pageViews.append(pageView)
-        }
-
-        let bottomSpacer = UIView()
-        bottomSpacer.backgroundColor = .black
-        bottomSpacer.translatesAutoresizingMaskIntoConstraints = false
-        bottomSpacer.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        stackView.addArrangedSubview(bottomSpacer)
-
-        DispatchQueue.main.async {
-            context.coordinator.scrollToInitialPage(in: scrollView)
-        }
-
-        return scrollView
-    }
-
-    func updateUIView(_ scrollView: UIScrollView, context: Context) {
-        context.coordinator.parent = self
-    }
-
-    private func makeCoverView() -> UIView {
-        let container = UIView()
-        container.backgroundColor = .black
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = UIStackView()
-        stack.axis = .vertical
-        stack.alignment = .center
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stack)
-
-        let titleLabel = UILabel()
-        titleLabel.text = title
-        titleLabel.textColor = .white
-        titleLabel.font = .homeStorySoFarTitleFont
-        titleLabel.textAlignment = .center
-        titleLabel.numberOfLines = 0
-
-        let subtitleLabel = UILabel()
-        subtitleLabel.text = "A continuous view of your completed storyboards."
-        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.86)
-        subtitleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        subtitleLabel.textAlignment = .center
-        subtitleLabel.numberOfLines = 0
-
-        let countLabel = UILabel()
-        countLabel.text = storyboards.count == 1 ? "1 storyboard" : "\(storyboards.count) storyboards"
-        countLabel.textColor = UIColor.white.withAlphaComponent(0.62)
-        countLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        countLabel.textAlignment = .center
-        countLabel.numberOfLines = 1
-
-        [titleLabel, subtitleLabel, countLabel].forEach(stack.addArrangedSubview)
-
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -28),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 56),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -44)
-        ])
-
-        return container
-    }
-
-    private func makeImageBoundary(pageIndex: Int, totalCount: Int) -> UIView {
-        let container = UIView()
-        container.backgroundColor = UIColor(white: 0.035, alpha: 1)
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        let line = UIView()
-        line.backgroundColor = UIColor.white.withAlphaComponent(0.86)
-        line.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(line)
-
-        let numberLabel = UILabel()
-        numberLabel.translatesAutoresizingMaskIntoConstraints = false
-        numberLabel.text = "\(pageIndex) / \(totalCount)"
-        numberLabel.font = .systemFont(ofSize: 12, weight: .heavy)
-        numberLabel.textColor = .white
-        numberLabel.textAlignment = .center
-        numberLabel.backgroundColor = UIColor(white: 0.035, alpha: 1)
-        numberLabel.layer.cornerRadius = 12
-        numberLabel.layer.borderColor = UIColor.white.withAlphaComponent(0.7).cgColor
-        numberLabel.layer.borderWidth = 1
-        numberLabel.layer.masksToBounds = true
-        container.addSubview(numberLabel)
-
-        NSLayoutConstraint.activate([
-            container.heightAnchor.constraint(equalToConstant: 42),
-            line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 28),
-            line.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -28),
-            line.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            line.heightAnchor.constraint(equalToConstant: 1),
-            numberLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            numberLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            numberLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
-            numberLabel.heightAnchor.constraint(equalToConstant: 24)
-        ])
-
-        return container
-    }
-
-    final class Coordinator: NSObject, UIScrollViewDelegate {
-        var parent: HomeZoomableVerticalStoryboardView
-        weak var stackView: UIStackView?
-        var pageViews: [UIView] = []
-        private var didScrollToInitialPage = false
-
-        init(parent: HomeZoomableVerticalStoryboardView) {
-            self.parent = parent
-        }
-
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-            stackView
-        }
-
-        func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            updateVisibleIndex(in: scrollView)
-        }
-
-        func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            updateVisibleIndex(in: scrollView)
-        }
-
-        func scrollToInitialPage(in scrollView: UIScrollView) {
-            guard
-                !didScrollToInitialPage,
-                pageViews.indices.contains(parent.initialPageIndex)
-            else {
-                return
-            }
-
-            scrollView.layoutIfNeeded()
-            stackView?.layoutIfNeeded()
-
-            let pageView = pageViews[parent.initialPageIndex]
-            let targetY = max(
-                0,
-                pageView.frame.midY - (scrollView.bounds.height / 2)
-            )
-            scrollView.setContentOffset(CGPoint(x: 0, y: targetY), animated: false)
-            didScrollToInitialPage = true
-            updateVisibleIndex(in: scrollView)
-        }
-
-        private func updateVisibleIndex(in scrollView: UIScrollView) {
-            guard !pageViews.isEmpty else {
-                return
-            }
-
-            let viewportCenterY = scrollView.contentOffset.y + (scrollView.bounds.height / 2)
-            let zoomScale = scrollView.zoomScale
-            let closestIndex = pageViews.indices.min { left, right in
-                abs((pageViews[left].frame.midY * zoomScale) - viewportCenterY)
-                    < abs((pageViews[right].frame.midY * zoomScale) - viewportCenterY)
-            }
-
-            guard
-                let closestIndex,
-                closestIndex != parent.visiblePageIndex
-            else {
-                return
-            }
-
-            parent.visiblePageIndex = closestIndex
-        }
-    }
-}
-
-private extension UIFont {
-    static var homeStorySoFarTitleFont: UIFont {
-        let baseDescriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .largeTitle)
-        let serifDescriptor = baseDescriptor.withDesign(.serif) ?? baseDescriptor
-        let boldDescriptor = serifDescriptor.withSymbolicTraits(.traitBold) ?? serifDescriptor
-        return UIFont(descriptor: boldDescriptor, size: 34)
     }
 }
 
