@@ -443,6 +443,12 @@ enum SupabaseStoryboardError: LocalizedError {
     }
 }
 
+private func rethrowCancellation(_ error: Error) throws {
+    if error is CancellationError {
+        throw error
+    }
+}
+
 enum SupabaseEntryThumbnailError: LocalizedError, TransientCloudFailure {
     case invalidImage
     case syncFailed
@@ -813,6 +819,8 @@ struct SupabaseStoryboardService {
                 .order("created_at", ascending: false)
                 .execute()
                 .value
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw SupabaseStoryboardError.syncFailed
         }
@@ -828,6 +836,8 @@ struct SupabaseStoryboardService {
                 .order("created_at", ascending: false)
                 .execute()
                 .value
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             do {
                 return try await client
@@ -838,6 +848,8 @@ struct SupabaseStoryboardService {
                     .order("created_at", ascending: false)
                     .execute()
                     .value
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 throw SupabaseStoryboardError.syncFailed
             }
@@ -871,6 +883,7 @@ struct SupabaseStoryboardService {
                 }
                 .sorted { $0.createdAt > $1.createdAt }
         } catch {
+            try rethrowCancellation(error)
             print("[Journaltopia] Completed profile storyboards metadata load failed: \(error.localizedDescription)")
             throw SupabaseStoryboardError.syncFailed
         }
@@ -890,6 +903,8 @@ struct SupabaseStoryboardService {
                 )
                 .execute()
                 .value
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             let rows = try await loadCompletedJournalStoryboardRows()
             return Array(rows.dropFirst(offset).prefix(limit))
@@ -906,6 +921,8 @@ struct SupabaseStoryboardService {
                 return (0, 0)
             }
             return (first.totalCount, first.monthCount)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             let rows = try await loadCompletedJournalStoryboardRows()
             let calendar = Calendar.current

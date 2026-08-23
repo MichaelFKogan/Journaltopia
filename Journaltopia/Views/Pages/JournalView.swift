@@ -6545,6 +6545,8 @@ struct MyStoryView: View {
             cacheSelectedStoryboardCoverIfNeeded()
             currentPageIndex = clampedPageIndex(currentPageIndex)
             loadFullMyStoryStoryboardIfNeeded(pageIndex: currentPageIndex)
+        } catch is CancellationError {
+            return
         } catch {
             print("[Journaltopia] My Story storyboard load failed: \(error.localizedDescription)")
             if generatedStoryboards.isEmpty {
@@ -6601,6 +6603,8 @@ struct MyStoryView: View {
             cacheSelectedStoryboardCoverIfNeeded()
             currentPageIndex = clampedPageIndex(currentPageIndex)
             loadFullMyStoryStoryboardIfNeeded(pageIndex: currentPageIndex)
+        } catch is CancellationError {
+            return
         } catch {
             print("[Journaltopia] My Story storyboard page load failed: \(error.localizedDescription)")
         }
@@ -6716,6 +6720,8 @@ struct MyStoryView: View {
                 storedCoverImage = nil
                 JournalCoverStore.delete(for: myStoryCoverChapter)
             }
+        } catch is CancellationError {
+            return
         } catch {
             print("[Journaltopia] My Story cover load failed: \(error.localizedDescription)")
             coverErrorMessage = "Could not load your saved My Story cover."

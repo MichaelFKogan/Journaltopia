@@ -435,6 +435,10 @@ struct MyStoryCoverService {
                 .execute()
                 .value
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+
             throw MyStoryCoverServiceError.unavailable
         }
     }
@@ -453,6 +457,10 @@ struct MyStoryCoverService {
                 .execute()
                 .value
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+
             throw MyStoryCoverServiceError.unavailable
         }
     }
@@ -500,6 +508,10 @@ struct MyStoryCoverService {
         } catch let error as MyStoryCoverServiceError {
             throw error
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+
             throw MyStoryCoverServiceError.unavailable
         }
     }
@@ -516,6 +528,10 @@ struct MyStoryCoverService {
 
             return image
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+
             throw MyStoryCoverServiceError.unavailable
         }
     }
@@ -524,6 +540,10 @@ struct MyStoryCoverService {
         do {
             return try await client.auth.session.user.id
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+
             throw MyStoryCoverServiceError.notAuthenticated
         }
     }

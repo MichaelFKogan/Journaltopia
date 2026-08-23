@@ -1,31 +1,29 @@
 import SwiftUI
 import UIKit
 
-/// The welcome flow: an opening film, four pages on what the app makes of the writing, the tour —
-/// its opening page and the steps it walks through — and the sign-in page.
+/// The welcome flow: an opening film, three pages on what the app makes of the writing, the tour —
+/// its opening page and the steps it walks through — and the plans.
 ///
-/// Every page but the last shares one bottom bar — the dots and the Next button live here rather
-/// than inside each page so the dots always know where the flow is. The last page is the sign-in
-/// page, which brings its own buttons, so the bar steps aside for it.
+/// Every page shares one bottom bar — the dots and the Next button live here rather than inside each
+/// page so the dots always know where the flow is.
 ///
-/// The closing film is not a fourth page. It pushes over the whole flow as a stack, because a film
-/// is not a step you can drift back and forth across the way the pages are — see `IntroVideoView`.
+/// The closing film is not a page. It pushes over the whole flow as a stack, because a film is not a
+/// step you can drift back and forth across the way the pages are — see `IntroVideoView`.
 struct OnboardingView: View {
     let onComplete: () -> Void
-
-    @EnvironmentObject private var authStore: SupabaseAuthStore
 
     @State private var selectedPage = 0
     /// The closing film, pushed over the flow once the visitor is on their way in.
     @State private var isShowingIntro = false
 
-    /// Page one, the story pages, the tour opener, the tour's own steps, the plans, then sign-in.
+    /// Page one, the story pages, the tour opener, the tour's own steps, then the plans.
     private var pageCount: Int {
-        1 + OnboardingStoryPage.allPages.count + 1 + OnboardingTourStep.allSteps.count + 2
+        1 + OnboardingStoryPage.allPages.count + 1 + OnboardingTourStep.allSteps.count + 1
     }
     private var seeHowItWorksIndex: Int { 1 + OnboardingStoryPage.allPages.count }
-    private var startFreeIndex: Int { pageCount - 2 }
-    private var startYourStoryIndex: Int { pageCount - 1 }
+    private var startFreeIndex: Int { pageCount - 1 }
+    /// One past the plans. Tagged in the pager so Start Free is not last; never a real step.
+    private var pagerTailIndex: Int { startFreeIndex + 1 }
     /// What the pages leave clear at the bottom for the shared bar.
     private let bottomBarHeight: CGFloat = 108
 
@@ -33,6 +31,8 @@ struct OnboardingView: View {
         ZStack(alignment: .bottom) {
             Color.onboardingPaper
                 .ignoresSafeArea()
+
+            OnboardingPricePrefetch()
 
             TabView(selection: $selectedPage) {
                 OnboardingWelcomePage(
@@ -65,23 +65,20 @@ struct OnboardingView: View {
                 OnboardingStartFreePage(bottomInset: bottomBarHeight)
                     .tag(startFreeIndex)
 
-                StartYourStoryView(
-                    onExploreFirst: showIntro,
-                    onAuthenticated: showIntro,
-                    // The shared bar below carries this page's way into the app, so the page itself
-                    // stops drawing one and just leaves room for it.
-                    showsContinueBrowsingButton: false,
-                    bottomContentInset: bottomBarHeight
-                )
-                .tag(startYourStoryIndex)
+                // The pager skips the slide onto its last tagged page. This one is never shown —
+                // `clampPagerToRealPages` turns a swipe past the plans back around — so Start Free
+                // is a page the pager will actually slide.
+                Color.onboardingPaper
+                    .tag(pagerTailIndex)
+                    .accessibilityHidden(true)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            .onChange(of: selectedPage, perform: clampPagerToRealPages)
             // Two halves of one fix for the safe area strips. This half gives the TabView the whole
             // screen to draw in; without it there is nothing outside the safe area to draw into. The
             // other half is in the pages, which have to climb into that space themselves — a
             // page-style TabView hands every page the safe area back no matter what its container
-            // says. Page one cancels the top inset by hand; the sign-in page's sheet already asks to
-            // ignore the bottom one, and now has somewhere to go.
+            // says. Page one cancels the top inset by hand so the film can start at the physical top.
             .ignoresSafeArea()
 
             bottomBar
@@ -109,13 +106,14 @@ struct OnboardingView: View {
     }
 
     private var isLastPage: Bool {
-        selectedPage == startYourStoryIndex
+        selectedPage == startFreeIndex
     }
 
-    /// The tour opener names its own way forward; every other page just goes next.
+    /// The tour opener names its own way forward; the last page continues into the film; every
+    /// other page just goes next.
     private var primaryActionTitle: String {
         if isLastPage {
-            return authStore.status == .signedIn ? "Continue" : "Skip For Now"
+            return "Continue"
         }
 
         return selectedPage == seeHowItWorksIndex ? "Show Me How" : "Next"
@@ -158,8 +156,8 @@ struct OnboardingView: View {
         .accessibilityHidden(true)
     }
 
-    /// Every way past the sign-in page — its button, exploring first, signing in — leads to the film
-    /// rather than straight into the app.
+    /// The last page's Continue, and any other way out of the flow, leads to the film rather than
+    /// straight into the app.
     private func showIntro() {
         guard !isShowingIntro else { return }
 
@@ -172,6 +170,17 @@ struct OnboardingView: View {
     private func dismissIntro() {
         withAnimation(.easeInOut(duration: 0.3)) {
             isShowingIntro = false
+        }
+    }
+
+    /// The tail page exists only so Start Free can slide. A swipe that lands on it is sent back.
+    private func clampPagerToRealPages(_ newPage: Int) {
+        guard newPage > startFreeIndex else { return }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedPage = startFreeIndex
         }
     }
 
@@ -291,30 +300,29 @@ private struct OnboardingWelcomePage: View {
 /// One step of the walkthrough the tour opener promises: what the visitor does, and the picture of
 /// it. The steps run in order after that opening page.
 private struct OnboardingTourStep {
-    let title: String
+    /// Ink for the sentence, purple for the words it lands on — the same two-tone as the story pages.
+    let titleText: Text
     let message: String
     let imageName: String
 
     static let allSteps: [OnboardingTourStep] = [
         OnboardingTourStep(
-            title: "Write Your Story",
+            titleText: Text("Write Your ").foregroundColor(.storyInk)
+                + Text("Story").foregroundColor(.storyPurple),
             message: "Capture your thoughts in a\nbeautiful, distraction-free space.",
             imageName: "write_your_story"
         ),
         OnboardingTourStep(
-            title: "Choose Your Style",
+            titleText: Text("Choose Your ").foregroundColor(.storyInk)
+                + Text("Art Style").foregroundColor(.storyPurple),
             message: "Decide how your story\ncomes to life.",
             imageName: "choose_your_style"
         ),
         OnboardingTourStep(
-            title: "Bring It to Life",
+            titleText: Text("Bring It to ").foregroundColor(.storyInk)
+                + Text("Life").foregroundColor(.storyPurple),
             message: "Turn your words into\nan illustrated storyboard.",
             imageName: "bring_it_to_life"
-        ),
-        OnboardingTourStep(
-            title: "Build Your Journals",
-            message: "Collect your stories into\nchapters of your life.",
-            imageName: "build_your_journals"
         )
     ]
 }
@@ -331,9 +339,8 @@ private struct OnboardingTourStepView: View {
                 stepBadge
                     .padding(.bottom, 4)
 
-                Text(step.title)
+                step.titleText
                     .font(.system(size: 32, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
                     .minimumScaleFactor(0.8)
                     .lineLimit(1)
 
@@ -372,7 +379,7 @@ private struct OnboardingTourStepView: View {
 
 // MARK: - See how it works
 
-/// The opening page of the tour: the four steps laid out on the paper half, and, below the torn
+/// The opening page of the tour: the steps laid out on the paper half, and, below the torn
 /// edge, the invitation into the walkthrough.
 ///
 /// The purple half runs all the way off the bottom of the screen, so the shared bar's dots and its
@@ -407,9 +414,11 @@ private struct OnboardingSeeHowItWorksPage: View {
 
     private var header: some View {
         VStack(spacing: 10) {
-            Text("How It Works")
+            (
+                Text("How It ").foregroundColor(.storyInk)
+                    + Text("Works").foregroundColor(.storyPurple)
+            )
                 .font(.system(size: 30, weight: .bold, design: .serif))
-                .foregroundStyle(Color.storyInk)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .overlay(alignment: .topLeading) {
@@ -515,14 +524,30 @@ private struct OnboardingSparkle: View {
     }
 }
 
+/// Loads the App Store price while the visitor is still on the early pages, so arriving at the
+/// plans does not have to kick the store — that publish would redraw the page and cancel the slide.
+private struct OnboardingPricePrefetch: View {
+    @EnvironmentObject private var subscriptionStore: SubscriptionStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .task {
+                await subscriptionStore.preloadProduct()
+            }
+    }
+}
+
 // MARK: - The plans
 
-/// Where the flow says what costs money, one page before the visitor is asked to make an account.
+/// Where the flow says what costs money, on the last page before the closing film.
 ///
 /// It explains rather than sells: a purchase needs an account to attach itself to — see
 /// ``SubscriptionStore.purchaseJournaltopiaPlus(isSignedIn:)`` — and there is no account yet, so
-/// there is no buy button here to disappoint anyone. The shared bar's Next carries on to sign-in,
-/// and the full plan picker is a tap away from Settings once they are in.
+/// there is no buy button here to disappoint anyone. The shared bar's Continue carries on to the
+/// film, and the full plan picker is a tap away from Settings once they are in.
 ///
 /// What each plan includes is read from ``JournaltopiaPlan`` rather than written again here, so this
 /// page and the plan picker can never promise different things.
@@ -532,45 +557,51 @@ private struct OnboardingStartFreePage: View {
     let bottomInset: CGFloat
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: 13) {
-                header
+        // A ZStack that fills the page, with the scroll inside it: a page-style TabView will not
+        // slide a ScrollView that is the page itself.
+        ZStack(alignment: .top) {
+            Color.onboardingPaper
 
-                planCard(
-                    JournaltopiaPlan.free,
-                    price: JournaltopiaPlan.freePrice,
-                    caption: nil,
-                    imageName: "start_free_1",
-                    bullet: .check,
-                    note: "Your journal is always yours.",
-                    noteFlourish: .heart
-                )
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 13) {
+                    header
 
-                planCard(
-                    JournaltopiaPlan.plus,
-                    price: plusPrice,
-                    caption: plusPriceCaption,
-                    imageName: "start_free_2",
-                    bullet: .sparkle,
-                    note: "Bring your memories to life.",
-                    noteFlourish: .sparkles
-                )
+                    planCard(
+                        JournaltopiaPlan.free,
+                        price: JournaltopiaPlan.freePrice,
+                        caption: nil,
+                        imageName: "start_free_1",
+                        bullet: .check,
+                        note: "Your journal is always yours.",
+                        noteFlourish: .heart
+                    )
 
-                Text("Make your account next, then upgrade any time.\nCancel anytime.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.homeMutedText)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(2)
-                    .padding(.top, 2)
+                    planCard(
+                        JournaltopiaPlan.plus,
+                        price: plusPrice,
+                        caption: plusPriceCaption,
+                        imageName: "start_free_2",
+                        bullet: .sparkle,
+                        note: "Bring your memories to life.",
+                        noteFlourish: .sparkles
+                    )
+
+                    Text("Upgrade any time.\nCancel anytime.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.homeMutedText)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                        .padding(.top, 2)
+                }
+                .padding(.horizontal, 22)
+                .padding(.top, 16)
+                .padding(.bottom, bottomInset)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 16)
-            .padding(.bottom, bottomInset)
+            .scrollBounceBehavior(.basedOnSize)
         }
-        // StoreKit may still be fetching when the flow reaches this page; the price fills itself in.
-        .task {
-            await subscriptionStore.refresh(isSignedIn: false)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     private var header: some View {
@@ -741,8 +772,8 @@ private struct OnboardingStartFreePage: View {
 
 // MARK: - Story pages
 
-/// One of the four pages between the writing page and sign-in: a two-tone title, a line or two
-/// underneath, and the picture that carries the page.
+/// One of the pages after the welcome film: a two-tone title, a line or two underneath, and the
+/// picture that carries the page.
 private struct OnboardingStoryPage {
     /// Ink for the sentence, purple for the words it lands on.
     let titleText: Text
@@ -759,7 +790,7 @@ private struct OnboardingStoryPage {
             horizontalImagePadding: 0
         ),
         OnboardingStoryPage(
-            titleText: Text("Turn your words\ninto a ").foregroundColor(.storyInk)
+            titleText: Text("Turn your life\ninto a ").foregroundColor(.storyInk)
                 + Text("story.").foregroundColor(.storyPurple),
             message: "Journaltopia transforms your writing\ninto illustrated storyboards.",
             imageName: "2",
@@ -771,13 +802,6 @@ private struct OnboardingStoryPage {
             message: "Add characters, reference photos,\nart styles, and details to shape\nhow your story looks.",
             imageName: "3",
             horizontalImagePadding: 8
-        ),
-        OnboardingStoryPage(
-            titleText: Text("Build the story\nof ").foregroundColor(.storyInk)
-                + Text("your life.").foregroundColor(.storyPurple),
-            message: "Organize your moments into journals\nand watch your visual story\ngrow over time.",
-            imageName: "4",
-            horizontalImagePadding: 0
         )
     ]
 }
@@ -830,6 +854,5 @@ extension Color {
 
 #Preview {
     OnboardingView {}
-        .environmentObject(SupabaseAuthStore.preview(status: .signedOut))
         .environmentObject(SubscriptionStore())
 }

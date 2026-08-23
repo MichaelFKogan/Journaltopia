@@ -97,6 +97,10 @@ struct GenerationCreditService {
 
             return row
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+
             throw GenerationCreditError.mapped(from: error, context: "fetch generation credits")
         }
     }
@@ -105,6 +109,10 @@ struct GenerationCreditService {
         do {
             return try await client.auth.session.user.id
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+
             throw GenerationCreditError.notAuthenticated
         }
     }
@@ -153,6 +161,9 @@ final class GenerationCreditStore: ObservableObject {
 
         do {
             credits = try await service.fetchBalance()
+        } catch is CancellationError {
+            isRefreshing = false
+            return
         } catch {
             errorMessage = error.localizedDescription
         }

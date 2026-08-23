@@ -114,6 +114,13 @@ final class SubscriptionStore: ObservableObject {
         }
     }
 
+    /// Fetches the App Store product so a screen can show ``localizedPrice``. Leaves entitlement
+    /// alone — unlike ``refresh(isSignedIn:)``, which also reconciles or, signed out, clears local
+    /// presentation state.
+    func preloadProduct() async {
+        await loadProduct()
+    }
+
     /// Loads the product and reconciles whatever Apple already considers current.
     ///
     /// Runs at launch and whenever the account changes. Signed out, there is no account to bind a

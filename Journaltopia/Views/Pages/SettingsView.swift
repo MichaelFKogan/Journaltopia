@@ -772,6 +772,22 @@ private struct SettingsExtraView: View {
                 }
             }
 
+            Section("Onboarding") {
+                Button {
+                    isOnboardingPreviewPresented = true
+                } label: {
+                    SettingsRowContent(
+                        systemName: "sparkles.rectangle.stack",
+                        title: "Preview Onboarding",
+                        subtitle: "Open the first-launch walkthrough",
+                        showsChevron: false
+                    )
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Preview onboarding")
+            }
+
             Section("Pages") {
                 SettingsNavigationRow(
                     systemName: "person.fill",
@@ -846,22 +862,6 @@ private struct SettingsExtraView: View {
                     GenerationCreditsView()
                         .enableInteractivePopGesture()
                 }
-            }
-
-            Section("Onboarding") {
-                Button {
-                    isOnboardingPreviewPresented = true
-                } label: {
-                    SettingsRowContent(
-                        systemName: "sparkles.rectangle.stack",
-                        title: "Preview Onboarding",
-                        subtitle: "Open the first-launch walkthrough",
-                        showsChevron: false
-                    )
-                    .padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Preview onboarding")
             }
 
             Section("Create") {

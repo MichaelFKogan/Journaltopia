@@ -12,8 +12,8 @@ struct StartYourStoryView: View {
 
     let onExploreFirst: (() -> Void)?
     let onAuthenticated: (() -> Void)?
-    /// Whether the page draws its own way into Journaltopia. Onboarding sets this false because its
-    /// shared bottom bar already carries that button, and two of them would only compete.
+    /// Whether the page draws its own way into Journaltopia. Set false when a parent already
+    /// carries that button, so the two would not compete.
     let showsContinueBrowsingButton: Bool
     let bottomContentInset: CGFloat
 
@@ -35,8 +35,8 @@ struct StartYourStoryView: View {
             promptSubtitle: "Create a free account to start writing and keep your journals and stories synced across your devices.",
             startsCreatingAccount: true,
             keepsPromptCopy: true,
-            // The page is reached by swiping onboarding or by pushing it, both of which already have
-            // a way back. A close button here would only compete with them.
+            // The page is reached by pushing it, which already has a way back. A close button here
+            // would only compete with that.
             showsDismissButton: false,
             // Providers first: the three ways in read as one list, and the fields unfold only for
             // the visitor who picks email.

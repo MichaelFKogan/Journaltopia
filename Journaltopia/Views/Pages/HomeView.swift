@@ -71,27 +71,28 @@ struct HomeView: View {
         }
         .task(id: homeStoryboardLoadID) {
             await loadHomeStoryboards()
-            refreshRecentContent()
+            refreshRecentContent(loadsCloudEntry: true)
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
         .onAppear {
-            refreshRecentContent()
+            refreshRecentContent(loadsCloudEntry: false)
         }
         .onChange(of: selectedPage) { page in
             guard page == .home else {
+                recentContentLoadTask?.cancel()
                 return
             }
 
-            refreshRecentContent()
+            refreshRecentContent(loadsCloudEntry: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
-            refreshRecentContent()
+            refreshRecentContent(loadsCloudEntry: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaJournalCoverChanged)) { _ in
-            refreshRecentContent()
+            refreshRecentContent(loadsCloudEntry: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaSampleStoryPackChanged)) { _ in
-            refreshRecentContent()
+            refreshRecentContent(loadsCloudEntry: false)
         }
         .preferredColorScheme(.light)
     }
@@ -292,8 +293,9 @@ struct HomeView: View {
     }
 
     @MainActor
-    private func refreshRecentContent() {
+    private func refreshRecentContent(loadsCloudEntry: Bool) {
         if showsSampleHomeContent {
+            recentContentLoadTask?.cancel()
             let pack = isSampleAuthorMode
                 ? loadedHomeSamplePack
                 : (SampleContentStore.pack ?? loadedHomeSamplePack)
@@ -319,7 +321,7 @@ struct HomeView: View {
             .sorted(by: homeRecentJournalSort)
             .first
 
-        guard authStore.userID != nil else {
+        guard loadsCloudEntry, authStore.userID != nil else {
             return
         }
 

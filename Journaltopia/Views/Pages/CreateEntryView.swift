@@ -6612,9 +6612,11 @@ struct CreateEntryView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Add anything you want the storyboard to visually reference in your story.")
+                    Text("Add up to 5 reference photos of people,\nplaces, or things in your story.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.storyInk.opacity(0.68))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                         .fixedSize(horizontal: false, vertical: true)
 
                     storyReferencesSegmentedControl
@@ -9239,7 +9241,7 @@ struct CreateEntryView: View {
     }
 
     private var referencePhotoSourceChoices: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: 10) {
             if UIImagePickerController.isSourceTypeAvailable(.camera) {
                 entryInputActionCard(
                     title: "Camera",
@@ -9252,7 +9254,7 @@ struct CreateEntryView: View {
 
             entryInputActionCard(
                 title: "Photo Library",
-                subtitle: "Choose an existing photo",
+                subtitle: "Choose from library",
                 systemName: "photo.on.rectangle.angled"
             ) {
                 presentPhotoLibraryFromReferencePhotosSheet()
@@ -9303,7 +9305,7 @@ struct CreateEntryView: View {
                 .font(.system(size: 16, weight: .bold, design: .serif))
                 .foregroundStyle(Color.storyInk)
 
-            HStack(spacing: 12) {
+            VStack(spacing: 10) {
                 if UIImagePickerController.isSourceTypeAvailable(.camera) {
                     entryInputActionCard(
                         title: "Camera",
@@ -9436,39 +9438,41 @@ struct CreateEntryView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
                 Image(systemName: systemName)
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(Color.storyPurple)
-                    .frame(height: 28)
+                    .frame(width: 28, height: 28)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.storyInk.opacity(0.9))
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.78)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Color.storyInk)
 
                     Text(subtitle)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.storyInk.opacity(0.62))
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.76)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.storyInk.opacity(0.64))
                 }
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.storyInk.opacity(0.32))
             }
+            .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 122)
-            .padding(.horizontal, 12)
-            .padding(.top, 14)
-            .background(Color.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .frame(height: 68)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(Color.storyBorder.opacity(0.7), lineWidth: 1)
             )
+            .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(subtitle)")
     }
 
     @ViewBuilder
