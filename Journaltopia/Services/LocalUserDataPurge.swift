@@ -142,6 +142,7 @@ enum LocalUserDataPurge {
             PurgeStep(name: "in-memory-caches") {
                 JournalLocalCachePurge.purgeInMemoryCaches()
                 ProfileLocalCachePurge.purgeInMemoryCaches()
+                HomeLocalCachePurge.purgeInMemoryCaches()
             },
             PurgeStep(name: "generation-credits") {
                 generationCreditStore?.reset()

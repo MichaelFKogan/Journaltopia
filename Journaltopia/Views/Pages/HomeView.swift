@@ -19,7 +19,10 @@ struct HomeView: View {
 
     @State private var fullScreenImageName: String?
     @State private var isLoadingHomeStoryboards = false
-    @State private var recentEntry: HomeRecentEntry?
+    /// Seeded from the session cache because `ContentView` rebuilds `HomeView` from scratch on every
+    /// return to Home. Without it the opening frames have nothing but the local draft pick to show,
+    /// which is the card the reader sees swap to a different entry once the cloud answer lands.
+    @State private var recentEntry: HomeRecentEntry? = HomeRecentEntrySessionCache.mostRecentEntry()
     @State private var recentJournal: HomeRecentJournal?
     @State private var loadedHomeSamplePack: SampleStoryPack?
     @State private var recentContentLoadTask: Task<Void, Never>?
@@ -317,6 +320,8 @@ struct HomeView: View {
 
     @MainActor
     private func refreshRecentContent(loadsCloudEntry: Bool) {
+        let loadID = homeStoryboardLoadID
+
         if showsSampleHomeContent {
             recentContentLoadTask?.cancel()
             let pack = isSampleAuthorMode
@@ -325,12 +330,23 @@ struct HomeView: View {
             if let pack {
                 recentEntry = mostRecentSampleEntry(from: pack)
                 recentJournal = mostRecentSampleJournal(from: pack)
+                HomeRecentEntrySessionCache.store(recentEntry, for: loadID)
+            } else {
+                // The seed above is unkeyed, so it can belong to whichever mode was last on screen. A
+                // pack that has not loaded yet falls back to this mode's own card, never keeps that one.
+                recentEntry = HomeRecentEntrySessionCache.entry(for: loadID)
             }
             return
         }
 
         let localEntries = visibleLocalEntries()
-        recentEntry = mostRecentLocalEntry(from: localEntries)
+        // The local draft cache ranks by on-device `updatedAt`, which autosaves and sidecar writes bump
+        // without moving the cloud `updated_at` this card actually sorts on — so its pick can name a
+        // different entry than the cloud answer arriving a moment later. Starting from the cloud-ranked
+        // card this session already resolved is what stops the card swapping entries in front of the
+        // reader; the local pick is the fallback for when there is no resolved card to start from.
+        recentEntry = HomeRecentEntrySessionCache.entry(for: loadID)
+            ?? mostRecentLocalEntry(from: localEntries)
         recentJournal = UserChapterStore.load()
             .map { chapter in
                 let memberIDs = journalMemberIDs(for: chapter)
@@ -375,11 +391,13 @@ struct HomeView: View {
 
             guard let cloudEntry = page.sorted(by: homeRecentCloudEntrySort).first else {
                 recentEntry = nil
+                HomeRecentEntrySessionCache.store(nil, for: loadID)
                 return
             }
 
             var recent = homeRecentEntry(from: cloudEntry)
             recentEntry = recent
+            HomeRecentEntrySessionCache.store(recent, for: loadID)
 
             if recent.entry.thumbnail == nil,
                let thumbnailStoragePath = cloudEntry.thumbnailStoragePath,
@@ -397,6 +415,7 @@ struct HomeView: View {
                     isSample: false
                 )
                 recentEntry = recent
+                HomeRecentEntrySessionCache.store(recent, for: loadID)
             }
         } catch is CancellationError {
             return
@@ -483,7 +502,10 @@ struct HomeView: View {
     @MainActor
     private func homeRecentEntry(from cloudEntry: JournalEntry) -> HomeRecentEntry {
         let localEntry = CreateEntryDraftStore.load(ids: [cloudEntry.clientEntryID], includeMedia: false).first
-        let entry = CreateEntryDraft.fromCloud(cloudEntry, thumbnail: localEntry?.thumbnail)
+        // Reuse the thumbnail already on screen for this same entry. Dropping it would blank the card
+        // for as long as the download below took to fetch a picture the card was already showing.
+        let displayedThumbnail = recentEntry?.id == cloudEntry.clientEntryID ? recentEntry?.entry.thumbnail : nil
+        let entry = CreateEntryDraft.fromCloud(cloudEntry, thumbnail: localEntry?.thumbnail ?? displayedThumbnail)
 
         return HomeRecentEntry(
             entry: entry,
@@ -940,6 +962,62 @@ private struct HomeRecentEntry: Identifiable {
 
     var id: UUID {
         entry.id
+    }
+}
+
+/// The most-recent entry card Home last resolved, kept for the life of the process.
+///
+/// `ContentView` builds `HomeView` fresh on every return to Home, so `recentEntry` starts empty and
+/// the only thing available for the opening frames is the local draft cache — which ranks by on-device
+/// `updatedAt` and can name a different entry than the cloud `updated_at` ranking the card settles on
+/// a moment later. That mismatch is what the reader sees as the card flashing one entry and then
+/// swapping to another. Seeding from here means a return to Home starts on the answer it ended on.
+///
+/// Keyed by the same load identity Home keys its loads on, so one account never reads another's card
+/// and sample mode never reads the account's; sign-out purges the whole thing through
+/// ``HomeLocalCachePurge``.
+private enum HomeRecentEntrySessionCache {
+    private static var entriesByLoadID: [String: HomeRecentEntry?] = [:]
+    private static var mostRecentLoadID: String?
+
+    static func entry(for loadID: String) -> HomeRecentEntry? {
+        entriesByLoadID[loadID] ?? nil
+    }
+
+    /// The last card stored, whichever load it belonged to.
+    ///
+    /// Unkeyed because the load identity needs the signed-in user, and `@State` initial values are
+    /// evaluated before the environment exists. Being occasionally wrong is safe: `onAppear` refreshes
+    /// against the real identity, so a mismatch costs a frame and never persists.
+    static func mostRecentEntry() -> HomeRecentEntry? {
+        guard let mostRecentLoadID else {
+            return nil
+        }
+
+        return entry(for: mostRecentLoadID)
+    }
+
+    /// Stores `nil` as a real answer — "this account has no entries" is worth seeding too, and lets a
+    /// deleted last entry stop coming back on the next visit.
+    static func store(_ entry: HomeRecentEntry?, for loadID: String) {
+        entriesByLoadID[loadID] = .some(entry)
+        mostRecentLoadID = loadID
+    }
+
+    static func removeAll() {
+        entriesByLoadID.removeAll()
+        mostRecentLoadID = nil
+    }
+}
+
+/// `LocalUserDataPurge`'s hook into this file, matching `JournalLocalCachePurge`.
+///
+/// ``HomeRecentEntrySessionCache`` is file-private and lives as long as the process does, holding the
+/// previous account's entry text and thumbnail in memory. Nothing but the sign-out purge should call
+/// this.
+enum HomeLocalCachePurge {
+    static func purgeInMemoryCaches() {
+        HomeRecentEntrySessionCache.removeAll()
     }
 }
 

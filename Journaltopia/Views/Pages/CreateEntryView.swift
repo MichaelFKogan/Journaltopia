@@ -6654,8 +6654,6 @@ struct CreateEntryView: View {
                     case .characters:
                         storyReferenceCharactersTabContent
                     }
-
-                    storyReferencesPhotoLimitText
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -6678,20 +6676,25 @@ struct CreateEntryView: View {
         }
     }
 
-    private var storyReferencesPhotoLimitText: some View {
-        HStack(alignment: .top, spacing: 7) {
-            Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.yellow.opacity(0.88))
-                .padding(.top, 1)
+    private var maxStoryReferencePhotosPerTab: Int { 5 }
 
-            Text("Max 10 photos total across Photos and Characters.")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.storyInk.opacity(0.58))
+    private func storyReferencesPhotoLimitText(selectedCount: Int) -> some View {
+        let isAtLimit = selectedCount >= maxStoryReferencePhotosPerTab
+        let accent = isAtLimit ? Color.red.opacity(0.88) : Color.storyInk.opacity(0.58)
+
+        return HStack(alignment: .center, spacing: 7) {
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 12, weight: isAtLimit ? .bold : .semibold))
+                .foregroundStyle(isAtLimit ? Color.red.opacity(0.88) : Color.yellow.opacity(0.88))
+
+            Text("Max five photos")
+                .font(.system(size: 11, weight: isAtLimit ? .bold : .semibold))
+                .foregroundStyle(accent)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(isAtLimit ? "Max five photos reached" : "Max five photos")
     }
 
     private var storyReferencesSegmentedControl: some View {
@@ -6758,6 +6761,7 @@ struct CreateEntryView: View {
                     subtitle: "Photos help bring your story to life in your storyboard."
                 )
             }
+            storyReferencesPhotoLimitText(selectedCount: storyboardPhotos.compactMap { $0 }.count)
             if nextAvailablePhotoSlot != nil {
                 referencePhotoSourceChoices
             }
@@ -6775,6 +6779,7 @@ struct CreateEntryView: View {
             } else {
                 entryCharactersInThisEntrySection
             }
+            storyReferencesPhotoLimitText(selectedCount: entryCharacters.count)
             characterPhotoSourceSection
 
             entryCharactersReusableLibrarySection
@@ -6788,11 +6793,6 @@ struct CreateEntryView: View {
                 .foregroundStyle(Color.storyInk)
 
             referencePhotosSheetStripRow
-
-            Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color.storyInk.opacity(0.58))
-                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
@@ -9298,14 +9298,17 @@ struct CreateEntryView: View {
     }
 
     private var referencePhotosSheetStripRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 9) {
-                ForEach(Array(storyboardPhotos.compactMap { $0 }.enumerated()), id: \.element.id) { index, photo in
+        let photos = storyboardPhotos.compactMap { $0 }
+        let showsOverflowHint = photos.count > 3
+
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) {
+                ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
                     StoryboardPhotoStripThumbnail(
                         image: photo.image,
-                        size: 78,
-                        bottomPadding: 16,
-                        overflow: 12,
+                        size: 70,
+                        bottomPadding: 14,
+                        overflow: 10,
                         removeAction: {
                             removeStoryboardPhoto(at: index)
                         },
@@ -9327,12 +9330,31 @@ struct CreateEntryView: View {
                         )
                     )
                 }
-
             }
-            .padding(.horizontal, 2)
+            .padding(.leading, 2)
+            .padding(.trailing, showsOverflowHint ? 28 : 2)
             .padding(.vertical, 4)
         }
-        .frame(height: 110)
+        .frame(maxWidth: .infinity)
+        .frame(height: 100)
+        .overlay(alignment: .trailing) {
+            if showsOverflowHint {
+                LinearGradient(
+                    colors: [Color.white.opacity(0), Color.white],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 34)
+                .overlay(alignment: .trailing) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.storyInk.opacity(0.42))
+                        .padding(.trailing, 2)
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .accessibilityHint(showsOverflowHint ? "Swipe to see more selected photos" : "")
     }
 
     private var referencePhotoSourceChoices: some View {
