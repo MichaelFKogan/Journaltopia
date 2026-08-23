@@ -129,19 +129,23 @@ struct HomeView: View {
 
             Spacer()
 
-            if contentMode.requiresSignIn {
-                signInButton
-            } else {
-                creditsButton
-                    .padding(.top, 2)
+            HStack(spacing: 4) {
+                if contentMode.requiresSignIn {
+                    signInButton
+                } else {
+                    creditsButton
+                }
+
+                settingsButton
             }
+            .padding(.top, 2)
         }
     }
 
-    /// Signed out, both trailing icons are answers to questions nobody has asked yet: there is no
-    /// balance to show and no account to configure. One word for the one thing worth doing replaces
-    /// them, and it opens the same Sign In to Journaltopia sheet every other account-required
-    /// action uses.
+    /// Signed out, there is no balance to show. Sign In replaces the credit badge and still
+    /// opens the same Sign In to Journaltopia sheet every other account-required action uses.
+    /// Settings stays in the trailing corner so Help, Extra, and account actions remain
+    /// reachable without a tab.
     private var signInButton: some View {
         Button {
             signInGate.requireAccount(for: .signIn)
@@ -183,6 +187,25 @@ struct HomeView: View {
         .accessibilityLabel(
             subscriptionStore.state.isSubscribed ? "Open credits" : "Upgrade to Journaltopia+"
         )
+    }
+
+    private var settingsButton: some View {
+        NavigationLink {
+            SettingsView(
+                selectedPage: $selectedPage,
+                generatedStoryboards: $generatedStoryboards,
+                contentMode: contentMode
+            )
+                .enableInteractivePopGesture()
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(Color.storyInk.opacity(0.65))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open settings")
     }
 
     private var homeCardGrid: some View {

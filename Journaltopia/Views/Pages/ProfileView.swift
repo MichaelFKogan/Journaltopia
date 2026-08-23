@@ -57,6 +57,12 @@ struct ProfileView: View {
                 StoryboardImageViewer(
                     storyboards: generatedStoryboards,
                     initialIndex: selectedStoryboardIndex,
+                    hasMoreStoryboards: hasMoreProfileStoryboards,
+                    isLoadingMoreStoryboards: isLoadingMoreProfileStoryboards,
+                    onLoadMoreStoryboards: {
+                        await loadMoreProfileStoryboards()
+                    },
+                    allowsSharing: true,
                     deleteAction: StoryboardViewerDeleteAction(
                         // The grid is paginated, so it cannot always tell whether this is the
                         // entry's last storyboard. The result toast reports what actually
@@ -371,7 +377,7 @@ struct ProfileView: View {
                         LoadingStoryboardCard()
                     }
                 }
-            } else if let profileStoryboardErrorMessage {
+            } else if generatedStoryboards.isEmpty, let profileStoryboardErrorMessage {
                 ProfileStoryboardErrorState(message: profileStoryboardErrorMessage) {
                     Task {
                         await loadProfileStoryboards(forceReload: true)
@@ -408,18 +414,67 @@ struct ProfileView: View {
                         .accessibilityAddTraits(
                             selectedStoryboardIDs.contains(storyboard.id) ? .isSelected : []
                         )
-                        .onAppear {
-                            loadMoreProfileStoryboardsIfNeeded(currentIndex: index)
-                        }
                     }
 
+                }
+
+                profileStoryboardFooter
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var profileStoryboardFooter: some View {
+        if hasMoreProfileStoryboards {
+            Button {
+                Task {
+                    await loadMoreProfileStoryboards()
+                }
+            } label: {
+                HStack(spacing: 8) {
                     if isLoadingMoreProfileStoryboards {
-                        ForEach(0..<3, id: \.self) { _ in
-                            LoadingStoryboardCard()
-                        }
+                        ProgressView()
+                            .tint(Color.homeAccent)
+                    } else {
+                        Image(systemName: "square.grid.3x3")
+                            .font(.system(size: 13, weight: .bold))
                     }
+
+                    Text(isLoadingMoreProfileStoryboards ? "Loading..." : "Load More")
+                        .font(.system(size: 14, weight: .bold))
+                }
+                .foregroundStyle(Color.homeAccent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(Color.white.opacity(0.76), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.homeBorder.opacity(0.9), lineWidth: 1)
                 }
             }
+            .buttonStyle(.plain)
+            .disabled(isLoadingMoreProfileStoryboards)
+            .accessibilityLabel(isLoadingMoreProfileStoryboards ? "Loading more storyboards" : "Load more storyboards")
+        } else if let profileStoryboardErrorMessage, !generatedStoryboards.isEmpty {
+            VStack(spacing: 8) {
+                Text(profileStoryboardErrorMessage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.homeMutedText)
+                    .multilineTextAlignment(.center)
+
+                Button {
+                    Task {
+                        await loadMoreProfileStoryboards()
+                    }
+                } label: {
+                    Text("Try Again")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.homeAccent)
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
         }
     }
 
@@ -804,19 +859,6 @@ struct ProfileView: View {
             if generatedStoryboards.isEmpty {
                 profileStoryboardErrorMessage = "Could not load your completed AI storyboards from Journaltopia cloud."
             }
-        }
-    }
-
-    private func loadMoreProfileStoryboardsIfNeeded(currentIndex: Int) {
-        guard currentIndex >= generatedStoryboards.count - 3 else {
-            return
-        }
-        guard hasMoreProfileStoryboards, !isLoadingProfileStoryboards, !isLoadingMoreProfileStoryboards else {
-            return
-        }
-
-        Task {
-            await loadMoreProfileStoryboards()
         }
     }
 
@@ -1702,22 +1744,35 @@ struct StoryboardImageViewer: View {
     let storyboards: [GeneratedStoryboard]
     let initialIndex: Int
     let onSelectPrimary: ((GeneratedStoryboard) -> Void)?
+    let hasMoreStoryboards: Bool
+    let isLoadingMoreStoryboards: Bool
+    let onLoadMoreStoryboards: (() async -> Void)?
+    let allowsSharing: Bool
     let deleteAction: StoryboardViewerDeleteAction?
 
     @Environment(\.dismiss) private var dismiss
     @State private var visibleIndex: Int
     @State private var primaryStoryboardID: UUID?
     @State private var storyboardPendingDeletion: GeneratedStoryboard?
+    @State private var storyboardToShare: GeneratedStoryboard?
 
     init(
         storyboards: [GeneratedStoryboard],
         initialIndex: Int,
         onSelectPrimary: ((GeneratedStoryboard) -> Void)? = nil,
+        hasMoreStoryboards: Bool = false,
+        isLoadingMoreStoryboards: Bool = false,
+        onLoadMoreStoryboards: (() async -> Void)? = nil,
+        allowsSharing: Bool = false,
         deleteAction: StoryboardViewerDeleteAction? = nil
     ) {
         self.storyboards = storyboards
         self.initialIndex = initialIndex
         self.onSelectPrimary = onSelectPrimary
+        self.hasMoreStoryboards = hasMoreStoryboards
+        self.isLoadingMoreStoryboards = isLoadingMoreStoryboards
+        self.onLoadMoreStoryboards = onLoadMoreStoryboards
+        self.allowsSharing = allowsSharing
         self.deleteAction = deleteAction
         _visibleIndex = State(initialValue: initialIndex)
         _primaryStoryboardID = State(initialValue: storyboards.first(where: \.isPrimary)?.id)
@@ -1735,7 +1790,11 @@ struct StoryboardImageViewer: View {
                 visibleIndex: $visibleIndex,
                 primaryStoryboardID: primaryStoryboardID,
                 onSelectPrimary: primarySelectionHandler,
-                onDeleteStoryboard: storyboardDeletionHandler
+                onDeleteStoryboard: storyboardDeletionHandler,
+                onShareStoryboard: storyboardShareHandler,
+                hasMoreStoryboards: hasMoreStoryboards,
+                isLoadingMoreStoryboards: isLoadingMoreStoryboards,
+                onLoadMoreStoryboards: onLoadMoreStoryboards
             )
             .background(Color.black)
 
@@ -1766,6 +1825,10 @@ struct StoryboardImageViewer: View {
         }
         .preferredColorScheme(.dark)
         .statusBarHidden()
+        .sheet(item: $storyboardToShare) { storyboard in
+            ActivityView(activityItems: [storyboard.image])
+                .presentationDetents([.medium, .large])
+        }
         .alert(
             "Delete Storyboard?",
             isPresented: Binding(
@@ -1813,6 +1876,16 @@ struct StoryboardImageViewer: View {
 
         return { storyboard in
             storyboardPendingDeletion = storyboard
+        }
+    }
+
+    private var storyboardShareHandler: ((GeneratedStoryboard) -> Void)? {
+        guard allowsSharing else {
+            return nil
+        }
+
+        return { storyboard in
+            storyboardToShare = storyboard
         }
     }
 }
@@ -1914,6 +1987,46 @@ private struct StoryboardPrimarySelectionThumbnail: View {
     }
 }
 
+private struct StoryboardViewerLoadMoreFooter: View {
+    let isLoading: Bool
+    let action: () async -> Void
+
+    var body: some View {
+        Button {
+            Task {
+                await action()
+            }
+        } label: {
+            HStack(spacing: 9) {
+                if isLoading {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.system(size: 13, weight: .bold))
+                }
+
+                Text(isLoading ? "Loading..." : "Load More")
+                    .font(.system(size: 14, weight: .bold))
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .padding(.horizontal, 16)
+        .padding(.top, 18)
+        .padding(.bottom, 40)
+        .accessibilityLabel(isLoading ? "Loading more storyboards" : "Load more storyboards")
+    }
+}
+
 private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
     let storyboards: [GeneratedStoryboard]
     let images: [UIImage]
@@ -1922,6 +2035,10 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
     let primaryStoryboardID: UUID?
     let onSelectPrimary: ((GeneratedStoryboard) -> Void)?
     let onDeleteStoryboard: ((GeneratedStoryboard) -> Void)?
+    let onShareStoryboard: ((GeneratedStoryboard) -> Void)?
+    let hasMoreStoryboards: Bool
+    let isLoadingMoreStoryboards: Bool
+    let onLoadMoreStoryboards: (() async -> Void)?
     private let topOverlayClearance: CGFloat = 64
 
     func makeCoordinator() -> Coordinator {
@@ -1997,6 +2114,12 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         }
         context.coordinator.renderedPrimaryStoryboardID = primaryStoryboardID
         context.coordinator.renderedStoryboardIDs = storyboards.map(\.id)
+        context.coordinator.renderedHasMoreStoryboards = hasMoreStoryboards
+        context.coordinator.renderedIsLoadingMoreStoryboards = isLoadingMoreStoryboards
+
+        if let loadMoreFooter = makeLoadMoreFooter(context: context) {
+            stackView.addArrangedSubview(loadMoreFooter)
+        }
     }
 
     private func makeStoryboardImageContainer(
@@ -2039,6 +2162,19 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
             NSLayoutConstraint.activate([
                 deleteButton.trailingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: -16),
                 deleteButton.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 16)
+            ])
+        }
+
+        if let storyboard, onShareStoryboard != nil {
+            let shareButton = shareStoryboardButton()
+            shareButton.addAction(UIAction { _ in
+                context.coordinator.requestShare(storyboard)
+            }, for: .touchUpInside)
+            container.addSubview(shareButton)
+
+            NSLayoutConstraint.activate([
+                shareButton.leadingAnchor.constraint(equalTo: imageView.leadingAnchor, constant: 16),
+                shareButton.topAnchor.constraint(equalTo: imageView.topAnchor, constant: 16)
             ])
         }
 
@@ -2112,6 +2248,23 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         let button = UIButton(configuration: configuration)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.accessibilityLabel = "Delete this storyboard"
+        return button
+    }
+
+    private func shareStoryboardButton() -> UIButton {
+        var configuration = UIButton.Configuration.filled()
+        configuration.image = UIImage(
+            systemName: "square.and.arrow.up",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .bold)
+        )
+        configuration.baseForegroundColor = .white
+        configuration.baseBackgroundColor = UIColor.black.withAlphaComponent(0.62)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 11, bottom: 11, trailing: 11)
+
+        let button = UIButton(configuration: configuration)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.accessibilityLabel = "Share this storyboard"
         return button
     }
 
@@ -2217,6 +2370,22 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         return hostingController.view
     }
 
+    private func makeLoadMoreFooter(context: Context) -> UIView? {
+        guard hasMoreStoryboards, let onLoadMoreStoryboards else {
+            return nil
+        }
+
+        let footer = StoryboardViewerLoadMoreFooter(
+            isLoading: isLoadingMoreStoryboards,
+            action: onLoadMoreStoryboards
+        )
+        let hostingController = UIHostingController(rootView: footer)
+        hostingController.view.backgroundColor = .clear
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        context.coordinator.loadMoreFooterHostingController = hostingController
+        return hostingController.view
+    }
+
     private func makeImageBoundary(nextIndex _: Int, totalCount _: Int) -> UIView {
         let container = UIView()
         container.backgroundColor = UIColor(white: 0.035, alpha: 1)
@@ -2230,6 +2399,7 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         context.coordinator.parent = self
         let needsRebuild = context.coordinator.renderedPrimaryStoryboardID != primaryStoryboardID
             || context.coordinator.renderedStoryboardIDs != storyboards.map(\.id)
+            || context.coordinator.renderedHasMoreStoryboards != hasMoreStoryboards
 
         if needsRebuild, let stackView = context.coordinator.stackView {
             // Clamp, because a deleted storyboard can leave the preserved index past the end.
@@ -2239,19 +2409,30 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
                 arrangedSubview.removeFromSuperview()
             }
             context.coordinator.storyboardPickerHostingController = nil
+            context.coordinator.loadMoreFooterHostingController = nil
             populateStackView(stackView, in: scrollView, context: context)
             scrollView.layoutIfNeeded()
             stackView.layoutIfNeeded()
             context.coordinator.scrollToStoryboard(at: preservedVisibleIndex, in: scrollView, animated: false)
-        } else if onSelectPrimary != nil {
-            context.coordinator.storyboardPickerHostingController?.rootView = StoryboardPrimarySelectionRow(
-                storyboards: storyboards,
-                primaryStoryboardID: primaryStoryboardID,
-                onSelectStoryboard: { index in
-                    context.coordinator.scrollToStoryboard(at: index, in: scrollView, animated: true)
-                },
-                onDeleteStoryboard: onDeleteStoryboard
-            )
+        } else {
+            if onSelectPrimary != nil {
+                context.coordinator.storyboardPickerHostingController?.rootView = StoryboardPrimarySelectionRow(
+                    storyboards: storyboards,
+                    primaryStoryboardID: primaryStoryboardID,
+                    onSelectStoryboard: { index in
+                        context.coordinator.scrollToStoryboard(at: index, in: scrollView, animated: true)
+                    },
+                    onDeleteStoryboard: onDeleteStoryboard
+                )
+            }
+
+            if hasMoreStoryboards, let onLoadMoreStoryboards {
+                context.coordinator.loadMoreFooterHostingController?.rootView = StoryboardViewerLoadMoreFooter(
+                    isLoading: isLoadingMoreStoryboards,
+                    action: onLoadMoreStoryboards
+                )
+                context.coordinator.renderedIsLoadingMoreStoryboards = isLoadingMoreStoryboards
+            }
         }
     }
 
@@ -2259,9 +2440,12 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
         var parent: ZoomableVerticalStoryboardView
         weak var stackView: UIStackView?
         var storyboardPickerHostingController: UIHostingController<StoryboardPrimarySelectionRow>?
+        var loadMoreFooterHostingController: UIHostingController<StoryboardViewerLoadMoreFooter>?
         var imageViews: [UIView] = []
         var renderedPrimaryStoryboardID: UUID?
         var renderedStoryboardIDs: [UUID] = []
+        var renderedHasMoreStoryboards = false
+        var renderedIsLoadingMoreStoryboards = false
         private var didScrollToInitialImage = false
 
         init(parent: ZoomableVerticalStoryboardView) {
@@ -2330,6 +2514,10 @@ private struct ZoomableVerticalStoryboardView: UIViewRepresentable {
 
         func requestDelete(_ storyboard: GeneratedStoryboard) {
             parent.onDeleteStoryboard?(storyboard)
+        }
+
+        func requestShare(_ storyboard: GeneratedStoryboard) {
+            parent.onShareStoryboard?(storyboard)
         }
 
         private func updateVisibleIndex(in scrollView: UIScrollView) {

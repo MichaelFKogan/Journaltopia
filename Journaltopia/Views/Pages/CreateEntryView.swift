@@ -6682,7 +6682,7 @@ struct CreateEntryView: View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.red.opacity(0.88))
+                .foregroundStyle(Color.yellow.opacity(0.88))
                 .padding(.top, 1)
 
             Text("Max 10 photos total across Photos and Characters.")
@@ -6811,11 +6811,12 @@ struct CreateEntryView: View {
         title: String,
         subtitle: String
     ) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 7) {
             Image(imageName)
                 .resizable()
                 .scaledToFit()
-                .frame(height: 84)
+                .frame(maxWidth: 300)
+                .frame(height: 200)
                 .accessibilityHidden(true)
 
             VStack(spacing: 4) {
@@ -6933,7 +6934,8 @@ struct CreateEntryView: View {
     }
 
     private var storyReferencesPanelHeight: CGFloat {
-        max(440, min(UIScreen.main.bounds.height - 180, 760))
+        let bottomMenuReserve: CGFloat = 96
+        return max(440, min(UIScreen.main.bounds.height - 180 - bottomMenuReserve, 760))
     }
 
     private var journalsPanelMaxHeight: CGFloat {
@@ -9366,7 +9368,7 @@ struct CreateEntryView: View {
                 .foregroundStyle(Color.blue.opacity(0.88))
                 .padding(.top, 1)
 
-            Text("Group photos will add all people in the photo to the storyboard image. To single out people, use the Characters tab.")
+            Text("Group photos will add all people in the photo to the storyboard image. To single out people, only use images of people you want to show in the storyboard, or use the Characters tab.")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.storyInk.opacity(0.62))
                 .fixedSize(horizontal: false, vertical: true)
