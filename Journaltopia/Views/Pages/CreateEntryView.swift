@@ -639,7 +639,7 @@ private enum CharacterEditorDestination {
 private struct CharacterEditorSession: Identifiable {
     let id = UUID()
     let character: EntryCharacter?
-    var initialPhotoSource: CharacterInitialPhotoSource? = nil
+    var initialImage: UIImage? = nil
     var destination: CharacterEditorDestination = .entry
 }
 
@@ -2091,10 +2091,14 @@ struct CreateEntryView: View {
     @State private var savesDraft = true
     @State private var isPrivateEntry = false
     @State private var selectedPhotoPickerItems: [PhotosPickerItem] = []
+    @State private var selectedCharacterPhotoPickerItem: PhotosPickerItem?
     @State private var draggedStoryboardPhotoIndex: Int?
     @State private var previewedStoryboardPhoto: UIImage?
     @State private var entryCharacters: [EntryCharacter] = []
     @State private var characterEditorSession: CharacterEditorSession?
+    @State private var isShowingCharacterPhotoLibrary = false
+    @State private var isShowingCharacterCamera = false
+    @State private var pendingInitialCharacterImage: UIImage?
     @State private var isShowingReusableCharactersSheet = false
     @State private var reusableCharacters: [EntryCharacter] = []
     @State private var isLoadingReusableCharacters = false
@@ -2475,6 +2479,15 @@ struct CreateEntryView: View {
             }
             .ignoresSafeArea()
         }
+        .sheet(
+            isPresented: $isShowingCharacterCamera,
+            onDismiss: presentPendingInitialCharacterImage
+        ) {
+            CameraPhotoPicker { image in
+                pendingInitialCharacterImage = image
+            }
+            .ignoresSafeArea()
+        }
         .fullScreenCover(
             isPresented: Binding(
                 get: { previewedStoryboardPhoto != nil },
@@ -2628,6 +2641,11 @@ struct CreateEntryView: View {
             selectionBehavior: .ordered,
             matching: .images
         )
+        .photosPicker(
+            isPresented: $isShowingCharacterPhotoLibrary,
+            selection: $selectedCharacterPhotoPickerItem,
+            matching: .images
+        )
     }
 
     private var editorWithPhotoSourceSheet: some View {
@@ -2710,7 +2728,7 @@ struct CreateEntryView: View {
         return AnyView(
             CharacterEditorSheet(
                 editingCharacter: session.character,
-                initialPhotoSource: session.initialPhotoSource,
+                initialImage: session.initialImage,
                 deletesFromLibrary: isLibraryEdit,
                 onSave: { character in
                     if isLibraryEdit {
@@ -2788,6 +2806,15 @@ struct CreateEntryView: View {
 
             Task {
                 await loadPhotoLibraryImages(from: items)
+            }
+        }
+        .onChange(of: selectedCharacterPhotoPickerItem) { item in
+            guard let item else {
+                return
+            }
+
+            Task {
+                await loadInitialCharacterPhoto(from: item)
             }
         }
         .onAppear {
@@ -6627,6 +6654,8 @@ struct CreateEntryView: View {
                     case .characters:
                         storyReferenceCharactersTabContent
                     }
+
+                    storyReferencesPhotoLimitText
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -6647,6 +6676,22 @@ struct CreateEntryView: View {
                 : mergedReusableCharacters(localReusableCharacters(), reusableCharacters)
             refreshReusableCharacters()
         }
+    }
+
+    private var storyReferencesPhotoLimitText: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.red.opacity(0.88))
+                .padding(.top, 1)
+
+            Text("Max 10 photos total across Photos and Characters.")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.storyInk.opacity(0.58))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private var storyReferencesSegmentedControl: some View {
@@ -6704,63 +6749,60 @@ struct CreateEntryView: View {
 
     private var storyReferencePhotosTabContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            storyReferenceEmptyStateIntro(
-                imageName: "add_reference_photos",
-                title: "Add reference photos",
-                subtitle: "Photos help bring your story to life in your storyboard."
-            )
-
+            if hasStoryboardPhotos {
+                selectedReferencePhotosSection
+            } else {
+                storyReferenceEmptyStateIntro(
+                    imageName: "add_reference_photos",
+                    title: "Add reference photos",
+                    subtitle: "Photos help bring your story to life in your storyboard."
+                )
+            }
             if nextAvailablePhotoSlot != nil {
                 referencePhotoSourceChoices
-            }
-
-            if hasStoryboardPhotos {
-                VStack(alignment: .leading, spacing: 11) {
-                    Text("Selected Photos")
-                        .font(.system(size: 16, weight: .bold, design: .serif))
-                        .foregroundStyle(Color.storyInk)
-
-                    referencePhotoFanPreview
-                        .frame(maxWidth: .infinity)
-
-                    referencePhotosSheetStripRow
-
-                    Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Color.storyInk.opacity(0.58))
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
             }
         }
     }
 
     private var storyReferenceCharactersTabContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            storyReferenceEmptyStateIntro(
-                imageName: "add_character_photos",
-                title: "Add a character",
-                subtitle: "Add a portrait so your character can appear consistently."
-            )
-
+            if entryCharacters.isEmpty {
+                storyReferenceEmptyStateIntro(
+                    imageName: "add_character_photos",
+                    title: "Add a character",
+                    subtitle: "Add a portrait so your character can appear consistently."
+                )
+            } else {
+                entryCharactersInThisEntrySection
+            }
             characterPhotoSourceSection
 
-            VStack(alignment: .leading, spacing: 11) {
-                Text("Characters in this Entry")
-                    .font(.system(size: 16, weight: .bold, design: .serif))
-                    .foregroundStyle(Color.storyInk)
-
-                if entryCharacters.isEmpty {
-                    reusableCharacterStatusRow(
-                        systemName: "person.crop.circle.badge.plus",
-                        text: "No characters attached to this entry yet.",
-                        showsProgress: false
-                    )
-                } else {
-                    entryCharactersSheetStripRow
-                }
-            }
-
             entryCharactersReusableLibrarySection
+        }
+    }
+
+    private var selectedReferencePhotosSection: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("Selected Photos")
+                .font(.system(size: 16, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            referencePhotosSheetStripRow
+
+            Text("\(storyboardPhotos.compactMap { $0 }.count) of \(storyboardPhotos.count) photos")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.storyInk.opacity(0.58))
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    private var entryCharactersInThisEntrySection: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("Characters in this Entry")
+                .font(.system(size: 16, weight: .bold, design: .serif))
+                .foregroundStyle(Color.storyInk)
+
+            entryCharactersSheetStripRow
         }
     }
 
@@ -6773,7 +6815,7 @@ struct CreateEntryView: View {
             Image(imageName)
                 .resizable()
                 .scaledToFit()
-                .frame(height: 92)
+                .frame(height: 84)
                 .accessibilityHidden(true)
 
             VStack(spacing: 4) {
@@ -7092,7 +7134,16 @@ struct CreateEntryView: View {
     }
 
     private func presentCreateCharacterFromEntryCharactersSheet(source: CharacterInitialPhotoSource) {
-        characterEditorSession = CharacterEditorSession(character: nil, initialPhotoSource: source)
+        switch source {
+        case .camera:
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                isShowingCharacterCamera = true
+            } else {
+                isShowingCharacterPhotoLibrary = true
+            }
+        case .photoLibrary:
+            isShowingCharacterPhotoLibrary = true
+        }
     }
 
     private func openJournalPromptsSheet() {
@@ -9310,9 +9361,9 @@ struct CreateEntryView: View {
 
     private var referencePhotoCharactersDisclaimer: some View {
         HStack(alignment: .top, spacing: 7) {
-            Image(systemName: "exclamationmark.circle")
+            Image(systemName: "info.circle")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.storyInk.opacity(0.58))
+                .foregroundStyle(Color.blue.opacity(0.88))
                 .padding(.top, 1)
 
             Text("Group photos will add all people in the photo to the storyboard image. To single out people, use the Characters tab.")
@@ -9339,7 +9390,7 @@ struct CreateEntryView: View {
                 }
 
                 Button {
-                    selectedStoryReferencesTab = .characters
+                    presentCreateCharacterFromEntryCharactersSheet(source: .photoLibrary)
                 } label: {
                     StoryboardPhotoStripAddButton(
                         systemName: "plus",
@@ -10261,6 +10312,37 @@ struct CreateEntryView: View {
         }
 
         setStoryboardPhotos(images)
+    }
+
+    @MainActor
+    private func loadInitialCharacterPhoto(from item: PhotosPickerItem) async {
+        defer {
+            selectedCharacterPhotoPickerItem = nil
+        }
+
+        guard
+            let data = try? await item.loadTransferable(type: Data.self),
+            let image = UIImage(data: data)
+        else {
+            return
+        }
+
+        beginCreateCharacter(with: image)
+    }
+
+    private func beginCreateCharacter(with image: UIImage) {
+        DispatchQueue.main.async {
+            characterEditorSession = CharacterEditorSession(character: nil, initialImage: image)
+        }
+    }
+
+    private func presentPendingInitialCharacterImage() {
+        guard let pendingInitialCharacterImage else {
+            return
+        }
+
+        self.pendingInitialCharacterImage = nil
+        beginCreateCharacter(with: pendingInitialCharacterImage)
     }
 
     private func removeStoryboardPhoto(at index: Int) {
@@ -14735,7 +14817,7 @@ private struct CharacterEditorSheet: View {
     }
 
     let editingCharacter: EntryCharacter?
-    let initialPhotoSource: CharacterInitialPhotoSource?
+    let initialImage: UIImage?
     let deletesFromLibrary: Bool
     let onSave: (EntryCharacter) -> Void
     let onDelete: ((EntryCharacter) -> Void)?
@@ -14750,26 +14832,25 @@ private struct CharacterEditorSheet: View {
     @State private var name: String
     @State private var role: CharacterRole
     @State private var validationMessage: String?
-    @State private var didPresentInitialPhotoSource = false
     @State private var isConfirmingDelete = false
 
     init(
         editingCharacter: EntryCharacter?,
-        initialPhotoSource: CharacterInitialPhotoSource? = nil,
+        initialImage: UIImage? = nil,
         deletesFromLibrary: Bool = false,
         onSave: @escaping (EntryCharacter) -> Void,
         onDelete: ((EntryCharacter) -> Void)?
     ) {
         self.editingCharacter = editingCharacter
-        self.initialPhotoSource = initialPhotoSource
+        self.initialImage = initialImage
         self.deletesFromLibrary = deletesFromLibrary
         self.onSave = onSave
         self.onDelete = onDelete
-        _step = State(initialValue: editingCharacter == nil ? .choosePhoto : .details)
+        _step = State(initialValue: editingCharacter == nil ? (initialImage == nil ? .choosePhoto : .crop) : .details)
         _selectedCharacterPhotoItem = State(initialValue: nil)
         _isShowingCharacterCamera = State(initialValue: false)
         _isShowingCharacterPhotoLibrary = State(initialValue: false)
-        _cropSourceImage = State(initialValue: nil)
+        _cropSourceImage = State(initialValue: initialImage)
         _croppedImage = State(initialValue: editingCharacter?.image)
         _name = State(initialValue: editingCharacter?.name ?? "")
         _role = State(initialValue: editingCharacter?.role ?? .supportingCharacter)
@@ -14849,29 +14930,6 @@ private struct CharacterEditorSheet: View {
                     setCharacterCropSourceImage(image)
                 }
                 .ignoresSafeArea()
-            }
-            .onAppear {
-                presentInitialPhotoSourceIfNeeded()
-            }
-        }
-    }
-
-    private func presentInitialPhotoSourceIfNeeded() {
-        guard !didPresentInitialPhotoSource, editingCharacter == nil, let initialPhotoSource else {
-            return
-        }
-
-        didPresentInitialPhotoSource = true
-        DispatchQueue.main.async {
-            switch initialPhotoSource {
-            case .camera:
-                if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                    isShowingCharacterCamera = true
-                } else {
-                    isShowingCharacterPhotoLibrary = true
-                }
-            case .photoLibrary:
-                isShowingCharacterPhotoLibrary = true
             }
         }
     }
