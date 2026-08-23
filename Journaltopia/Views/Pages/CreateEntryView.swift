@@ -2396,6 +2396,14 @@ struct CreateEntryView: View {
                     .transition(.scale(scale: 0.86).combined(with: .opacity))
             }
         }
+        .overlay(alignment: .bottomLeading) {
+            if showsBottomSaveButton {
+                toolbarSaveActionButton
+                    .padding(.leading, 18)
+                    .padding(.bottom, bottomSaveButtonPadding)
+                    .transition(.scale(scale: 0.86).combined(with: .opacity))
+            }
+        }
         .overlay {
             if showsSavedConfirmationCard {
                 savedConfirmationCard
@@ -3663,19 +3671,9 @@ struct CreateEntryView: View {
             }
         }
 
-        if showsToolbarSaveButton || showsToolbarOverflowMenu(showsOverflowMenu) {
+        if showsToolbarOverflowMenu(showsOverflowMenu) {
             ToolbarItem(placement: .topBarTrailing) {
-                // One toolbar item rather than two, so the overflow menu keeps its place beside
-                // Save instead of being reordered or dropped when the bar runs short of room.
-                HStack(spacing: 0) {
-                    if showsToolbarOverflowMenu(showsOverflowMenu) {
-                        toolbarEntryOverflowMenu
-                    }
-
-                    if showsToolbarSaveButton {
-                        toolbarSaveActionButton
-                    }
-                }
+                toolbarEntryOverflowMenu
             }
             .hideSharedBackgroundIfAvailable()
         }
@@ -3732,10 +3730,6 @@ struct CreateEntryView: View {
             width += toolbarOverflowMenuWidth
         }
 
-        if showsToolbarSaveButton {
-            width += toolbarSaveActionWidth
-        }
-
         if showsToolbarOverflowMenu(showsOverflowMenu) {
             return toolbarCloseButtonWidth
         }
@@ -3780,28 +3774,31 @@ struct CreateEntryView: View {
         Button {
             performToolbarSave()
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 if isToolbarSaveInProgress {
                     ProgressView()
-                        .controlSize(.mini)
-                        .tint(Color.storyPurple)
+                        .controlSize(.small)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 13, weight: .heavy))
                 }
 
                 Text(toolbarSaveButtonTitle)
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 13, weight: .bold, design: .serif))
                     .lineLimit(1)
 
             }
-            .frame(width: 82, height: 38)
-            .foregroundStyle(toolbarSaveButtonColor)
-            .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .frame(width: 92, height: 38)
+            .foregroundStyle(.white)
+            .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.white.opacity(0.44), lineWidth: 1)
             )
+            .shadow(color: Color.storyInk.opacity(0.16), radius: 7, y: 3)
             .frame(width: toolbarSaveActionWidth, height: 48)
             .contentShape(Rectangle())
-            .opacity(canUseToolbarSaveButton || isToolbarSaveInProgress ? 1 : 0.52)
             .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
         }
         .buttonStyle(.plain)
@@ -3812,6 +3809,22 @@ struct CreateEntryView: View {
         presentation.showsNextButton
             || presentation.isEditDraft
             || presentation.savesDirectlyToJournal
+    }
+
+    private var showsBottomSaveButton: Bool {
+        showsToolbarSaveButton && (canUseToolbarSaveButton || isToolbarSaveInProgress)
+    }
+
+    private var bottomSaveButtonPadding: CGFloat {
+        if isFullScreenEditorVisible {
+            return speechMicBottomPadding
+        }
+
+        if isKeyboardVisible || isBodyEditorEditing || activeKeyboardFormattingMode != nil {
+            return speechMicBottomPadding
+        }
+
+        return 196
     }
 
     private func handleEditorPageTap() {
@@ -3855,14 +3868,6 @@ struct CreateEntryView: View {
         }
 
         return hasDraftContent
-    }
-
-    private var toolbarSaveButtonColor: Color {
-        if isToolbarSaveInProgress {
-            return Color.storyPurple
-        }
-
-        return canUseToolbarSaveButton ? Color.storyPurple : Color.storyGray.opacity(0.42)
     }
 
     private var toolbarSaveButtonTitle: String {

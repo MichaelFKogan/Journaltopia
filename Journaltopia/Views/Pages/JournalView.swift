@@ -8884,6 +8884,101 @@ private enum EntriesCloudThumbnailDiskCache {
     }
 }
 
+/// Ends editing when a tap lands anywhere outside the text field being edited.
+///
+/// The recognizer goes on the window rather than on a SwiftUI overlay because an overlay large
+/// enough to catch every stray tap is also large enough to eat the grid's scroll drags and the taps
+/// meant for the cards underneath it. `cancelsTouchesInView = false` keeps this purely additive:
+/// whatever the user actually hit still receives the tap, and the keyboard goes away alongside.
+private struct KeyboardDismissingTapCatcher: UIViewRepresentable {
+    var isEnabled: Bool
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        context.coordinator.anchorView = view
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.anchorView = uiView
+        context.coordinator.setEnabled(isEnabled)
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.setEnabled(false)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        weak var anchorView: UIView?
+        private var recognizer: UITapGestureRecognizer?
+        private weak var attachedWindow: UIWindow?
+
+        func setEnabled(_ isEnabled: Bool) {
+            guard isEnabled, let window = anchorView?.window else {
+                detach()
+                return
+            }
+
+            guard attachedWindow !== window else {
+                return
+            }
+
+            detach()
+
+            let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            recognizer.delegate = self
+            window.addGestureRecognizer(recognizer)
+
+            self.recognizer = recognizer
+            attachedWindow = window
+        }
+
+        private func detach() {
+            if let recognizer {
+                attachedWindow?.removeGestureRecognizer(recognizer)
+            }
+
+            recognizer = nil
+            attachedWindow = nil
+        }
+
+        @objc private func handleTap() {
+            attachedWindow?.endEditing(true)
+        }
+
+        /// A tap that lands on the field itself is the user aiming *at* it — moving the caret,
+        /// hitting the clear button — rather than away from it.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var view = touch.view
+            while let candidate = view {
+                if candidate is UITextField || candidate is UITextView {
+                    return false
+                }
+
+                view = candidate.superview
+            }
+
+            return true
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+}
+
 struct EntriesView: View {
     @EnvironmentObject private var authStore: SupabaseAuthStore
     @Binding var selectedPage: StoryPage
@@ -9056,6 +9151,7 @@ struct EntriesView: View {
 
     private var entriesScreenWithLifecycle: some View {
         entriesScreen
+            .background(KeyboardDismissingTapCatcher(isEnabled: isEntrySearchFieldFocused))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
             .environment(\.editMode, $editMode)
@@ -9177,6 +9273,7 @@ struct EntriesView: View {
                 .frame(width: geometry.size.width, alignment: .leading)
             }
             .background(Color.clear)
+            .scrollDismissesKeyboard(.immediately)
             .safeAreaInset(edge: .top, spacing: 0) {
                 entriesPinnedHeader
             }
@@ -9206,6 +9303,7 @@ struct EntriesView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(Color.clear)
+            .scrollDismissesKeyboard(.immediately)
             .safeAreaInset(edge: .bottom) {
                 Color.clear.frame(height: 104 + signInCalloutContentInset)
             }
