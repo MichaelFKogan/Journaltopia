@@ -1354,16 +1354,18 @@ fileprivate enum CreateScenicSheetMetrics {
     static let material: Material = .ultraThinMaterial
     /// The white wash that lifts text off the artwork. This is the main transparency dial:
     /// 0 = fully clear, 1 = opaque white. Around 0.30 starts looking milky.
-    static let tintOpacity: Double = 0.40
+    static let tintOpacity: Double = 0.20
+    /// Dark scenic art already has enough contrast, so the wash stays almost clear.
+    static let darkArtworkTintOpacity: Double = 0.05
     static let cornerRadius: CGFloat = 26
     /// Left/right inset between the screen edges and the sheet.
     static let horizontalMargin: CGFloat = 14
     /// Gap between the navigation bar and the top of the sheet.
     static let topMargin: CGFloat = 8
-    /// Fixed strip reserved below the sheet for the bottom controls. The sheet's bottom edge sits
-    /// exactly this far above the safe area and never moves, so panels taller than the strip draw
-    /// over the sheet rather than pushing it. Raise it to sit the sheet higher.
-    static let bottomReserve: CGFloat = 216
+    /// Fixed strip reserved below the sheet for the bottom menu. The sheet's bottom edge sits
+    /// just above the menu and never moves, so taller panels draw over the sheet rather than
+    /// pushing it. Raise it to sit the sheet higher.
+    static let bottomReserve: CGFloat = 190
     static let borderOpacity: Double = 0.30
     static let shadowOpacity: Double = 0.16
     static let shadowRadius: CGFloat = 18
@@ -1382,6 +1384,24 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case kawaiiGridPaper
     case pressedFlowers
     case pastelSkyline
+    case nightCity
+    case cyberFuture
+    case softClouds
+    case moonCat
+    case deepSea
+    case rooftopCat1
+    case moon
+    case peachWildflowers
+    case nightSky
+    case doodleGrid
+    case retroComputer
+    case lofiStreet
+    case inkSketchbook
+    case purpleClouds
+    case twilightCity
+    case cherryBlossom
+    case oceanWave
+    case studyNotes
     case japaneseInkWave
 
     static let defaultChoice: CreatePaperStyleChoice = .collegeRuled
@@ -1406,6 +1426,42 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Pressed Flowers"
         case .pastelSkyline:
             "Pastel Skyline"
+        case .nightCity:
+            "Night City"
+        case .cyberFuture:
+            "Cyber Future"
+        case .softClouds:
+            "Soft Clouds"
+        case .moonCat:
+            "Moon Cat"
+        case .deepSea:
+            "Deep Sea"
+        case .rooftopCat1:
+            "Rooftop Cat 1"
+        case .moon:
+            "Moon"
+        case .peachWildflowers:
+            "Peach Wildflowers"
+        case .nightSky:
+            "Night Sky"
+        case .doodleGrid:
+            "Doodle Grid"
+        case .retroComputer:
+            "Retro Computer"
+        case .lofiStreet:
+            "LoFi Street"
+        case .inkSketchbook:
+            "Ink Sketchbook"
+        case .purpleClouds:
+            "Purple Clouds"
+        case .twilightCity:
+            "Twilight City"
+        case .cherryBlossom:
+            "Cherry Blossom"
+        case .oceanWave:
+            "Ocean Wave"
+        case .studyNotes:
+            "Study Notes"
         case .japaneseInkWave:
             "Japanese Ink Wave"
         }
@@ -1444,7 +1500,37 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     /// full-screen backdrop and float a translucent writing sheet on top of it, instead of
     /// tiling the art inside the editor's own scroll view.
     var usesFloatingWritingSheet: Bool {
-        self == .pastelSkyline
+        switch self {
+        case .pastelSkyline,
+                .nightCity,
+                .cyberFuture,
+                .softClouds,
+                .moonCat,
+                .deepSea,
+                .rooftopCat1,
+                .moon,
+                .peachWildflowers,
+                .nightSky,
+                .doodleGrid,
+                .retroComputer,
+                .lofiStreet,
+                .inkSketchbook,
+                .purpleClouds,
+                .twilightCity,
+                .cherryBlossom,
+                .oceanWave,
+                .studyNotes:
+            true
+        case .collegeRuled,
+                .blank,
+                .watercolorPaper,
+                .cottonPaper,
+                .recycledPaper,
+                .kawaiiGridPaper,
+                .pressedFlowers,
+                .japaneseInkWave:
+            false
+        }
     }
 
     var showsPaperDecorations: Bool {
@@ -1459,7 +1545,30 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             .pressedFlowers
         case .japaneseInkWave:
             .japaneseInkWave
-        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .pastelSkyline:
+        case .collegeRuled,
+                .blank,
+                .watercolorPaper,
+                .cottonPaper,
+                .recycledPaper,
+                .pastelSkyline,
+                .nightCity,
+                .cyberFuture,
+                .softClouds,
+                .moonCat,
+                .deepSea,
+                .rooftopCat1,
+                .moon,
+                .peachWildflowers,
+                .nightSky,
+                .doodleGrid,
+                .retroComputer,
+                .lofiStreet,
+                .inkSketchbook,
+                .purpleClouds,
+                .twilightCity,
+                .cherryBlossom,
+                .oceanWave,
+                .studyNotes:
             nil
         }
     }
@@ -1478,6 +1587,42 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Pressed Flowers/paper"
         case .pastelSkyline:
             "pastel skyline"
+        case .nightCity:
+            "night_city"
+        case .cyberFuture:
+            "cyber_future"
+        case .softClouds:
+            "soft_clouds"
+        case .moonCat:
+            "moon_cat"
+        case .deepSea:
+            "deep_sea"
+        case .rooftopCat1:
+            "rooftop_cat 1"
+        case .moon:
+            "moon"
+        case .peachWildflowers:
+            "peach_wildflowers"
+        case .nightSky:
+            "night_sky"
+        case .doodleGrid:
+            "doodle_grid"
+        case .retroComputer:
+            "retro_computer"
+        case .lofiStreet:
+            "lofi_street"
+        case .inkSketchbook:
+            "ink_sketchbook"
+        case .purpleClouds:
+            "purple_clouds"
+        case .twilightCity:
+            "twilight_city"
+        case .cherryBlossom:
+            "cherry_blossom"
+        case .oceanWave:
+            "ocean_wave"
+        case .studyNotes:
+            "study_notes"
         case .japaneseInkWave:
             "Japanese Ink Wave/paper"
         case .collegeRuled, .blank:
@@ -1485,11 +1630,53 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Bundled looping backdrop, shown instead of the still on the editor page. The still stays in
+    /// `backgroundImageName` for the picker, thumbnails, and the first frame while the player loads.
+    var backgroundVideoName: String? {
+        switch self {
+        case .rooftopCat1:
+            "rooftap_cat_1"
+        case .deepSea:
+            "deep_sea"
+        default:
+            nil
+        }
+    }
+
+    var backgroundVideoExtension: String {
+        "MOV"
+    }
+
     var leadingContentPadding: CGFloat {
         switch self {
         case .collegeRuled:
             NotebookMetrics.marginLeading
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .pastelSkyline, .japaneseInkWave:
+        case .blank,
+                .watercolorPaper,
+                .cottonPaper,
+                .recycledPaper,
+                .kawaiiGridPaper,
+                .pressedFlowers,
+                .pastelSkyline,
+                .nightCity,
+                .cyberFuture,
+                .softClouds,
+                .moonCat,
+                .deepSea,
+                .rooftopCat1,
+                .moon,
+                .peachWildflowers,
+                .nightSky,
+                .doodleGrid,
+                .retroComputer,
+                .lofiStreet,
+                .inkSketchbook,
+                .purpleClouds,
+                .twilightCity,
+                .cherryBlossom,
+                .oceanWave,
+                .studyNotes,
+                .japaneseInkWave:
             18
         }
     }
@@ -1498,7 +1685,32 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         switch self {
         case .collegeRuled:
             NotebookMetrics.textLeadingInset
-        case .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .pastelSkyline, .japaneseInkWave:
+        case .blank,
+                .watercolorPaper,
+                .cottonPaper,
+                .recycledPaper,
+                .kawaiiGridPaper,
+                .pressedFlowers,
+                .pastelSkyline,
+                .nightCity,
+                .cyberFuture,
+                .softClouds,
+                .moonCat,
+                .deepSea,
+                .rooftopCat1,
+                .moon,
+                .peachWildflowers,
+                .nightSky,
+                .doodleGrid,
+                .retroComputer,
+                .lofiStreet,
+                .inkSketchbook,
+                .purpleClouds,
+                .twilightCity,
+                .cherryBlossom,
+                .oceanWave,
+                .studyNotes,
+                .japaneseInkWave:
             0
         }
     }
@@ -1509,19 +1721,78 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
 
     var editorPlaceholderColor: Color {
         switch self {
-        case .pastelSkyline:
+        case .pastelSkyline,
+                .nightCity,
+                .cyberFuture,
+                .softClouds,
+                .moonCat,
+                .deepSea,
+                .rooftopCat1,
+                .moon,
+                .peachWildflowers,
+                .nightSky,
+                .doodleGrid,
+                .retroComputer,
+                .lofiStreet,
+                .inkSketchbook,
+                .purpleClouds,
+                .twilightCity,
+                .cherryBlossom,
+                .oceanWave,
+                .studyNotes:
             .white.opacity(0.78)
-        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .japaneseInkWave:
+        case .collegeRuled,
+                .blank,
+                .watercolorPaper,
+                .cottonPaper,
+                .recycledPaper,
+                .kawaiiGridPaper,
+                .pressedFlowers,
+                .japaneseInkWave:
             Color.storyGray.opacity(0.46)
+        }
+    }
+
+    var scenicSheetTintOpacity: Double {
+        switch self {
+        case .nightCity, .cyberFuture, .deepSea, .nightSky:
+            CreateScenicSheetMetrics.darkArtworkTintOpacity
+        default:
+            CreateScenicSheetMetrics.tintOpacity
         }
     }
 
     /// Image papers whose page is dark enough that toolbar chrome should use light text.
     var usesLightEditorChrome: Bool {
         switch self {
-        case .pastelSkyline:
+        case .pastelSkyline,
+                .nightCity,
+                .cyberFuture,
+                .softClouds,
+                .moonCat,
+                .deepSea,
+                .rooftopCat1,
+                .moon,
+                .peachWildflowers,
+                .nightSky,
+                .doodleGrid,
+                .retroComputer,
+                .lofiStreet,
+                .inkSketchbook,
+                .purpleClouds,
+                .twilightCity,
+                .cherryBlossom,
+                .oceanWave,
+                .studyNotes:
             true
-        case .collegeRuled, .blank, .watercolorPaper, .cottonPaper, .recycledPaper, .kawaiiGridPaper, .pressedFlowers, .japaneseInkWave:
+        case .collegeRuled,
+                .blank,
+                .watercolorPaper,
+                .cottonPaper,
+                .recycledPaper,
+                .kawaiiGridPaper,
+                .pressedFlowers,
+                .japaneseInkWave:
             false
         }
     }
@@ -2153,6 +2424,8 @@ struct CreateEntryView: View {
     @State private var isCompanionVisible = false
     @State private var isCompanionChatVisible = false
     @State private var isCompanionMutedByWriter = false
+    @State private var isPaperStyleVideoMutedByWriter = false
+    @State private var isPaperStyleVideoPausedByWriter = false
     @State private var companionDraftMessage = ""
     @State private var isCompanionReplyPending = false
     @State private var companionChatErrorMessage: String?
@@ -2829,6 +3102,21 @@ struct CreateEntryView: View {
             loadSavedDraftIfNeeded()
             currentEntryStatus = resolvedCurrentEntryStatus()
             refreshSampleAuthorJournalsIfNeeded()
+            preparePaperStyleVideoAudioSessionIfNeeded()
+        }
+        .onChange(of: selectedPaperStyleChoice) { _ in
+            isPaperStyleVideoPausedByWriter = false
+            preparePaperStyleVideoAudioSessionIfNeeded()
+        }
+        .onChange(of: isPaperStyleVideoMuted) { isMuted in
+            if !isMuted {
+                preparePaperStyleVideoAudioSessionIfNeeded()
+            }
+        }
+        .onChange(of: isPaperStyleVideoPausedByWriter) { isPaused in
+            if !isPaused {
+                preparePaperStyleVideoAudioSessionIfNeeded()
+            }
         }
         .onChange(of: activeDraftID) { newDraftID in
             handleActiveDraftChange(newDraftID)
@@ -3485,29 +3773,31 @@ struct CreateEntryView: View {
         }
     }
 
-    private var entryOptionsPage: some View {
-        ScrollView(showsIndicators: false) {
-            entryOptionsStepContent
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 28)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(pageTapBackground)
-        .background(Color.homePageBackground)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            createToolbarItems(title: "Entry Details", showsCloseButton: false)
-        }
-        .toolbarBackground(Color.homePageBackground, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .enableInteractivePopGesture()
-        .task {
-            // This screen quotes the balance and spends against it, so it reads its own copy
-            // instead of trusting whatever Home or Settings last cached.
-            await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
-        }
+    private var entryOptionsPage: AnyView {
+        AnyView(
+            ScrollView(showsIndicators: false) {
+                entryOptionsStepContent
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 28)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(pageTapBackground)
+            .background(Color.homePageBackground)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                createToolbarItems(title: "Entry Details", showsCloseButton: false)
+            }
+            .toolbarBackground(Color.homePageBackground, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .enableInteractivePopGesture()
+            .task {
+                // This screen quotes the balance and spends against it, so it reads its own copy
+                // instead of trusting whatever Home or Settings last cached.
+                await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
+            }
+        )
     }
 
     private var fullScreenEditorContent: some View {
@@ -3606,25 +3896,63 @@ struct CreateEntryView: View {
 
     @ViewBuilder
     private var pageBackground: some View {
-        if let paperImageName = selectedPaperStyleChoice.backgroundImageName,
-           usesPaperImageBackground {
+        if usesPaperImageBackground {
             GeometryReader { proxy in
                 let size = CGSize(
                     width: max(proxy.size.width, UIScreen.main.bounds.width),
                     height: max(proxy.size.height, UIScreen.main.bounds.height)
                 )
 
-                Image(paperImageName)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: size.width, height: size.height)
-                    .clipped()
+                ZStack {
+                    if let paperImageName = selectedPaperStyleChoice.backgroundImageName {
+                        Image(paperImageName)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: size.width, height: size.height)
+                            .clipped()
+                    }
+
+                    if let backgroundVideoName = selectedPaperStyleChoice.backgroundVideoName,
+                       !isPaperStyleVideoPausedByWriter {
+                        HomeLoopingVideoBackground(
+                            resourceName: backgroundVideoName,
+                            resourceExtension: selectedPaperStyleChoice.backgroundVideoExtension,
+                            isMuted: isPaperStyleVideoMuted,
+                            isPlaying: isPaperStyleVideoPlaying
+                        )
+                        .id(backgroundVideoName)
+                        .frame(width: size.width, height: size.height)
+                        .clipped()
+                        .onAppear {
+                            if !isPaperStyleVideoMuted {
+                                preparePaperStyleVideoAudioSession()
+                            }
+                        }
+                    }
+                }
             }
             .ignoresSafeArea()
         } else {
             Color.homePageBackground
                 .ignoresSafeArea()
         }
+    }
+
+    /// Companion video and dictation both own the speaker; the paper loop yields rather than layering.
+    private var isPaperStyleVideoMuted: Bool {
+        isPaperStyleVideoMutedByWriter
+            || speechTranscriber.state.isListening
+            || (isCompanionVisible && !isCompanionMuted)
+    }
+
+    private var hasPaperStyleVideoSound: Bool {
+        selectedPaperStyleChoice.backgroundVideoName != nil
+    }
+
+    private var isPaperStyleVideoPlaying: Bool {
+        scenePhase == .active
+            && !isShowingEntryOptionsPage
+            && !isPaperStyleVideoPausedByWriter
     }
 
     @ToolbarContentBuilder
@@ -3714,13 +4042,35 @@ struct CreateEntryView: View {
     /// somewhere to put the next entry-level action.
     private var toolbarEntryOverflowMenu: some View {
         Menu {
-            Button(role: .destructive) {
-                dismissKeyboard()
-                isConfirmingEntryDeletion = true
-            } label: {
-                Label(isDeletingEntry ? "Deleting Entry" : "Delete Entry", systemImage: "trash")
+            if hasPaperStyleVideoSound {
+                Button {
+                    isPaperStyleVideoPausedByWriter.toggle()
+                } label: {
+                    Label(
+                        isPaperStyleVideoPausedByWriter ? "Play Video" : "Pause Video",
+                        systemImage: isPaperStyleVideoPausedByWriter ? "play.fill" : "pause.fill"
+                    )
+                }
+
+                Button {
+                    isPaperStyleVideoMutedByWriter.toggle()
+                } label: {
+                    Label(
+                        isPaperStyleVideoMutedByWriter ? "Unmute Sound" : "Mute Sound",
+                        systemImage: isPaperStyleVideoMutedByWriter ? "speaker.wave.2" : "speaker.slash"
+                    )
+                }
             }
-            .disabled(isDeletingEntry || isBlockingSaveInProgress)
+
+            if canDeleteCurrentEntry {
+                Button(role: .destructive) {
+                    dismissKeyboard()
+                    isConfirmingEntryDeletion = true
+                } label: {
+                    Label(isDeletingEntry ? "Deleting Entry" : "Delete Entry", systemImage: "trash")
+                }
+                .disabled(isDeletingEntry || isBlockingSaveInProgress)
+            }
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .bold))
@@ -3738,7 +4088,7 @@ struct CreateEntryView: View {
     }
 
     private func showsToolbarOverflowMenu(_ showsOverflowMenu: Bool) -> Bool {
-        showsOverflowMenu && canDeleteCurrentEntry
+        showsOverflowMenu && (canDeleteCurrentEntry || hasPaperStyleVideoSound)
     }
 
     private var toolbarOverflowMenuWidth: CGFloat { 44 }
@@ -4973,7 +5323,7 @@ struct CreateEntryView: View {
     }
 
     private func scenicWritingSheet(bottomContentInset: CGFloat) -> some View {
-        CreateScenicWritingSheet {
+        CreateScenicWritingSheet(tintOpacity: selectedPaperStyleChoice.scenicSheetTintOpacity) {
             draftEditorContent(scrollsInternally: true, pageHeight: nil)
                 .padding(.bottom, bottomContentInset)
         }
@@ -5560,6 +5910,27 @@ struct CreateEntryView: View {
     /// `.ambient` keeps the companion under the ring/silent switch and mixing with whatever the
     /// writer already has playing, matching how the intro video sets itself up.
     private func prepareCompanionAudioSession() {
+        prepareAmbientPlaybackAudioSession()
+    }
+
+    private func preparePaperStyleVideoAudioSessionIfNeeded() {
+        guard selectedPaperStyleChoice.backgroundVideoName != nil,
+              !isPaperStyleVideoMuted,
+              !isPaperStyleVideoPausedByWriter else {
+            return
+        }
+
+        preparePaperStyleVideoAudioSession()
+    }
+
+    /// `.playback` keeps the paper soundtrack audible even when the Ring/Silent switch is on.
+    private func preparePaperStyleVideoAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        try? audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    private func prepareAmbientPlaybackAudioSession() {
         let audioSession = AVAudioSession.sharedInstance()
         try? audioSession.setCategory(.ambient, mode: .moviePlayback, options: [.mixWithOthers])
         try? audioSession.setActive(true, options: .notifyOthersOnDeactivation)
@@ -7949,28 +8320,32 @@ struct CreateEntryView: View {
             .contentShape(Circle())
     }
 
-    private var entryOptionsStepContent: some View {
-        return VStack(alignment: .leading, spacing: 14) {
-            if let completedEntryOpenedStoryboardImage {
-                currentStoryboardVersionPrompt
-                currentStoryboardsCard(fallbackImage: completedEntryOpenedStoryboardImage)
-            } else {
-                entryDetailsInfoBanner
-            }
+    // Type-erased for the same reason as `entryDraftStepContent`: this file's SwiftUI tree is
+    // deep enough that Entry Details can overflow the stack while SwiftUI walks destination views.
+    private var entryOptionsStepContent: AnyView {
+        AnyView(
+            VStack(alignment: .leading, spacing: 14) {
+                if let completedEntryOpenedStoryboardImage {
+                    currentStoryboardVersionPrompt
+                    currentStoryboardsCard(fallbackImage: completedEntryOpenedStoryboardImage)
+                } else {
+                    entryDetailsInfoBanner
+                }
 
-            artStylePickerSection
-            // journalDestinationCard — Journal destination picker (kept for later reuse)
-            // storyDetailsCard — Date and location (kept for later reuse)
-            imageGenerationQualityCard
-            generationCreditsStatusCard
-            // entryPrivacyCard — Save Entry / Private Entry toggles (kept for later reuse)
-            generateStoryboardButton
+                artStylePickerSection
+                // journalDestinationCard — Journal destination picker (kept for later reuse)
+                // storyDetailsCard — Date and location (kept for later reuse)
+                imageGenerationQualityCard
+                generationCreditsStatusCard
+                // entryPrivacyCard — Save Entry / Private Entry toggles (kept for later reuse)
+                generateStoryboardButton
 
-            if canDeleteCurrentEntry {
-                deleteEntryCard
+                if canDeleteCurrentEntry {
+                    deleteEntryCard
+                }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        )
     }
 
     /// Deleting the whole entry only makes sense once it exists on disk, and sample studio
@@ -13939,7 +14314,12 @@ private struct CreateFormattingSheet: View {
                 ForEach(CreatePaperStyleChoice.allCases) { paperStyle in
                     let isLocked = paperStyle.requiresPremiumPaperAccess && !canUsePremiumPaperImages
 
-                    Button {
+                    CreatePaperStyleOption(
+                        style: paperStyle,
+                        paperColor: CreateFormattingPalette.paperColors[selectedPaperColorIndex],
+                        isSelected: selectedPaperStyle == paperStyle,
+                        isLocked: isLocked
+                    ) {
                         if isLocked {
                             onLockedPaperStyleSelected()
                         } else {
@@ -13947,16 +14327,7 @@ private struct CreateFormattingSheet: View {
                                 selectedPaperStyle = paperStyle
                             }
                         }
-                    } label: {
-                        CreatePaperStyleOption(
-                            style: paperStyle,
-                            paperColor: CreateFormattingPalette.paperColors[selectedPaperColorIndex],
-                            isSelected: selectedPaperStyle == paperStyle,
-                            isLocked: isLocked
-                        )
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(isLocked ? "\(paperStyle.title), Journaltopia Plus required" : paperStyle.title)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -14077,46 +14448,55 @@ private struct CreatePaperStyleOption: View {
     let paperColor: Color
     let isSelected: Bool
     let isLocked: Bool
+    let onSelect: () -> Void
 
     var body: some View {
         VStack(spacing: 8) {
-            CreatePaperPreview(style: style, paperColor: paperColor)
-                .aspectRatio(1, contentMode: .fit)
-                .frame(maxWidth: .infinity)
-                .saturation(isLocked ? 0.72 : 1)
-                .opacity(isLocked ? 0.62 : 1)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(isSelected ? Color.storyPurple : Color.storyBorder.opacity(0.45), lineWidth: isSelected ? 2 : 1)
-                )
-                .overlay(alignment: .bottomTrailing) {
-                    if isSelected {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 24, height: 24)
-                            .background(Color.storyPurple, in: Circle())
-                            .offset(x: 5, y: 5)
-                    }
-                }
-                .overlay {
-                    if isLocked {
-                        ZStack {
-                            Color.white.opacity(0.36)
-
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(Color.storyInk.opacity(0.72))
-                                .frame(width: 30, height: 30)
-                                .background(Color.white.opacity(0.88), in: Circle())
-                                .overlay(
-                                    Circle()
-                                        .stroke(Color.storyBorder.opacity(0.54), lineWidth: 1)
-                                )
+            Button(action: onSelect) {
+                CreatePaperPreview(style: style, paperColor: paperColor)
+                    .aspectRatio(1, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+                    .saturation(isLocked ? 0.72 : 1)
+                    .opacity(isLocked ? 0.62 : 1)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(isSelected ? Color.storyPurple : Color.storyBorder.opacity(0.45), lineWidth: isSelected ? 2 : 1)
+                    )
+                    .overlay(alignment: .bottomTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 24, height: 24)
+                                .background(Color.storyPurple, in: Circle())
+                                .offset(x: 5, y: 5)
+                                .allowsHitTesting(false)
                         }
                     }
-                }
+                    .overlay {
+                        if isLocked {
+                            ZStack {
+                                Color.white.opacity(0.36)
+
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(Color.storyInk.opacity(0.72))
+                                    .frame(width: 30, height: 30)
+                                    .background(Color.white.opacity(0.88), in: Circle())
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.storyBorder.opacity(0.54), lineWidth: 1)
+                                    )
+                            }
+                            .allowsHitTesting(false)
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isLocked ? "\(style.title), Journaltopia Plus required" : style.title)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
 
             Text(style.title)
                 .font(.system(size: 12, weight: .semibold))
@@ -14145,7 +14525,28 @@ private struct CreatePaperPreview: View {
                     marginLine(in: proxy.size)
                 case .blank:
                     EmptyView()
-                case .watercolorPaper, .cottonPaper, .recycledPaper, .pastelSkyline:
+                case .watercolorPaper,
+                        .cottonPaper,
+                        .recycledPaper,
+                        .pastelSkyline,
+                        .nightCity,
+                        .cyberFuture,
+                        .softClouds,
+                        .moonCat,
+                        .deepSea,
+                        .rooftopCat1,
+                        .moon,
+                        .peachWildflowers,
+                        .nightSky,
+                        .doodleGrid,
+                        .retroComputer,
+                        .lofiStreet,
+                        .inkSketchbook,
+                        .purpleClouds,
+                        .twilightCity,
+                        .cherryBlossom,
+                        .oceanWave,
+                        .studyNotes:
                     if let backgroundImageName = style.backgroundImageName {
                         Image(backgroundImageName)
                             .resizable()
@@ -15898,6 +16299,7 @@ func artStyleAssetName(for title: String) -> String {
 /// so the sheet contributes one node to `CreateEntryView`'s already very deep generic body type
 /// rather than a dozen nested modifier generics.
 fileprivate struct CreateScenicWritingSheet<Content: View>: View {
+    var tintOpacity: Double
     @ViewBuilder var content: Content
 
     private var shape: RoundedRectangle {
@@ -15928,7 +16330,7 @@ fileprivate struct CreateScenicWritingSheet<Content: View>: View {
                 shape.fill(CreateScenicSheetMetrics.material)
             }
 
-            shape.fill(Color.white.opacity(CreateScenicSheetMetrics.tintOpacity))
+            shape.fill(Color.white.opacity(tintOpacity))
         }
     }
 }

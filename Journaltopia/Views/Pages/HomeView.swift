@@ -878,9 +878,14 @@ final class HomeLoopingVideoPlayerView: UIView {
     /// Device file systems are case-sensitive; the simulator's is not. Try the given
     /// extension, then its lower- and upper-cased forms, so `MOV` still resolves as `mov`.
     private static func resourceURL(named name: String, extension ext: String) -> URL? {
-        Bundle.main.url(forResource: name, withExtension: ext)
-            ?? Bundle.main.url(forResource: name, withExtension: ext.lowercased())
-            ?? Bundle.main.url(forResource: name, withExtension: ext.uppercased())
+        var seen = Set<String>()
+        for candidate in [ext, ext.lowercased(), ext.uppercased(), "mp4", "MP4", "mov", "MOV"] {
+            guard seen.insert(candidate).inserted else { continue }
+            if let url = Bundle.main.url(forResource: name, withExtension: candidate) {
+                return url
+            }
+        }
+        return nil
     }
 }
 
