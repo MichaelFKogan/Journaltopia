@@ -139,6 +139,43 @@ final class EntitlementGatingTests: XCTestCase {
         XCTAssertEqual(StoryboardGenerationRefusal(error: StoryboardGenerationError.noGeneratedImage), .other)
     }
 
+    func testAServerRefusalIsNeverResumedByAnEntitlementRefreshAlone() {
+        // The refusal loop, in one test. The server refused a generation with
+        // `subscription_required`; an entitlement read then came back saying subscribed. The two
+        // disagree, and resuming the generation on the strength of the read means asking the same
+        // refusal again — which refuses again, which refreshes again, once a second, forever.
+        //
+        // The paywall still comes down, because showing "Start Journaltopia+" to an account the
+        // server calls subscribed is wrong. What must not happen is the retry.
+        let gate = gate(.subscribed(productID: nil, currentPeriodEnd: nil))
+        var resumed = 0
+
+        gate.presentSubscriptionRequired(for: .generateStoryboard, retry: { resumed += 1 })
+        XCTAssertNotNil(gate.pendingRequest)
+
+        gate.update(state: .notSubscribed)
+        gate.update(state: .subscribed(productID: nil, currentPeriodEnd: nil))
+        gate.resumeIfEntitlementArrived()
+
+        XCTAssertNil(gate.pendingRequest, "the paywall must not stay up once the server says subscribed")
+        XCTAssertEqual(resumed, 0, "a server refusal must never be retried by an entitlement refresh")
+    }
+
+    func testAServerRefusalStillResumesAfterAnActualPurchase() {
+        // The other half of the rule above. A purchase is new information rather than a
+        // contradiction, so the blocked generation does resume — otherwise someone who subscribes
+        // from the paywall watches nothing happen.
+        let gate = gate(.notSubscribed)
+        var resumed = 0
+
+        gate.presentSubscriptionRequired(for: .generateStoryboard, retry: { resumed += 1 })
+
+        gate.update(state: .subscribed(productID: nil, currentPeriodEnd: nil))
+        gate.completePendingRequest()
+
+        XCTAssertEqual(resumed, 1)
+    }
+
     // MARK: - H. Resuming only after the server agrees
 
     func testPurchaseDoesNotResumeTheActionUntilTheServerConfirms() {

@@ -21,11 +21,6 @@ import StoreKit
 /// complete a purchase while the paywall is gone, while the app is backgrounded, or between launches.
 @MainActor
 final class SubscriptionStore: ObservableObject {
-    enum DebugPlanOverride: String {
-        case free
-        case plus
-    }
-
     enum PurchasePhase: Equatable {
         case idle
         case purchasing
@@ -37,13 +32,13 @@ final class SubscriptionStore: ObservableObject {
 
     /// The server's answer about this account. See ``JournaltopiaPlusState``.
     @Published private(set) var state: JournaltopiaPlusState = .unresolved
-    @Published private(set) var debugPlanOverride: DebugPlanOverride? = {
-        guard let rawValue = UserDefaults.standard.string(forKey: SubscriptionStore.debugPlanOverrideKey) else {
-            return nil
-        }
-
-        return DebugPlanOverride(rawValue: rawValue)
-    }()
+    /// Whether a Journaltopia+ test-plan change is in flight. Only ever true in the Settings > Extra
+    /// developer screen, and published so the toggle can show that the *server* is being changed
+    /// rather than appearing to flip instantly the way the old local override did.
+    @Published private(set) var isChangingTestPlan = false
+    /// The last test-plan failure, kept apart from ``errorMessage`` so a developer-only problem never
+    /// surfaces on the paywall.
+    @Published var testPlanErrorMessage: String?
     @Published private(set) var product: Product?
     /// Consumable credit packs, loaded for display only. See ``creditPackPurchasing`` — there is no
     /// verified server path to redeem one yet, so nothing here can be bought.
@@ -66,18 +61,20 @@ final class SubscriptionStore: ObservableObject {
     private let syncService: AppleSubscriptionSyncService
     private let redemptionService: CreditPackRedemptionService
     private let entitlementService: JournaltopiaPlusEntitlementService
-    private static let debugPlanOverrideKey = "JournaltopiaDebugPlanOverride"
+    private let testPlanService: JournaltopiaPlusTestPlanService
     private var listenerTask: Task<Void, Never>?
     private weak var creditStore: GenerationCreditStore?
 
     init(
         syncService: AppleSubscriptionSyncService = AppleSubscriptionSyncService(),
         redemptionService: CreditPackRedemptionService = CreditPackRedemptionService(),
-        entitlementService: JournaltopiaPlusEntitlementService = JournaltopiaPlusEntitlementService()
+        entitlementService: JournaltopiaPlusEntitlementService = JournaltopiaPlusEntitlementService(),
+        testPlanService: JournaltopiaPlusTestPlanService = JournaltopiaPlusTestPlanService()
     ) {
         self.syncService = syncService
         self.redemptionService = redemptionService
         self.entitlementService = entitlementService
+        self.testPlanService = testPlanService
     }
 
     deinit {
@@ -130,10 +127,6 @@ final class SubscriptionStore: ObservableObject {
     func refresh(isSignedIn: Bool) async {
         await loadProduct()
 
-        if applyDebugPlanOverride() {
-            return
-        }
-
         guard isSignedIn else {
             resetLocalState()
             return
@@ -157,10 +150,6 @@ final class SubscriptionStore: ObservableObject {
     ///
     /// Must be called before any `await`, or the window it closes simply moves.
     func prepareForAccountChange() {
-        if applyDebugPlanOverride() {
-            return
-        }
-
         state = .unresolved
         purchasePhase = .idle
         errorMessage = nil
@@ -178,12 +167,37 @@ final class SubscriptionStore: ObservableObject {
         errorMessage = nil
     }
 
-    /// Testing-only entitlement override, driven from Settings > Extra. It changes local gating and
-    /// presentation state only; it never buys, restores, syncs, or edits the server entitlement.
-    func setDebugPlusPlanActive(_ isActive: Bool) {
-        debugPlanOverride = isActive ? .plus : .free
-        UserDefaults.standard.set(debugPlanOverride?.rawValue, forKey: Self.debugPlanOverrideKey)
-        applyDebugPlanOverride()
+    /// Testing-only entitlement switch, driven from Settings > Extra.
+    ///
+    /// It changes the *server's* record, not this device's opinion of it. The previous version wrote
+    /// a flag to UserDefaults and set `state` directly, which produced an app that believed it was
+    /// entitled while every generation was refused with `subscription_required` — and, because the
+    /// refusal handler refreshes entitlement and the refresh re-applied the override, an endless
+    /// retry loop between the two.
+    ///
+    /// `state` is still only ever written by ``refreshServerEntitlement()``. That is the whole point:
+    /// there is now exactly one answer to "is this account subscribed", and it comes from the
+    /// database that `reserve_storyboard_generation` consults.
+    func setTestPlanActive(_ isActive: Bool) async {
+        guard !isChangingTestPlan else {
+            return
+        }
+
+        isChangingTestPlan = true
+        testPlanErrorMessage = nil
+        defer { isChangingTestPlan = false }
+
+        do {
+            try await testPlanService.setTestPlan(active: isActive)
+        } catch {
+            testPlanErrorMessage = error.localizedDescription
+            print("[Journaltopia] Test plan change failed: \(error.localizedDescription)")
+        }
+
+        // Read back even after a failure: a partially applied change is better discovered here than
+        // at the next generation attempt.
+        await refreshServerEntitlement()
+        await creditStore?.refresh(isSignedIn: true)
     }
 
     // MARK: - Purchasing
@@ -431,27 +445,8 @@ final class SubscriptionStore: ObservableObject {
         }
     }
 
-    /// Marks the local entitlement as no longer trustworthy.
-    ///
-    /// Called when the server refuses a generation with `subscription_required` while this client
-    /// still believes it is subscribed — a subscription that lapsed mid-session, or a device that
-    /// has not reconciled. Dropping to `.notSubscribed` rather than `.unresolved` on purpose: the
-    /// server has given a definite answer, and `.unresolved` would read as "still waiting" and let
-    /// the gate wave the next attempt through.
-    func markEntitlementStale() {
-        guard state.isSubscribed else {
-            return
-        }
-
-        state = .notSubscribed
-    }
-
     /// Reads the server's answer, which is the only one that governs generation.
     func refreshServerEntitlement() async {
-        if applyDebugPlanOverride() {
-            return
-        }
-
         do {
             state = try await entitlementService.fetchEntitlement()
         } catch {
@@ -460,23 +455,6 @@ final class SubscriptionStore: ObservableObject {
             // paying subscriber.
             print("[Journaltopia] Journaltopia+ entitlement refresh failed: \(error.localizedDescription)")
         }
-    }
-
-    @discardableResult
-    private func applyDebugPlanOverride() -> Bool {
-        guard let debugPlanOverride else {
-            return false
-        }
-
-        state = debugPlanOverride == .plus
-            ? .subscribed(
-                productID: JournaltopiaProducts.journaltopiaPlusMonthly,
-                currentPeriodEnd: Calendar.current.date(byAdding: .month, value: 1, to: Date())
-            )
-            : .notSubscribed
-        purchasePhase = .idle
-        errorMessage = nil
-        return true
     }
 
     // MARK: - Internals

@@ -71,6 +71,15 @@ struct EntitlementGateRequest: Identifiable {
     let action: JournaltopiaPlusRequiredAction
     let requirement: EntitlementRequirement
     let retry: (() -> Void)?
+    /// Whether an entitlement refresh alone may re-run ``retry``.
+    ///
+    /// True for a request this client raised, where "the server now says subscribed" is genuinely
+    /// the missing piece. **False for a request the server raised**, and that distinction is what
+    /// stops a refusal loop: when `generate-storyboard` answers `subscription_required` and the
+    /// entitlement endpoint then answers "subscribed", the two disagree, and resuming means asking
+    /// the same refusal again — once a second, forever. A purchase completing still resumes either
+    /// kind, because that is new information rather than a contradiction.
+    let isAutoResumable: Bool
 }
 
 /// The one place a Journaltopia+ action is turned away.
@@ -98,6 +107,9 @@ final class EntitlementGate: ObservableObject {
     /// The retry belonging to a request that is waiting for the server to confirm entitlement.
     /// Held separately from `pendingRequest` so the sheet can dismiss while the resume still happens.
     private var awaitingEntitlementRetry: (() -> Void)?
+    /// Whether the held retry may be run by an entitlement refresh on its own, carried over from the
+    /// request it came from. See ``EntitlementGateRequest/isAutoResumable``.
+    private var awaitingRetryIsAutoResumable = false
 
     func update(state: JournaltopiaPlusState) {
         guard self.state != state else {
@@ -114,12 +126,20 @@ final class EntitlementGate: ObservableObject {
         // A pending request for credits is left alone — becoming subscribed does not add credits to
         // an account that already had a subscription.
         if state.isSubscribed, pendingRequest?.requirement == .subscription {
-            awaitingEntitlementRetry = pendingRequest?.retry ?? awaitingEntitlementRetry
+            // The sheet comes down either way — showing "Start Journaltopia+" to an account the
+            // server has just called subscribed is wrong whatever raised it. Only the retry is
+            // conditional, and only because re-running a server refusal is how the loop started.
+            if let retry = pendingRequest?.retry {
+                awaitingEntitlementRetry = retry
+                awaitingRetryIsAutoResumable = pendingRequest?.isAutoResumable ?? false
+            }
+
             pendingRequest = nil
         }
 
         if !state.isSubscribed {
             awaitingEntitlementRetry = nil
+            awaitingRetryIsAutoResumable = false
         }
 
         // Signing out ends the request outright. A pending paywall carries a retry closure that
@@ -148,7 +168,8 @@ final class EntitlementGate: ObservableObject {
             pendingRequest = EntitlementGateRequest(
                 action: action,
                 requirement: .subscription,
-                retry: retry
+                retry: retry,
+                isAutoResumable: true
             )
             return false
         }
@@ -178,7 +199,8 @@ final class EntitlementGate: ObservableObject {
         pendingRequest = EntitlementGateRequest(
             action: action,
             requirement: .credits(needed: cost, balance: balance),
-            retry: retry
+            retry: retry,
+            isAutoResumable: true
         )
         return false
     }
@@ -195,7 +217,8 @@ final class EntitlementGate: ObservableObject {
         pendingRequest = EntitlementGateRequest(
             action: action,
             requirement: .subscription,
-            retry: retry
+            retry: retry,
+            isAutoResumable: false
         )
     }
 
@@ -210,13 +233,15 @@ final class EntitlementGate: ObservableObject {
         pendingRequest = EntitlementGateRequest(
             action: action,
             requirement: .credits(needed: needed, balance: balance),
-            retry: retry
+            retry: retry,
+            isAutoResumable: false
         )
     }
 
     func dismiss() {
         pendingRequest = nil
         awaitingEntitlementRetry = nil
+        awaitingRetryIsAutoResumable = false
     }
 
     /// Called when a purchase has completed *and* the server has confirmed entitlement.
@@ -230,14 +255,17 @@ final class EntitlementGate: ObservableObject {
         // retry. Both orderings happen — the state change and the sheet's callback race — so both
         // are read here rather than assuming one.
         let retry = pendingRequest?.retry ?? awaitingEntitlementRetry
+        let isAutoResumable = pendingRequest?.isAutoResumable ?? awaitingRetryIsAutoResumable
         pendingRequest = nil
 
         guard state.isSubscribed else {
             awaitingEntitlementRetry = retry
+            awaitingRetryIsAutoResumable = isAutoResumable
             return
         }
 
         awaitingEntitlementRetry = nil
+        awaitingRetryIsAutoResumable = false
         retry?()
     }
 
@@ -262,12 +290,16 @@ final class EntitlementGate: ObservableObject {
     }
 
     /// Runs a retry that was held back waiting for the server. Called after an entitlement refresh.
+    /// This is the path a server refusal must never take. A purchase completing is new information;
+    /// an entitlement read that merely disagrees with the refusal is not, and running the retry on
+    /// it is how the same refusal gets asked for again once a second.
     func resumeIfEntitlementArrived() {
-        guard state.isSubscribed, let retry = awaitingEntitlementRetry else {
+        guard state.isSubscribed, awaitingRetryIsAutoResumable, let retry = awaitingEntitlementRetry else {
             return
         }
 
         awaitingEntitlementRetry = nil
+        awaitingRetryIsAutoResumable = false
         retry()
     }
 }

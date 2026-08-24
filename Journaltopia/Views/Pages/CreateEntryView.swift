@@ -3544,42 +3544,67 @@ struct CreateEntryView: View {
                     storyboardGenerationPhase = .failed
                     isGeneratingStoryboard = false
                     isShowingStoryboardGenerationProgress = false
-
-                    // The server is authoritative, and it has just contradicted whatever this client
-                    // believed. Two of its refusals are not failures at all — they are the paywall
-                    // and the credit screen arriving a step later than the local gate would have
-                    // shown them, because the local view of entitlement or balance was stale.
-                    // Leaving either as a red "generation failed" banner strands the user with no
-                    // idea what to do next.
-                    switch StoryboardGenerationRefusal(error: error) {
-                    case .subscriptionRequired:
-                        generationErrorMessage = nil
-                        subscriptionStore.markEntitlementStale()
-                        entitlementGate.presentSubscriptionRequired(
-                            for: selectedImageGenerationQuality.entitlementAction,
-                            retry: { startStoryboardGeneration() }
-                        )
-                        Task { await subscriptionStore.refreshServerEntitlement() }
-
-                    case .insufficientCredits:
-                        generationErrorMessage = nil
-                        entitlementGate.presentInsufficientCredits(
-                            needed: selectedImageGenerationQuality.creditCost,
-                            balance: generationCreditStore.balance,
-                            for: selectedImageGenerationQuality.entitlementAction,
-                            retry: { startStoryboardGeneration() }
-                        )
-
-                    case .other:
-                        generationErrorMessage = error.localizedDescription
-                        setStoryboardGenerationGlobalStatus(
-                            kind: .failed,
-                            entryID: activeDraftID,
-                            message: error.localizedDescription
-                        )
-                    }
                 }
+
+                await handleStoryboardGenerationFailure(error)
             }
+        }
+    }
+
+    /// Turns a failed generation into the right thing on screen.
+    ///
+    /// The server is authoritative, and it has just contradicted whatever this client believed. Two
+    /// of its refusals are not failures at all — they are the paywall and the credit screen arriving
+    /// a step later than the local gate would have shown them, because the local view of entitlement
+    /// or balance was stale. Leaving either as a red "generation failed" banner strands the user with
+    /// no idea what to do next.
+    ///
+    /// `subscription_required` re-reads entitlement *before* deciding, rather than raising the
+    /// paywall and refreshing behind it. That ordering is the fix for a loop: raising first meant the
+    /// refresh landing on "subscribed" dismissed the paywall and resumed the generation, which was
+    /// refused again immediately, once a second for as long as the two answers disagreed. Asking
+    /// first means a disagreement is reported as what it is instead of being retried.
+    @MainActor
+    private func handleStoryboardGenerationFailure(_ error: Error) async {
+        switch StoryboardGenerationRefusal(error: error) {
+        case .subscriptionRequired:
+            generationErrorMessage = nil
+            await subscriptionStore.refreshServerEntitlement()
+
+            guard !subscriptionStore.state.isSubscribed else {
+                // The account reads as subscribed and the generation was still refused. Nothing the
+                // user can do in a paywall fixes that, so it is surfaced as the error it is.
+                let message = "Journaltopia couldn't confirm your plan for this page. Please try again in a moment."
+                generationErrorMessage = message
+                setStoryboardGenerationGlobalStatus(
+                    kind: .failed,
+                    entryID: activeDraftID,
+                    message: message
+                )
+                return
+            }
+
+            entitlementGate.presentSubscriptionRequired(
+                for: selectedImageGenerationQuality.entitlementAction,
+                retry: { startStoryboardGeneration() }
+            )
+
+        case .insufficientCredits:
+            generationErrorMessage = nil
+            entitlementGate.presentInsufficientCredits(
+                needed: selectedImageGenerationQuality.creditCost,
+                balance: generationCreditStore.balance,
+                for: selectedImageGenerationQuality.entitlementAction,
+                retry: { startStoryboardGeneration() }
+            )
+
+        case .other:
+            generationErrorMessage = error.localizedDescription
+            setStoryboardGenerationGlobalStatus(
+                kind: .failed,
+                entryID: activeDraftID,
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -8446,16 +8471,31 @@ struct CreateEntryView: View {
             && !generationCreditStore.canSpend(selectedImageGenerationQuality.creditCost)
     }
 
-    /// The button stays enabled for a free user and for a subscriber who is short on credits: in
-    /// both cases tapping it now leads somewhere useful — the paywall, or the credit screen — and a
-    /// disabled button with no explanation is the thing this phase set out to remove.
+    /// Whether the button is locked because this account has no Journaltopia+.
     ///
-    /// It *is* disabled while entitlement is unresolved, because the honest answer for that moment
-    /// is "checking", not "no".
+    /// Only once entitlement has actually been resolved. `.unresolved` is "checking", not "no", and
+    /// locking on it would put a padlock in front of a paying subscriber on every cold launch.
+    private var isStoryboardGenerationLocked: Bool {
+        guard !authoringMode.isSampleStudio, authStore.userID != nil else {
+            return false
+        }
+
+        return subscriptionStore.state.isResolved && !subscriptionStore.state.isSubscribed
+    }
+
+    /// Disabled while a generation is running, once it has completed, while entitlement is still
+    /// being checked, and — the case this reads as a padlock rather than a dead button — when the
+    /// account has no Journaltopia+.
+    ///
+    /// A subscriber who is merely short on credits keeps an enabled button, because tapping it leads
+    /// somewhere that fixes the problem. Someone with no plan at all does not: the server would
+    /// refuse the generation outright, so the button says so up front and the footnote below it is
+    /// the way through to the paywall.
     private var isStoryboardGenerationButtonDisabled: Bool {
         isGeneratingStoryboard
             || storyboardGenerationPhase == .completed
             || isAwaitingEntitlementResolution
+            || isStoryboardGenerationLocked
     }
 
     /// Signed in, real entry, and the server has not yet said whether this account has
@@ -8474,6 +8514,20 @@ struct CreateEntryView: View {
 
     private var canUsePremiumPaperImages: Bool {
         authoringMode.isSampleStudio || subscriptionStore.state.isSubscribed
+    }
+
+    /// Opens the paywall from the locked Generate button.
+    ///
+    /// Goes through the same gate the generation itself would, so a session that has quietly become
+    /// signed out gets the sign-in sheet rather than a paywall it cannot buy from.
+    private func openJournaltopiaPlusGate() {
+        guard signInGate.requireAccount(for: .generateStoryboard, retry: { openJournaltopiaPlusGate() }) else {
+            return
+        }
+
+        // No retry: the user asked to read about the plan, not to start a generation. Subscribing
+        // here unlocks the button and leaves the next tap to them.
+        entitlementGate.requireJournaltopiaPlus(for: selectedImageGenerationQuality.entitlementAction)
     }
 
     private func openPremiumPaperGate() {
@@ -11724,6 +11778,11 @@ struct CreateEntryView: View {
                             .tint(.white)
 
                         Text(storyboardGenerationButtonTitle)
+                    } else if isStoryboardGenerationLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 14, weight: .semibold))
+
+                        Text("Journaltopia+ Required")
                     } else {
                         Text(storyboardGenerationButtonTitle)
                         if storyboardGenerationPhase != .completed {
@@ -11742,25 +11801,54 @@ struct CreateEntryView: View {
                     }
                 }
                 .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(isStoryboardGenerationLocked ? Color.storyInk.opacity(0.5) : Color.white)
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
                 .background(
                     LinearGradient(
-                        colors: [Color.storyPurple.opacity(0.95), Color.storyPurple],
+                        colors: isStoryboardGenerationLocked
+                            ? [Color.storyInk.opacity(0.1), Color.storyInk.opacity(0.14)]
+                            : [Color.storyPurple.opacity(0.95), Color.storyPurple],
                         startPoint: .top,
                         endPoint: .bottom
                     ),
                     in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                 )
-                .shadow(color: Color.storyPurple.opacity(0.18), radius: 10, y: 5)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.storyInk.opacity(isStoryboardGenerationLocked ? 0.16 : 0), lineWidth: 1)
+                )
+                .shadow(
+                    color: Color.storyPurple.opacity(isStoryboardGenerationLocked ? 0 : 0.18),
+                    radius: 10,
+                    y: 5
+                )
             }
             .disabled(isStoryboardGenerationButtonDisabled)
-            .opacity(isStoryboardGenerationButtonDisabled ? 0.76 : 1)
+            // The locked state already reads as unavailable through its own colour and padlock, so
+            // it is not dimmed a second time — that only made the label hard to read.
+            .opacity(isStoryboardGenerationButtonDisabled && !isStoryboardGenerationLocked ? 0.76 : 1)
+            .accessibilityLabel(isStoryboardGenerationLocked ? "Generate storyboard, locked, Journaltopia Plus required" : "Generate storyboard")
+
+            // With the button locked, this is the only way through to the paywall from here, so it
+            // is a control rather than a caption whenever it has somewhere to go.
+            if isStoryboardGenerationLocked {
+                Button {
+                    dismissKeyboard()
+                    openJournaltopiaPlusGate()
+                } label: {
+                    Text("See what's included in Journaltopia+")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.storyPurple)
+                        .underline()
+                }
+                .buttonStyle(.plain)
+            }
 
             Text(generationButtonFootnote)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(generationCreditsStatusIsWarning ? Color.storyPurple : Color.storyInk.opacity(0.46))
+                .multilineTextAlignment(.center)
 
             Button {
                 showStoryboardGenerationProgressPreview()
@@ -11784,8 +11872,8 @@ struct CreateEntryView: View {
             return "Checking your Journaltopia+ status…"
         }
 
-        if authStore.userID != nil, !isSubscribedForGeneration {
-            return "Journaltopia+ required — tap to see what's included."
+        if isStoryboardGenerationLocked {
+            return "Storyboard generation runs on Journaltopia's servers and needs a plan."
         }
 
         if isShortOnGenerationCredits {

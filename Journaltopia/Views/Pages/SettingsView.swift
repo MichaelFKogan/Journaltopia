@@ -759,7 +759,7 @@ private struct SettingsExtraView: View {
 
     var body: some View {
         List {
-            Section("Plan Testing") {
+            Section {
                 Toggle(isOn: debugPlusPlanBinding) {
                     SettingsRowContent(
                         systemName: subscriptionStore.state.isSubscribed ? "crown.fill" : "crown",
@@ -770,6 +770,21 @@ private struct SettingsExtraView: View {
                     )
                     .padding(.vertical, 4)
                 }
+                // Signed out there is no account for an entitlement to belong to, and while a change
+                // is in flight the switch would otherwise report the old answer as if it were the
+                // new one.
+                .disabled(authStore.userID == nil || subscriptionStore.isChangingTestPlan)
+
+                if let testPlanErrorMessage = subscriptionStore.testPlanErrorMessage {
+                    Text(testPlanErrorMessage)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.red.opacity(0.85))
+                        .padding(.vertical, 2)
+                }
+            } header: {
+                Text("Plan Testing")
+            } footer: {
+                Text("Writes a real subscription row in Supabase for this account, so generation is actually allowed. Your account must be listed in journaltopia_plus_test_plan_allowlist.")
             }
 
             Section("Onboarding") {
@@ -902,21 +917,30 @@ private struct SettingsExtraView: View {
         Binding(
             get: { subscriptionStore.state.isSubscribed },
             set: { isActive in
-                subscriptionStore.setDebugPlusPlanActive(isActive)
-                entitlementGate.update(state: subscriptionStore.state)
+                Task {
+                    // The switch reflects `state`, and `state` is only written by an entitlement
+                    // read, so it does not move until the server has actually agreed. That is the
+                    // behaviour that was missing: the old toggle flipped instantly and left the
+                    // server refusing every generation behind it.
+                    await subscriptionStore.setTestPlanActive(isActive)
+                    entitlementGate.update(state: subscriptionStore.state)
+                }
             }
         )
     }
 
     private var debugPlanSubtitle: String {
-        let planName = subscriptionStore.state.isSubscribed ? "Journaltopia Plus" : "Free"
-
-        switch subscriptionStore.debugPlanOverride {
-        case .free, .plus:
-            return "\(planName) active for local feature testing"
-        case nil:
-            return "\(planName) active from current account state"
+        guard authStore.userID != nil else {
+            return "Sign in to change the test plan"
         }
+
+        if subscriptionStore.isChangingTestPlan {
+            return "Updating your plan on the server…"
+        }
+
+        return subscriptionStore.state.isSubscribed
+            ? "Journaltopia Plus active on the server"
+            : "Free — generation will be refused"
     }
 
     private var sampleAuthorModeSubtitle: String {

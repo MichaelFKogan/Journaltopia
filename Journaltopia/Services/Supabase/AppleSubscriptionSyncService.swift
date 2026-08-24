@@ -335,3 +335,75 @@ struct JournaltopiaPlusEntitlementService {
             : .notSubscribed
     }
 }
+
+/// Why a Journaltopia+ test plan could not be switched on or off.
+enum JournaltopiaPlusTestPlanError: LocalizedError, Equatable {
+    case notAuthenticated
+    /// The account is not on the server's allowlist. Not a bug and not transient: the test plan is
+    /// deliberately not something any signed-in user can grant themselves.
+    case notPermitted
+    case unavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthenticated:
+            return "Sign in before switching the test plan."
+        case .notPermitted:
+            return "This account is not allowed to use the Journaltopia+ test plan. Add it to journaltopia_plus_test_plan_allowlist in Supabase first."
+        case .unavailable(let message):
+            return message
+        }
+    }
+}
+
+/// Switches a developer account's Journaltopia+ entitlement on and off **on the server**.
+///
+/// The distinction that matters: this does not pretend. It writes the same `subscriptions` row the
+/// Apple verification path writes, so `has_active_journaltopia_plus` — and therefore
+/// `reserve_storyboard_generation` — agrees with what the app is showing. A client-side override
+/// could never do that, which is why generation used to fail with `subscription_required` no matter
+/// what the toggle said.
+struct JournaltopiaPlusTestPlanService {
+    private let client: SupabaseClient
+
+    init(client: SupabaseClient = SupabaseService.shared) {
+        self.client = client
+    }
+
+    private struct SetTestPlanPayload: Encodable, Sendable {
+        let active: Bool
+    }
+
+    /// Returns the server's own answer about whether the account is entitled afterwards, rather than
+    /// echoing `active` back — switching the test plan off leaves a real subscription in place.
+    @discardableResult
+    func setTestPlan(active: Bool) async throws -> Bool {
+        do {
+            _ = try await client.auth.session
+        } catch {
+            throw JournaltopiaPlusTestPlanError.notAuthenticated
+        }
+
+        do {
+            return try await client
+                .rpc("set_journaltopia_plus_test_plan", params: SetTestPlanPayload(active: active))
+                .execute()
+                .value
+        } catch {
+            // The RPC signals refusal by raising, and the raised name is what distinguishes "you are
+            // not allowed to do this" from a network failure worth retrying.
+            let description = String(describing: error)
+
+            if description.contains("test_plan_not_permitted") {
+                throw JournaltopiaPlusTestPlanError.notPermitted
+            }
+
+            if description.contains("not_authenticated") {
+                throw JournaltopiaPlusTestPlanError.notAuthenticated
+            }
+
+            print("[Journaltopia] Test plan change failed: \(error)")
+            throw JournaltopiaPlusTestPlanError.unavailable("The test plan could not be changed right now. Please try again.")
+        }
+    }
+}
