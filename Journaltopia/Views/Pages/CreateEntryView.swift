@@ -379,10 +379,6 @@ private struct EntrySpeechMicButton: View {
                         Circle()
                             .fill(isListening ? Color.white : Color.storyPurple)
                     )
-                    .overlay(
-                        Circle()
-                            .stroke(isListening ? Color.storyPurple.opacity(0.22) : Color.white.opacity(0.86), lineWidth: 1.4)
-                    )
                     .shadow(color: Color.storyInk.opacity(isListening ? 0.22 : 0.16), radius: 14, y: 7)
                     .overlay(alignment: .topTrailing) {
                         if isListening {
@@ -814,7 +810,7 @@ struct EntryLocationRecentsList: View {
                     }
                 }
             }
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: 0.42)
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.storyBorder.opacity(0.7), lineWidth: 1)
@@ -1356,7 +1352,7 @@ fileprivate enum CreateScenicSheetMetrics {
     /// 0 = fully clear, 1 = opaque white. Around 0.30 starts looking milky.
     static let tintOpacity: Double = 0.20
     /// Dark scenic art already has enough contrast, so the wash stays almost clear.
-    static let darkArtworkTintOpacity: Double = 0.05
+    static let darkArtworkTintOpacity: Double = 0.10
     static let cornerRadius: CGFloat = 26
     /// Left/right inset between the screen edges and the sheet.
     static let horizontalMargin: CGFloat = 14
@@ -1373,6 +1369,117 @@ fileprivate enum CreateScenicSheetMetrics {
     /// Placeholder ink. The sheet is clear enough that a faint placeholder disappears into the
     /// artwork, so this runs darker than the one used on paper styles.
     static let placeholderColor = Color.storyGray.opacity(0.8)
+}
+
+/// One place to tune the create-page menu glass. Background classification lives on
+/// `CreatePaperStyleChoice.usesDarkMenuChrome` below.
+fileprivate enum CreateMenuGlassMetrics {
+    static let darkBackgroundTintOpacity: Double = CreateScenicSheetMetrics.darkArtworkTintOpacity
+    static let lightBackgroundTintOpacity: Double = 0.34
+    static let darkBackgroundUsesMaterial = CreateScenicSheetMetrics.usesMaterial
+    static let lightBackgroundUsesMaterial = true
+    static let material: Material = CreateScenicSheetMetrics.material
+    static let borderOpacity: Double = CreateScenicSheetMetrics.borderOpacity
+    static let shadowOpacity: Double = CreateScenicSheetMetrics.shadowOpacity
+    static let shadowRadius: CGFloat = CreateScenicSheetMetrics.shadowRadius
+    static let shadowYOffset: CGFloat = CreateScenicSheetMetrics.shadowYOffset
+    static let darkForeground = Color.white.opacity(0.92)
+    static let lightForeground = Color.storyInk.opacity(0.82)
+    static let darkMutedForeground = Color.white.opacity(0.74)
+    static let lightMutedForeground = Color.storyInk.opacity(0.62)
+}
+
+fileprivate extension View {
+    func createGlassRoundedBackground(
+        cornerRadius: CGFloat,
+        tintOpacity: Double = 0.44,
+        usesMaterial: Bool = CreateScenicSheetMetrics.usesMaterial
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        return self
+            .background {
+                ZStack {
+                    if usesMaterial {
+                        shape.fill(CreateMenuGlassMetrics.material)
+                    }
+
+                    shape.fill(Color.white.opacity(tintOpacity))
+                }
+            }
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(
+                    Color.white.opacity(CreateMenuGlassMetrics.borderOpacity),
+                    lineWidth: 1
+                )
+            )
+            .shadow(
+                color: .black.opacity(CreateMenuGlassMetrics.shadowOpacity),
+                radius: CreateMenuGlassMetrics.shadowRadius,
+                y: CreateMenuGlassMetrics.shadowYOffset
+            )
+    }
+
+    func createGlassCapsuleBackground(
+        tintOpacity: Double = 0.44,
+        usesMaterial: Bool = CreateScenicSheetMetrics.usesMaterial
+    ) -> some View {
+        let shape = Capsule()
+
+        return self
+            .background {
+                ZStack {
+                    if usesMaterial {
+                        shape.fill(CreateMenuGlassMetrics.material)
+                    }
+
+                    shape.fill(Color.white.opacity(tintOpacity))
+                }
+            }
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(
+                    Color.white.opacity(CreateMenuGlassMetrics.borderOpacity),
+                    lineWidth: 1
+                )
+            )
+            .shadow(
+                color: .black.opacity(CreateMenuGlassMetrics.shadowOpacity),
+                radius: CreateMenuGlassMetrics.shadowRadius,
+                y: CreateMenuGlassMetrics.shadowYOffset
+            )
+    }
+
+    func createGlassCircleBackground(
+        tintOpacity: Double = 0.44,
+        usesMaterial: Bool = CreateScenicSheetMetrics.usesMaterial
+    ) -> some View {
+        let shape = Circle()
+
+        return self
+            .background {
+                ZStack {
+                    if usesMaterial {
+                        shape.fill(CreateMenuGlassMetrics.material)
+                    }
+
+                    shape.fill(Color.white.opacity(tintOpacity))
+                }
+            }
+            .clipShape(shape)
+            .overlay(
+                shape.strokeBorder(
+                    Color.white.opacity(CreateMenuGlassMetrics.borderOpacity),
+                    lineWidth: 1
+                )
+            )
+            .shadow(
+                color: .black.opacity(CreateMenuGlassMetrics.shadowOpacity),
+                radius: CreateMenuGlassMetrics.shadowRadius,
+                y: CreateMenuGlassMetrics.shadowYOffset
+            )
+    }
 }
 
 fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
@@ -1739,6 +1846,53 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         default:
             CreateScenicSheetMetrics.tintOpacity
         }
+    }
+
+    /// Move a paper here when its background needs white menu text and clearer glass.
+    var usesDarkMenuChrome: Bool {
+        switch self {
+        case .nightCity,
+                .cyberFuture,
+                .deepSea,
+                .cozyRoom,
+                .nightSky,
+                .moon,
+                .purpleClouds,
+                .twilightCity,
+                .lofiStreet,
+                .retroComputer:
+            true
+        case .collegeRuled,
+                .blank,
+                .watercolorPaper,
+                .cottonPaper,
+                .recycledPaper,
+                .pastelSkyline,
+                .softClouds,
+                .moonCat,
+                .rooftopCat1,
+                .daytimeCoffeeShop,
+                .lofiGirl,
+                .peachWildflowers,
+                .doodleGrid,
+                .inkSketchbook,
+                .cherryBlossom,
+                .oceanWave,
+                .studyNotes:
+            false
+        }
+    }
+
+    var menuGlassTintOpacity: Double {
+        usesDarkMenuChrome
+            ? CreateMenuGlassMetrics.darkBackgroundTintOpacity
+            : CreateMenuGlassMetrics.lightBackgroundTintOpacity
+    }
+
+    var menuGlassUsesMaterial: Bool {
+        usesDarkMenuChrome
+            ? CreateMenuGlassMetrics.darkBackgroundUsesMaterial
+            : CreateMenuGlassMetrics.lightBackgroundUsesMaterial
     }
 
     /// Image papers whose page is dark enough that toolbar chrome should use light text.
@@ -2195,7 +2349,7 @@ private struct DraftPageThumbnail: View {
 enum CreateEntryLayout {
     /// Shows the floating companion video-call window and its "Call" button on the references shelf.
     /// Flip this to `false` to park both without unwiring the rest of the companion.
-    static let isCompanionEnabled = true
+    static let isCompanionEnabled = false
 
     /// Bundled loop shown as the journaling companion.
     static let companionVideoName = "girl-1"
@@ -2572,6 +2726,26 @@ struct CreateEntryView: View {
 
     private var editorDateForeground: Color {
         usesLightEditorChrome ? Color.white.opacity(0.86) : Color.storyGray.opacity(0.46)
+    }
+
+    private var createMenuGlassTintOpacity: Double {
+        selectedPaperStyleChoice.menuGlassTintOpacity
+    }
+
+    private var createMenuGlassUsesMaterial: Bool {
+        selectedPaperStyleChoice.menuGlassUsesMaterial
+    }
+
+    private var createMenuForeground: Color {
+        selectedPaperStyleChoice.usesDarkMenuChrome
+            ? CreateMenuGlassMetrics.darkForeground
+            : CreateMenuGlassMetrics.lightForeground
+    }
+
+    private var createMenuMutedForeground: Color {
+        selectedPaperStyleChoice.usesDarkMenuChrome
+            ? CreateMenuGlassMetrics.darkMutedForeground
+            : CreateMenuGlassMetrics.lightMutedForeground
     }
 
     private var opensExistingEntryReadMode: Bool {
@@ -3975,13 +4149,9 @@ struct CreateEntryView: View {
                 } label: {
                     Image(systemName: presentation.closeButtonSystemName)
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.storyInk.opacity(0.72))
+                        .foregroundStyle(createMenuForeground)
                         .frame(width: 40, height: 38)
-                        .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
-                        )
+                        .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
                         .frame(width: 48, height: 48)
                         .contentShape(Rectangle())
                 }
@@ -4078,13 +4248,9 @@ struct CreateEntryView: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(Color.storyInk.opacity(0.72))
+                .foregroundStyle(createMenuForeground)
                 .frame(width: 36, height: 38)
-                .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
-                )
+                .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
                 .frame(width: toolbarOverflowMenuWidth, height: 48)
                 .contentShape(Rectangle())
         }
@@ -4173,12 +4339,8 @@ struct CreateEntryView: View {
 
             }
             .frame(width: 104, height: 42)
-            .foregroundStyle(Color.storyPurple)
-            .background(createChromeFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.homeBorder.opacity(0.95), lineWidth: 1)
-            )
+            .foregroundStyle(createMenuForeground)
+            .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
             .frame(width: toolbarSaveActionWidth, height: 48)
             .contentShape(Rectangle())
             .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
@@ -6350,7 +6512,7 @@ struct CreateEntryView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 14, tintOpacity: 0.42)
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
@@ -6421,7 +6583,7 @@ struct CreateEntryView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 14, tintOpacity: 0.42)
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
@@ -6492,7 +6654,7 @@ struct CreateEntryView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 14, tintOpacity: 0.42)
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
@@ -6533,7 +6695,7 @@ struct CreateEntryView: View {
             floatingMenuActionButton(
                 title: "Font",
                 systemName: CreateFormattingTab.fontStyle.sheetSymbol,
-                foregroundColor: isFormattingSheetActive(.fontStyle) ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                foregroundColor: createMenuForeground,
                 accessibilityLabel: isFormattingSheetActive(.fontStyle) ? "Close font panel" : "Open font panel"
             ) {
                 openCustomizeOptions(.fontStyle)
@@ -6542,7 +6704,7 @@ struct CreateEntryView: View {
             floatingMenuActionButton(
                 title: "Paper",
                 systemName: CreateFormattingTab.paperStyle.sheetSymbol,
-                foregroundColor: isFormattingSheetActive(.paperStyle) ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                foregroundColor: createMenuForeground,
                 accessibilityLabel: isFormattingSheetActive(.paperStyle) ? "Close paper panel" : "Open paper panel"
             ) {
                 openCustomizeOptions(.paperStyle)
@@ -6551,7 +6713,7 @@ struct CreateEntryView: View {
             floatingMenuActionButton(
                 title: selectedJournalShelfTitles.count == 1 ? "Journal" : "Journals",
                 systemName: selectedJournalShelfTitles.isEmpty ? "book.closed" : "book.closed.fill",
-                foregroundColor: isShowingJournalsPanel || !selectedJournalShelfTitles.isEmpty ? Color.storyPurple : Color.storyInk.opacity(0.82),
+                foregroundColor: createMenuForeground,
                 badgeCount: selectedJournalShelfTitles.count > 1 ? selectedJournalShelfTitles.count : nil,
                 accessibilityLabel: isShowingJournalsPanel
                     ? "Close journals panel"
@@ -6568,12 +6730,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
-        .background(createChromeFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.storyBorder.opacity(0.62), lineWidth: 1)
-        )
-        .shadow(color: Color.storyInk.opacity(0.14), radius: 12, y: 5)
+        .createGlassRoundedBackground(cornerRadius: 16, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
         .frame(maxWidth: 420)
@@ -6603,7 +6760,7 @@ struct CreateEntryView: View {
         VStack(spacing: 2) {
             Text(title)
                 .font(.system(size: 10, weight: .bold, design: .serif))
-                .foregroundStyle(Color.storyInk.opacity(0.88))
+                .foregroundStyle(createMenuForeground)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: true)
 
@@ -6616,7 +6773,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
     }
 
     private var referencePhotosShelfButton: some View {
@@ -6769,21 +6926,13 @@ struct CreateEntryView: View {
         } label: {
             VStack(spacing: 5) {
                 ZStack {
-                    Circle()
-                        .fill(isCompanionChatVisible ? Color.storyPurple : Color.white.opacity(0.88))
+                    Color.clear
                         .frame(width: 56, height: 56)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(
-                                    isCompanionChatVisible ? Color.clear : Color.storyPurple.opacity(0.45),
-                                    style: StrokeStyle(lineWidth: 1.4, dash: [4, 3])
-                                )
-                        )
-                        .shadow(color: Color.storyInk.opacity(0.08), radius: 5, y: 2)
+                        .createGlassCircleBackground(tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
 
                     Image(systemName: "bubble.left.and.bubble.right")
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(isCompanionChatVisible ? Color.white : Color.storyPurple)
+                        .foregroundStyle(createMenuForeground)
                 }
                 .frame(width: 78, height: 65)
 
@@ -6873,9 +7022,9 @@ struct CreateEntryView: View {
     private func journalShelfSymbol(systemName: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 31, weight: .semibold))
-            .foregroundStyle(Color.storyPurple.opacity(0.88))
+            .foregroundStyle(createMenuForeground)
             .frame(width: 60, height: 60)
-            .background(Color.white.opacity(0.54), in: Circle())
+            .createGlassCircleBackground(tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
     }
 
     private var selectedJournalShelfTitles: [String] {
@@ -7100,7 +7249,7 @@ struct CreateEntryView: View {
             }
         }
         .padding(4)
-        .background(Color.homeCardGray.opacity(0.82), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: 0.34)
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.58), lineWidth: 1)
@@ -7853,7 +8002,7 @@ struct CreateEntryView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.76)
                 .frame(width: width, height: 39)
-                .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: 0.36)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(activeKeyboardFormattingMode == mode ? Color.storyPurple : Color.storyBorder.opacity(0.46), lineWidth: activeKeyboardFormattingMode == mode ? 1.8 : 1)
@@ -7924,7 +8073,7 @@ struct CreateEntryView: View {
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .frame(width: 50, height: 39)
-            .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: 0.36)
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(activeKeyboardFormattingMode == .textSize ? Color.storyPurple : Color.storyBorder.opacity(0.46), lineWidth: activeKeyboardFormattingMode == .textSize ? 1.8 : 1)
@@ -8013,7 +8162,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 56)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: 0.36)
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.46), lineWidth: 1)
@@ -8102,7 +8251,7 @@ struct CreateEntryView: View {
                 .minimumScaleFactor(0.78)
                 .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
                 .padding(16)
-                .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: 0.36)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(Color.storyBorder.opacity(0.46), lineWidth: 1)
@@ -8137,7 +8286,7 @@ struct CreateEntryView: View {
             .padding(.horizontal, 16)
             .frame(height: 62)
             .frame(maxWidth: .infinity)
-            .background(isSelected ? Color.storyPurple.opacity(0.12) : Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: isSelected ? 0.48 : 0.36)
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(isSelected ? Color.storyPurple : Color.storyBorder.opacity(0.46), lineWidth: isSelected ? 1.8 : 1)
@@ -8160,7 +8309,7 @@ struct CreateEntryView: View {
                 .lineLimit(1)
                 .padding(.horizontal, 14)
                 .frame(height: 32)
-                .background(Color.white.opacity(0.72), in: Capsule())
+                .createGlassCapsuleBackground(tintOpacity: 0.36)
                 .overlay(
                     Capsule()
                         .stroke(Color.storyPurple.opacity(0.42), lineWidth: 1)
@@ -8176,9 +8325,9 @@ struct CreateEntryView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.72))
+            Color.clear
                 .frame(width: 58, height: 58)
+                .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: 0.36)
                 .overlay(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(color)
@@ -8755,7 +8904,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: 0.48)
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
@@ -8882,7 +9031,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(Color.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: 0.48)
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.storyBorder.opacity(0.55), lineWidth: 1)
@@ -9290,7 +9439,7 @@ struct CreateEntryView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 58)
-            .background(Color.white.opacity(isSelected ? 0.96 : 0.58), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: isSelected ? 0.56 : 0.32)
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(isSelected ? Color.storyPurple.opacity(0.34) : Color.storyBorder.opacity(0.62), lineWidth: 1)
@@ -9476,7 +9625,7 @@ struct CreateEntryView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 58)
-            .background(Color.white.opacity(hasSelectedJournal ? 0.96 : 0.58), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: hasSelectedJournal ? 0.56 : 0.32)
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(hasSelectedJournal ? Color.storyPurple.opacity(0.34) : Color.storyBorder.opacity(0.62), lineWidth: 1)
@@ -10003,7 +10152,7 @@ struct CreateEntryView: View {
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 68)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 14, tintOpacity: 0.44)
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(Color.storyBorder.opacity(0.7), lineWidth: 1)
@@ -10247,7 +10396,7 @@ struct CreateEntryView: View {
                     .minimumScaleFactor(0.72)
             }
             .frame(width: 76, height: 82)
-            .background(Color.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 5, tintOpacity: 0.32)
             .overlay(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .stroke(Color.storyPurple.opacity(0.32), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
@@ -11171,7 +11320,7 @@ struct CreateEntryView: View {
             .foregroundStyle(Color.storyPurple)
             .frame(maxWidth: .infinity)
             .frame(height: 46)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: 0.42)
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Color.storyBorder.opacity(0.7), lineWidth: 1)
@@ -14372,9 +14521,9 @@ private struct CreatePaletteSwatch: View {
 
     var body: some View {
         Button(action: action) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.72))
+            Color.clear
                 .aspectRatio(1, contentMode: .fit)
+                .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: 0.36)
                 .overlay(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(color)
@@ -14417,7 +14566,7 @@ private struct CreateFontOptionCard: View {
         .padding(.horizontal, 16)
         .frame(height: 62)
         .frame(maxWidth: .infinity)
-        .background(isSelected ? Color.storyPurple.opacity(0.12) : Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: isSelected ? 0.48 : 0.36)
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(isSelected ? Color.storyPurple : Color.storyBorder.opacity(0.46), lineWidth: isSelected ? 1.8 : 1)
