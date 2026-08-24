@@ -1390,6 +1390,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case moonCat
     case deepSea
     case rooftopCat1
+    case cozyRoom
+    case daytimeCoffeeShop
+    case lofiGirl
     case moon
     case peachWildflowers
     case nightSky
@@ -1438,6 +1441,12 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Deep Sea"
         case .rooftopCat1:
             "Rooftop Cat 1"
+        case .cozyRoom:
+            "Cozy Room"
+        case .daytimeCoffeeShop:
+            "Daytime Coffee Shop"
+        case .lofiGirl:
+            "LoFi Girl"
         case .moon:
             "Moon"
         case .peachWildflowers:
@@ -1508,6 +1517,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .moonCat,
                 .deepSea,
                 .rooftopCat1,
+                .cozyRoom,
+                .daytimeCoffeeShop,
+                .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
@@ -1557,6 +1569,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .moonCat,
                 .deepSea,
                 .rooftopCat1,
+                .cozyRoom,
+                .daytimeCoffeeShop,
+                .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
@@ -1599,6 +1614,12 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "deep_sea"
         case .rooftopCat1:
             "rooftop_cat 1"
+        case .cozyRoom:
+            "cozy_room"
+        case .daytimeCoffeeShop:
+            "daytime_coffee_shop"
+        case .lofiGirl:
+            "lofi_girl"
         case .moon:
             "moon"
         case .peachWildflowers:
@@ -1638,13 +1659,24 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "rooftap_cat_1"
         case .deepSea:
             "deep_sea"
+        case .cozyRoom:
+            "cozy_room"
+        case .daytimeCoffeeShop:
+            "daytime_coffee_shop"
+        case .lofiGirl:
+            "lofi_girl"
         default:
             nil
         }
     }
 
     var backgroundVideoExtension: String {
-        "MOV"
+        switch self {
+        case .cozyRoom, .daytimeCoffeeShop, .lofiGirl:
+            "mp4"
+        default:
+            "MOV"
+        }
     }
 
     var leadingContentPadding: CGFloat {
@@ -1664,6 +1696,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .moonCat,
                 .deepSea,
                 .rooftopCat1,
+                .cozyRoom,
+                .daytimeCoffeeShop,
+                .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
@@ -1698,6 +1733,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .moonCat,
                 .deepSea,
                 .rooftopCat1,
+                .cozyRoom,
+                .daytimeCoffeeShop,
+                .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
@@ -1728,6 +1766,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .moonCat,
                 .deepSea,
                 .rooftopCat1,
+                .cozyRoom,
+                .daytimeCoffeeShop,
+                .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
@@ -1755,7 +1796,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
 
     var scenicSheetTintOpacity: Double {
         switch self {
-        case .nightCity, .cyberFuture, .deepSea, .nightSky:
+        case .nightCity, .cyberFuture, .deepSea, .nightSky, .cozyRoom:
             CreateScenicSheetMetrics.darkArtworkTintOpacity
         default:
             CreateScenicSheetMetrics.tintOpacity
@@ -1772,6 +1813,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .moonCat,
                 .deepSea,
                 .rooftopCat1,
+                .cozyRoom,
+                .daytimeCoffeeShop,
+                .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
@@ -14463,6 +14507,18 @@ private struct CreatePaperStyleOption: View {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(isSelected ? Color.storyPurple : Color.storyBorder.opacity(0.45), lineWidth: isSelected ? 2 : 1)
                     )
+                    .overlay(alignment: .topTrailing) {
+                        if style.backgroundVideoName != nil {
+                            Image(systemName: "video.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 22, height: 22)
+                                .background(Color.black.opacity(0.55), in: Circle())
+                                .padding(6)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     .overlay(alignment: .bottomTrailing) {
                         if isSelected {
                             Image(systemName: "checkmark")
@@ -14495,7 +14551,7 @@ private struct CreatePaperStyleOption: View {
                     .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isLocked ? "\(style.title), Journaltopia Plus required" : style.title)
+            .accessibilityLabel(paperStyleOptionAccessibilityLabel)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
 
             Text(style.title)
@@ -14506,6 +14562,17 @@ private struct CreatePaperStyleOption: View {
                 .minimumScaleFactor(0.76)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var paperStyleOptionAccessibilityLabel: String {
+        var label = style.title
+        if style.backgroundVideoName != nil {
+            label += ", video paper"
+        }
+        if isLocked {
+            label += ", Journaltopia Plus required"
+        }
+        return label
     }
 }
 
@@ -14535,6 +14602,9 @@ private struct CreatePaperPreview: View {
                         .moonCat,
                         .deepSea,
                         .rooftopCat1,
+                        .cozyRoom,
+                        .daytimeCoffeeShop,
+                        .lofiGirl,
                         .moon,
                         .peachWildflowers,
                         .nightSky,
