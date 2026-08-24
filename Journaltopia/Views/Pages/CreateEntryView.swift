@@ -4201,8 +4201,9 @@ struct CreateEntryView: View {
                     .foregroundColor(Color.storyGray.opacity(0.46))
             }
         }
+        .hideSharedBackgroundIfAvailable()
 
-        if showsToolbarOverflowMenu(showsOverflowMenu) {
+        if showsOverflowMenu {
             ToolbarItem(placement: .topBarTrailing) {
                 toolbarEntryOverflowMenu
             }
@@ -4236,15 +4237,13 @@ struct CreateEntryView: View {
                 }
             }
 
-            if canDeleteCurrentEntry {
-                Button(role: .destructive) {
-                    dismissKeyboard()
-                    isConfirmingEntryDeletion = true
-                } label: {
-                    Label(isDeletingEntry ? "Deleting Entry" : "Delete Entry", systemImage: "trash")
-                }
-                .disabled(isDeletingEntry || isBlockingSaveInProgress)
+            Button(role: .destructive) {
+                dismissKeyboard()
+                isConfirmingEntryDeletion = true
+            } label: {
+                Label(isDeletingEntry ? "Deleting Entry" : "Delete Entry", systemImage: "trash")
             }
+            .disabled(!canDeleteCurrentEntry || isDeletingEntry || isBlockingSaveInProgress)
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 14, weight: .bold))
@@ -4255,10 +4254,6 @@ struct CreateEntryView: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("More entry actions")
-    }
-
-    private func showsToolbarOverflowMenu(_ showsOverflowMenu: Bool) -> Bool {
-        showsOverflowMenu && (canDeleteCurrentEntry || hasPaperStyleVideoSound)
     }
 
     private var toolbarOverflowMenuWidth: CGFloat { 44 }
@@ -4275,11 +4270,11 @@ struct CreateEntryView: View {
     private func trailingToolbarActionWidth(showsOverflowMenu: Bool) -> CGFloat {
         var width: CGFloat = 0
 
-        if showsToolbarOverflowMenu(showsOverflowMenu) {
+        if showsOverflowMenu {
             width += toolbarOverflowMenuWidth
         }
 
-        if showsToolbarOverflowMenu(showsOverflowMenu) {
+        if showsOverflowMenu {
             return toolbarCloseButtonWidth
         }
 
@@ -4289,9 +4284,16 @@ struct CreateEntryView: View {
     private var editorToolbarDateTitle: some View {
         Text(editorToolbarDateText)
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(editorDateForeground)
+            .foregroundStyle(createMenuForeground)
             .lineLimit(1)
             .minimumScaleFactor(0.74)
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .createGlassRoundedBackground(
+                cornerRadius: 12,
+                tintOpacity: createMenuGlassTintOpacity,
+                usesMaterial: createMenuGlassUsesMaterial
+            )
             .frame(maxWidth: 210)
             .accessibilityLabel("Entry date, \(editorToolbarDateText)")
     }

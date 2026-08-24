@@ -2067,6 +2067,11 @@ struct JournalView: View {
                         entries: memberEntries
                     )
                     chapters = DailyJournalData.allChapters()
+                    // Home can name a journal this page has not loaded yet — its card is ranked from
+                    // the cloud, so it appears on a device whose local cache is still empty. Without
+                    // this retry that tap landed on the shelf and stopped there, because the pending
+                    // open is only tried when the page appears and the shelf was empty at the time.
+                    openPendingJournalIfNeeded()
                 }
             } catch is CancellationError {
                 return
@@ -8084,7 +8089,7 @@ enum DailyJournalData {
 
 }
 
-private enum LegacySystemJournalIDs {
+enum LegacySystemJournalIDs {
     static let all: Set<UUID> = [
         UUID(uuidString: "00000000-0000-0000-0000-000000000101")!,
         UUID(uuidString: "00000000-0000-0000-0000-000000000102")!
@@ -19850,7 +19855,9 @@ enum UserChapterStore {
 /// unawaited `Task` with `try?`, so nothing notices. A tombstone closes both. The id is filtered out
 /// of every cloud read, the delete is retried on each load while the cloud still returns the row,
 /// and the tombstone is dropped the moment the cloud comes back without it.
-private enum DeletedJournalStore {
+/// Not file-private: Home ranks its own most-recent journal card straight from the cloud, and has to
+/// honour the same tombstones this page does.
+enum DeletedJournalStore {
     private static let storageKey = "JournaltopiaDeletedJournals"
 
     static var ids: Set<UUID> {

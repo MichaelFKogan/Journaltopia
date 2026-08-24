@@ -26,6 +26,8 @@ struct HomeView: View {
     @State private var recentJournal: HomeRecentJournal?
     @State private var loadedHomeSamplePack: SampleStoryPack?
     @State private var recentContentLoadTask: Task<Void, Never>?
+    @State private var recentJournalLoadTask: Task<Void, Never>?
+    @State private var isPreparingRecentEntry = false
 
     private let homeStoryboardPreviewLimit = 3
     /// Enough of the Edited: Newest page to apply the same `createdAt` tie-break Entries uses.
@@ -83,6 +85,7 @@ struct HomeView: View {
         .onChange(of: selectedPage) { page in
             guard page == .home else {
                 recentContentLoadTask?.cancel()
+                recentJournalLoadTask?.cancel()
                 return
             }
 
@@ -290,8 +293,8 @@ struct HomeView: View {
 
                 LazyVGrid(columns: HomeRecentContentLayout.gridColumns, spacing: HomeRecentContentLayout.gridSpacing) {
                     if let recentEntry {
-                        HomeRecentEntryCard(recent: recentEntry) {
-                            openRecentEntry(recentEntry.entry, recentEntry.storyboardImage)
+                        HomeRecentEntryCard(recent: recentEntry, isPreparing: isPreparingRecentEntry) {
+                            openRecentEntryCard(recentEntry)
                         }
                     }
 
@@ -324,6 +327,7 @@ struct HomeView: View {
 
         if showsSampleHomeContent {
             recentContentLoadTask?.cancel()
+            recentJournalLoadTask?.cancel()
             let pack = isSampleAuthorMode
                 ? loadedHomeSamplePack
                 : (SampleContentStore.pack ?? loadedHomeSamplePack)
@@ -347,9 +351,34 @@ struct HomeView: View {
         // reader; the local pick is the fallback for when there is no resolved card to start from.
         recentEntry = HomeRecentEntrySessionCache.entry(for: loadID)
             ?? mostRecentLocalEntry(from: localEntries)
-        recentJournal = UserChapterStore.load()
+        recentJournal = homeRecentJournal(from: UserChapterStore.load(), localEntries: localEntries)
+
+        guard loadsCloudEntry, authStore.userID != nil else {
+            return
+        }
+
+        recentContentLoadTask?.cancel()
+        recentContentLoadTask = Task {
+            await refreshMostRecentCloudEntry()
+        }
+
+        recentJournalLoadTask?.cancel()
+        recentJournalLoadTask = Task {
+            await refreshMostRecentCloudJournal()
+        }
+    }
+
+    /// The journal card, ranked the same way Journals ranks its shelf.
+    @MainActor
+    private func homeRecentJournal(
+        from chapters: [PrototypeChapter],
+        localEntries: [CreateEntryDraft],
+        cloudMemberIDsByJournalID: [UUID: Set<UUID>] = [:]
+    ) -> HomeRecentJournal? {
+        chapters
             .map { chapter in
                 let memberIDs = journalMemberIDs(for: chapter)
+                    .union(cloudMemberIDsByJournalID[chapter.id] ?? [])
                 return HomeRecentJournal(
                     chapter: chapter,
                     recentDate: recentDate(for: chapter, entries: localEntries, memberIDs: memberIDs),
@@ -359,14 +388,59 @@ struct HomeView: View {
             }
             .sorted(by: homeRecentJournalSort)
             .first
+    }
 
-        guard loadsCloudEntry, authStore.userID != nil else {
+    /// The journal card's counterpart to ``refreshMostRecentCloudEntry``.
+    ///
+    /// `UserChapterStore` is a local cache that only the Journals page ever filled, so Home could
+    /// only show a journal the reader had already visited Journals to load. On a device whose cache
+    /// is empty — a fresh install, or the first launch after a sign-out purge — the entry card came
+    /// down from the cloud and sat there alone next to nothing.
+    @MainActor
+    private func refreshMostRecentCloudJournal() async {
+        let loadID = homeStoryboardLoadID
+
+        do {
+            let repository = SupabaseJournalRepository()
+            // Two independent reads, so let them overlap rather than stacking the round trips.
+            async let cloudJournalsTask = repository.getJournals()
+            async let membershipsTask = repository.getJournalEntryMemberships()
+
+            let cloudJournals = try await cloudJournalsTask
+            let memberships = try await membershipsTask
+
+            guard !Task.isCancelled, homeStoryboardLoadID == loadID, !showsSampleHomeContent else {
+                return
+            }
+
+            // Read the tombstones after the fetch, so a journal deleted while these reads were in
+            // flight does not come back as this card.
+            let deletedJournalIDs = DeletedJournalStore.ids
+            let chapters = cloudJournals
+                .filter { !deletedJournalIDs.contains($0.id) && !LegacySystemJournalIDs.all.contains($0.id) }
+                .map(PrototypeChapter.init(cloudJournal:))
+
+            guard !chapters.isEmpty else {
+                return
+            }
+
+            // Journals reads this cache when it appears, which is also what lets the card's tap find
+            // the journal it means to open. Skipped when the cloud came back empty above: that is
+            // indistinguishable from a failed read here, and overwriting the cache with nothing
+            // would drop a journal created offline that has not been synced yet.
+            UserChapterStore.replace(with: chapters)
+
+            let cloudMemberIDsByJournalID = Dictionary(grouping: memberships, by: \.journalID)
+                .mapValues { Set($0.map(\.clientEntryID)) }
+            recentJournal = homeRecentJournal(
+                from: chapters,
+                localEntries: visibleLocalEntries(),
+                cloudMemberIDsByJournalID: cloudMemberIDsByJournalID
+            )
+        } catch is CancellationError {
             return
-        }
-
-        recentContentLoadTask?.cancel()
-        recentContentLoadTask = Task {
-            await refreshMostRecentCloudEntry()
+        } catch {
+            print("[Journaltopia] Home most-recent journal load failed: \(error.localizedDescription)")
         }
     }
 
@@ -412,7 +486,8 @@ struct HomeView: View {
                     entry: CreateEntryDraft.fromCloud(cloudEntry, thumbnail: thumbnail),
                     storyboardImage: recent.storyboardImage,
                     storyboardCount: recent.storyboardCount,
-                    isSample: false
+                    isSample: false,
+                    cloudEntryID: cloudEntry.id
                 )
                 recentEntry = recent
                 HomeRecentEntrySessionCache.store(recent, for: loadID)
@@ -422,6 +497,267 @@ struct HomeView: View {
         } catch {
             print("[Journaltopia] Home most-recent entry load failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Opens the card's entry, first making sure the editor will be able to find it.
+    ///
+    /// `CreateEntryView` opens an entry by id and reads it back out of the local stores, and answers
+    /// a miss by clearing itself — no writing, no storyboard, and the default notebook paper in
+    /// place of whatever the entry was actually written on. Home is the one screen whose card can
+    /// name an entry those stores have never held: its ranking comes straight from Supabase, and
+    /// sample authoring reads its card out of the pack. Entries has always staged the entry before
+    /// handing the editor an id; this is that same step for Home.
+    @MainActor
+    private func openRecentEntryCard(_ recent: HomeRecentEntry) {
+        guard !isPreparingRecentEntry else {
+            return
+        }
+
+        // Signed-out browsing is the one mode with nothing to stage: the editor reads that entry
+        // straight out of the in-memory pack, and writing it to disk is exactly what used to leak
+        // the sample pack into the next account to sign in on the device.
+        if showsSampleHomeContent, !isSampleAuthorMode {
+            openRecentEntry(recent.entry, recent.storyboardImage)
+            return
+        }
+
+        if isSampleAuthorMode {
+            let storyboardImage = stageSampleEntryForEditing(recent.entry) ?? recent.storyboardImage
+            openRecentEntry(recent.entry, storyboardImage)
+            return
+        }
+
+        // Already on disk: open it now rather than spending a round trip re-fetching what the editor
+        // is about to read anyway — including when the local copy holds autosaved edits the cloud
+        // has not seen, which a download would overwrite.
+        guard !CreateEntryDraftStore.exists(id: recent.id) else {
+            openRecentEntry(recent.entry, recent.storyboardImage)
+            return
+        }
+
+        isPreparingRecentEntry = true
+        Task {
+            let outcome = await materializeCloudRecentEntry(recent)
+            isPreparingRecentEntry = false
+
+            switch outcome {
+            case .staged(let storyboardImage):
+                openRecentEntry(recent.entry, storyboardImage ?? recent.storyboardImage)
+            case .entryUnavailable:
+                // The cloud answered, and what it said is that this entry is not there any more.
+                // Re-rank the card rather than opening an empty editor on top of a deleted entry.
+                refreshRecentContent(loadsCloudEntry: true)
+            }
+        }
+    }
+
+    /// Sample authoring edits samples through the on-disk stores the way ordinary entries are
+    /// edited, so the pack's copy has to be written down before the editor can open it. Entries does
+    /// the same thing in `openSampleEntry`.
+    @MainActor
+    @discardableResult
+    private func stageSampleEntryForEditing(_ entry: CreateEntryDraft) -> UIImage? {
+        let didPersist = CreateEntryDraftStore.save(
+            id: entry.id,
+            title: entry.title,
+            text: entry.text,
+            richText: entry.richText,
+            referencePhotos: entry.photos,
+            characters: entry.characters,
+            artStyle: entry.artStyle,
+            location: entry.location,
+            date: entry.date,
+            datePrecision: entry.datePrecision,
+            savesDraft: entry.savesDraft,
+            isPrivate: entry.isPrivate,
+            status: JournalEntryStatus(rawValue: entry.status) ?? .draft,
+            fontChoiceRawValue: entry.fontChoiceRawValue,
+            textColorIndex: entry.textColorIndex,
+            textSize: entry.textSize,
+            paperStyleRawValue: entry.paperStyleRawValue,
+            paperColorIndex: entry.paperColorIndex,
+            isBold: entry.isBold,
+            isItalic: entry.isItalic,
+            isUnderlined: entry.isUnderlined,
+            isStrikethrough: entry.isStrikethrough,
+            isHighlighted: entry.isHighlighted,
+            textAlignmentRawValue: entry.textAlignmentRawValue,
+            thumbnail: entry.thumbnail,
+            createdAt: entry.createdAt
+        ) != nil
+
+        guard didPersist else {
+            return nil
+        }
+
+        return stageSampleStoryboards(for: entry.id)
+    }
+
+    @MainActor
+    private func stageSampleStoryboards(for entryID: UUID) -> UIImage? {
+        let sampleStoryboards = samplePackStoryboards(for: entryID)
+        guard !sampleStoryboards.isEmpty else {
+            return nil
+        }
+
+        var persistedStoryboards = GeneratedStoryboardStore.load()
+        var firstImage: UIImage?
+
+        for (index, sampleStoryboard) in sampleStoryboards.enumerated() {
+            if firstImage == nil {
+                firstImage = sampleStoryboard.image
+            }
+
+            guard
+                let storyboard = try? GeneratedStoryboardStore.persistedStoryboard(
+                    image: sampleStoryboard.image,
+                    clientEntryID: entryID,
+                    promptText: sampleStoryboard.promptText,
+                    artStyle: sampleStoryboard.artStyle,
+                    generationQuality: sampleStoryboard.generationQuality,
+                    panelLayout: sampleStoryboard.panelLayout,
+                    sourcePhotoCount: sampleStoryboard.sourcePhotoCount,
+                    id: sampleStoryboard.id,
+                    storagePath: sampleStoryboard.storagePath,
+                    cloudSyncState: sampleStoryboard.cloudSyncState,
+                    isPrimary: sampleStoryboard.isPrimary || index == 0
+                )
+            else {
+                continue
+            }
+
+            persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
+        }
+
+        GeneratedStoryboardStore.save(persistedStoryboards)
+        return firstImage
+    }
+
+    private enum HomeRecentEntryStaging {
+        /// The editor will find the entry on disk. Carries the primary storyboard if one came down.
+        case staged(UIImage?)
+        /// The cloud says the entry no longer exists, so there is nothing to open.
+        case entryUnavailable
+    }
+
+    /// Downloads the committed cloud copy into the local stores, the way Entries does before it
+    /// opens a cloud entry.
+    @MainActor
+    private func materializeCloudRecentEntry(_ recent: HomeRecentEntry) async -> HomeRecentEntryStaging {
+        guard let cloudEntryID = recent.cloudEntryID else {
+            return .staged(nil)
+        }
+
+        do {
+            let fullCloudEntry = try await SupabaseEntryRepository().getEntry(id: cloudEntryID)
+            let cloudDraft = CreateEntryDraft.fromCloud(fullCloudEntry, thumbnail: recent.entry.thumbnail)
+            let photos = (try? await SupabaseReferencePhotoService().loadReferencePhotos(entryID: cloudEntryID)) ?? []
+            let characters = (try? await SupabaseEntryCharacterService().loadCharacters(entryID: cloudEntryID)) ?? []
+
+            saveMaterializedEntry(cloudDraft, photos: photos, characters: characters)
+        } catch {
+            print("[Journaltopia] Home recent entry download failed: \(error.localizedDescription)")
+
+            // Only the cloud being unreachable earns the fallback. The card was ranked from an entry
+            // summary, which already carries the writing, the paper style and the formatting —
+            // everything but the reference photos — so writing that down opens the entry the reader
+            // tapped rather than a blank page. Any other failure is the cloud answering, and staging
+            // a copy of a row it has stopped returning would put a deleted entry back on the device.
+            guard (error as? TransientCloudFailure)?.isTransientCloudFailure == true else {
+                return .entryUnavailable
+            }
+
+            saveMaterializedEntry(recent.entry, photos: recent.entry.photos, characters: recent.entry.characters)
+        }
+
+        return .staged(await materializeCloudRecentEntryStoryboards(clientEntryID: recent.id))
+    }
+
+    @MainActor
+    private func saveMaterializedEntry(
+        _ draft: CreateEntryDraft,
+        photos: [CreateEntryReferencePhoto],
+        characters: [EntryCharacter]
+    ) {
+        CreateEntryDraftStore.save(
+            id: draft.id,
+            title: draft.title,
+            text: draft.text,
+            richText: draft.richText,
+            referencePhotos: photos,
+            characters: characters,
+            artStyle: draft.artStyle,
+            location: draft.location,
+            date: draft.date,
+            datePrecision: draft.datePrecision,
+            savesDraft: draft.savesDraft,
+            isPrivate: draft.isPrivate,
+            status: JournalEntryStatus(rawValue: draft.status) ?? .draft,
+            fontChoiceRawValue: draft.fontChoiceRawValue,
+            textColorIndex: draft.textColorIndex,
+            textSize: draft.textSize,
+            paperStyleRawValue: draft.paperStyleRawValue,
+            paperColorIndex: draft.paperColorIndex,
+            isBold: draft.isBold,
+            isItalic: draft.isItalic,
+            isUnderlined: draft.isUnderlined,
+            isStrikethrough: draft.isStrikethrough,
+            isHighlighted: draft.isHighlighted,
+            textAlignmentRawValue: draft.textAlignmentRawValue,
+            thumbnail: draft.thumbnail,
+            createdAt: draft.createdAt,
+            cloudSyncState: .synchronized
+        )
+    }
+
+    /// A device that had never seen the entry has never seen its storyboards either, and the editor
+    /// reads those from disk too. Entries fills this store while it lists completed entries; Home
+    /// only ever needs the one entry it is opening.
+    @MainActor
+    private func materializeCloudRecentEntryStoryboards(clientEntryID: UUID) async -> UIImage? {
+        guard GeneratedStoryboardStore.count(clientEntryIDs: [clientEntryID]) == 0 else {
+            return nil
+        }
+
+        let service = SupabaseStoryboardService()
+        guard
+            let rows = try? await service.loadCompletedStoryboardRows(for: [clientEntryID]),
+            !rows.isEmpty
+        else {
+            return nil
+        }
+
+        var persistedStoryboards = GeneratedStoryboardStore.load()
+        var primaryImage: UIImage?
+
+        for row in rows {
+            guard
+                let image = try? await service.downloadStoryboardImage(storagePath: row.storagePath),
+                let storyboard = try? GeneratedStoryboardStore.persistedStoryboard(
+                    image: image,
+                    clientEntryID: row.clientEntryID,
+                    promptText: row.prompt ?? "",
+                    artStyle: row.artStyle ?? "Anime",
+                    panelLayout: row.panelLayout,
+                    sourcePhotoCount: 0,
+                    id: row.id,
+                    storagePath: row.storagePath,
+                    cloudSyncState: StoryboardCloudSyncState.synced.rawValue,
+                    isPrimary: row.isPrimary
+                )
+            else {
+                continue
+            }
+
+            if primaryImage == nil || row.isPrimary {
+                primaryImage = image
+            }
+
+            persistedStoryboards = GeneratedStoryboardStore.merging(storyboard, into: persistedStoryboards)
+        }
+
+        GeneratedStoryboardStore.save(persistedStoryboards)
+        return primaryImage
     }
 
     @MainActor
@@ -511,7 +847,8 @@ struct HomeView: View {
             entry: entry,
             storyboardImage: primaryStoryboardImage(for: entry.id),
             storyboardCount: storyboardCount(for: entry.id),
-            isSample: false
+            isSample: false,
+            cloudEntryID: cloudEntry.id
         )
     }
 
@@ -539,11 +876,24 @@ struct HomeView: View {
         return lhs.chapter.createdAt > rhs.chapter.createdAt
     }
 
+    /// Sample authoring never fills `SampleContentStore` — that store exists for signed-out browsing,
+    /// and `ContentView` clears it the moment authoring turns on — so the authoring pack Home loaded
+    /// for itself is the only place its storyboards live.
+    @MainActor
+    private func samplePackStoryboards(for entryID: UUID) -> [GeneratedStoryboard] {
+        let storeStoryboards = SampleContentStore.storyboards(clientEntryID: entryID)
+        guard storeStoryboards.isEmpty else {
+            return storeStoryboards
+        }
+
+        return loadedHomeSamplePack?.storyboardsByEntryID[entryID] ?? []
+    }
+
     @MainActor
     private func primaryStoryboardImage(for entryID: UUID) -> UIImage? {
         let storyboards: [GeneratedStoryboard]
         if showsSampleHomeContent {
-            storyboards = SampleContentStore.storyboards(clientEntryID: entryID)
+            storyboards = samplePackStoryboards(for: entryID)
         } else {
             storyboards = GeneratedStoryboardStore.load(clientEntryIDs: [entryID])
         }
@@ -563,7 +913,7 @@ struct HomeView: View {
     @MainActor
     private func storyboardCount(for entryID: UUID) -> Int {
         if showsSampleHomeContent {
-            return SampleContentStore.storyboards(clientEntryID: entryID).count
+            return samplePackStoryboards(for: entryID).count
         }
 
         return GeneratedStoryboardStore.count(clientEntryIDs: [entryID])
@@ -964,6 +1314,10 @@ private struct HomeRecentEntry: Identifiable {
     let storyboardImage: UIImage?
     let storyboardCount: Int
     let isSample: Bool
+    /// The Supabase row this card was ranked from, when the card came from the cloud rather than
+    /// from disk. Opening the entry needs it: the editor reads the entry back out of the local
+    /// stores, so an entry that has never been on this device has to be downloaded first.
+    var cloudEntryID: UUID?
 
     var id: UUID {
         entry.id
@@ -1053,6 +1407,8 @@ private func homeRecentEntryTitle(_ entry: CreateEntryDraft) -> String {
 
 private struct HomeRecentEntryCard: View {
     let recent: HomeRecentEntry
+    /// The entry is being downloaded into the local stores before the editor opens it.
+    var isPreparing = false
     let action: () -> Void
 
     var body: some View {
@@ -1071,6 +1427,16 @@ private struct HomeRecentEntryCard: View {
 
                         if recent.storyboardImage != nil {
                             storyboardOverlay(in: proxy.size)
+                        }
+
+                        if isPreparing {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.black.opacity(0.18))
+                                .overlay {
+                                    ProgressView()
+                                        .tint(.white)
+                                }
+                                .frame(width: proxy.size.width, height: proxy.size.height)
                         }
                     }
                 }
