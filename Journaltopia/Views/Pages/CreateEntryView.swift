@@ -1381,8 +1381,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case watercolorPaper
     case cottonPaper
     case recycledPaper
-    case kawaiiGridPaper
-    case pressedFlowers
     case pastelSkyline
     case nightCity
     case cyberFuture
@@ -1405,7 +1403,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case cherryBlossom
     case oceanWave
     case studyNotes
-    case japaneseInkWave
 
     static let defaultChoice: CreatePaperStyleChoice = .collegeRuled
 
@@ -1423,10 +1420,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Cotton Paper"
         case .recycledPaper:
             "Recycled Paper"
-        case .kawaiiGridPaper:
-            "Kawaii Grid"
-        case .pressedFlowers:
-            "Pressed Flowers"
         case .pastelSkyline:
             "Pastel Skyline"
         case .nightCity:
@@ -1471,8 +1464,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Ocean Wave"
         case .studyNotes:
             "Study Notes"
-        case .japaneseInkWave:
-            "Japanese Ink Wave"
         }
     }
 
@@ -1498,7 +1489,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
 
     /// Sheets that stay proportional to the page width, then tile downward to fill the paper.
     var fitsPaperImageToWidth: Bool {
-        self == .kawaiiGridPaper
+        false
     }
 
     var fillsBackgroundWithPaperImage: Bool {
@@ -1537,10 +1528,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .blank,
                 .watercolorPaper,
                 .cottonPaper,
-                .recycledPaper,
-                .kawaiiGridPaper,
-                .pressedFlowers,
-                .japaneseInkWave:
+                .recycledPaper:
             false
         }
     }
@@ -1550,42 +1538,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     }
 
     var illustratedPaperConfiguration: IllustratedPaperConfiguration? {
-        switch self {
-        case .kawaiiGridPaper:
-            .kawaiiGrid
-        case .pressedFlowers:
-            .pressedFlowers
-        case .japaneseInkWave:
-            .japaneseInkWave
-        case .collegeRuled,
-                .blank,
-                .watercolorPaper,
-                .cottonPaper,
-                .recycledPaper,
-                .pastelSkyline,
-                .nightCity,
-                .cyberFuture,
-                .softClouds,
-                .moonCat,
-                .deepSea,
-                .rooftopCat1,
-                .cozyRoom,
-                .daytimeCoffeeShop,
-                .lofiGirl,
-                .moon,
-                .peachWildflowers,
-                .nightSky,
-                .doodleGrid,
-                .retroComputer,
-                .lofiStreet,
-                .inkSketchbook,
-                .purpleClouds,
-                .twilightCity,
-                .cherryBlossom,
-                .oceanWave,
-                .studyNotes:
-            nil
-        }
+        nil
     }
 
     var backgroundImageName: String? {
@@ -1596,10 +1549,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "cotton-paper"
         case .recycledPaper:
             "recycled-paper"
-        case .kawaiiGridPaper:
-            "Kawaii Grid Paper Doodle Stationery"
-        case .pressedFlowers:
-            "Pressed Flowers/paper"
         case .pastelSkyline:
             "pastel skyline"
         case .nightCity:
@@ -1644,8 +1593,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "ocean_wave"
         case .studyNotes:
             "study_notes"
-        case .japaneseInkWave:
-            "Japanese Ink Wave/paper"
         case .collegeRuled, .blank:
             nil
         }
@@ -1687,8 +1634,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .watercolorPaper,
                 .cottonPaper,
                 .recycledPaper,
-                .kawaiiGridPaper,
-                .pressedFlowers,
                 .pastelSkyline,
                 .nightCity,
                 .cyberFuture,
@@ -1710,8 +1655,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .twilightCity,
                 .cherryBlossom,
                 .oceanWave,
-                .studyNotes,
-                .japaneseInkWave:
+                .studyNotes:
             18
         }
     }
@@ -1724,8 +1668,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .watercolorPaper,
                 .cottonPaper,
                 .recycledPaper,
-                .kawaiiGridPaper,
-                .pressedFlowers,
                 .pastelSkyline,
                 .nightCity,
                 .cyberFuture,
@@ -1747,8 +1689,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .twilightCity,
                 .cherryBlossom,
                 .oceanWave,
-                .studyNotes,
-                .japaneseInkWave:
+                .studyNotes:
             0
         }
     }
@@ -1786,10 +1727,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .blank,
                 .watercolorPaper,
                 .cottonPaper,
-                .recycledPaper,
-                .kawaiiGridPaper,
-                .pressedFlowers,
-                .japaneseInkWave:
+                .recycledPaper:
             Color.storyGray.opacity(0.46)
         }
     }
@@ -1833,10 +1771,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .blank,
                 .watercolorPaper,
                 .cottonPaper,
-                .recycledPaper,
-                .kawaiiGridPaper,
-                .pressedFlowers,
-                .japaneseInkWave:
+                .recycledPaper:
             false
         }
     }
@@ -13840,91 +13775,6 @@ private struct WidthTiledPaperImage: View {
 
 struct IllustratedPaperConfiguration {
     let decorations: [IllustratedPaperDecoration]
-
-    static let kawaiiGrid = IllustratedPaperConfiguration(
-        decorations: [
-            IllustratedPaperDecoration(
-                imageName: "cat",
-                widthRatio: 0.24,
-                xRatio: 0.14,
-                y: 75,
-                compactWidthRatio: 0.36,
-                compactXRatio: 0.18,
-                compactY: 4
-            ),
-            IllustratedPaperDecoration(
-                imageName: "planet",
-                widthRatio: 0.22,
-                xRatio: 0.88,
-                y: 475,
-                compactWidthRatio: 0.34,
-                compactXRatio: 0.83,
-                compactY: 4
-            ),
-            IllustratedPaperDecoration(
-                imageName: "tree",
-                widthRatio: 0.17,
-                xRatio: 0.10,
-                y: 520,
-                verticalAnchor: .bottom,
-                showsInCompactPreview: false
-            ),
-            IllustratedPaperDecoration(
-                imageName: "stars",
-                widthRatio: 0.16,
-                xRatio: 0.92,
-                y: 310,
-                verticalAnchor: .bottom,
-                showsInCompactPreview: false
-            ),
-            IllustratedPaperDecoration(
-                imageName: "ipod",
-                widthRatio: 0.30,
-                xRatio: 0.85,
-                y: 80,
-                verticalAnchor: .bottom,
-                showsInCompactPreview: false
-            )
-        ]
-    )
-
-    static let pressedFlowers = IllustratedPaperConfiguration(
-        decorations: [
-            IllustratedPaperDecoration(
-                imageName: "Pressed Flowers/tape",
-                widthRatio: 0.18,
-                xRatio: 0.08,
-                y: 75,
-                rotationDegrees: -12,
-                compactWidthRatio: 0.18,
-                compactXRatio: 0.12,
-                compactY: 2
-            ),
-            IllustratedPaperDecoration(
-                imageName: "Pressed Flowers/flowers",
-                widthRatio: 0.24,
-                xRatio: 0.88,
-                y: 475,
-                compactWidthRatio: 0.34,
-                compactXRatio: 0.80,
-                compactY: 0
-            )
-        ]
-    )
-
-    static let japaneseInkWave = IllustratedPaperConfiguration(
-        decorations: [
-            IllustratedPaperDecoration(
-                imageName: "Japanese Ink Wave/wave-left",
-                widthRatio: 0.42,
-                xRatio: 0.90,
-                y: 300,
-                compactWidthRatio: 0.46,
-                compactXRatio: 0.92,
-                compactY: 18
-            )
-        ]
-    )
 }
 
 struct IllustratedPaperDecoration: Identifiable {
@@ -14623,22 +14473,6 @@ private struct CreatePaperPreview: View {
                             .scaledToFill()
                             .frame(width: proxy.size.width, height: proxy.size.height)
                             .clipped()
-                    }
-                case .kawaiiGridPaper, .pressedFlowers, .japaneseInkWave:
-                    if let backgroundImageName = style.backgroundImageName {
-                        Image(backgroundImageName)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: proxy.size.width, height: proxy.size.height)
-                            .clipped()
-                    }
-
-                    if let illustratedPaperConfiguration = style.illustratedPaperConfiguration {
-                        IllustratedPaperDecorations(
-                            configuration: illustratedPaperConfiguration,
-                            pageSize: proxy.size,
-                            isCompactPreview: true
-                        )
                     }
                 }
             }
