@@ -365,6 +365,7 @@ private struct EntrySpeechMicButton: View {
     var foregroundColor: Color = Color.white
     var tintOpacity: Double = 0.20
     var usesMaterial: Bool = false
+    var frostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
     let action: () -> Void
 
     var body: some View {
@@ -378,7 +379,7 @@ private struct EntrySpeechMicButton: View {
                     .font(.system(size: 23, weight: .regular))
                     .foregroundStyle(foregroundColor)
                     .frame(width: 58, height: 58)
-                    .createGlassCircleBackground(tintOpacity: tintOpacity, usesMaterial: usesMaterial)
+                    .createGlassCircleBackground(tintOpacity: tintOpacity, usesMaterial: usesMaterial, frostIntensity: frostIntensity)
                     .overlay(alignment: .topTrailing) {
                         if isListening {
                             Circle()
@@ -1337,21 +1338,64 @@ private enum CreateFontChoice: String, CaseIterable, Identifiable {
     }
 }
 
+/// Named chrome looks for the create page. Assign editor and menu separately in
+/// `CreatePaperStyleChoice.chrome`; tints and frost live here.
+fileprivate enum CreateChromeLook {
+    /// Almost clear white wash, no blur. Dark night scenes.
+    case clear
+    /// Milkier white wash, no blur. Brighter scenic art and paper styles.
+    case wash
+    /// Frosted blur plus a light wash. Use when art is busy or low-contrast.
+    case frost
+}
+
+/// Per-paper pairing of the gray writing sheet and the rest of the page UI.
+/// Use `both` when they should match; set `editor` and `menu` apart when they shouldn't.
+fileprivate struct CreatePaperChrome {
+    var editor: CreateChromeLook
+    var menu: CreateChromeLook
+    var editorFrostIntensity: CGFloat
+    var menuFrostIntensity: CGFloat
+
+    static func both(
+        _ look: CreateChromeLook,
+        frostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
+    ) -> CreatePaperChrome {
+        CreatePaperChrome(
+            editor: look,
+            menu: look,
+            editorFrostIntensity: frostIntensity,
+            menuFrostIntensity: frostIntensity
+        )
+    }
+
+    init(
+        editor: CreateChromeLook,
+        menu: CreateChromeLook,
+        editorFrostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity,
+        menuFrostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
+    ) {
+        self.editor = editor
+        self.menu = menu
+        self.editorFrostIntensity = editorFrostIntensity
+        self.menuFrostIntensity = menuFrostIntensity
+    }
+}
+
 /// EXPERIMENT (translucent-background): every knob for the floating writing sheet that sits on
 /// top of scenic paper art. Tune here; nothing else hard-codes these values.
 fileprivate enum CreateScenicSheetMetrics {
-    /// Frosted blur behind the sheet. Any `Material` lays down a gray, cloudy cast that hides the
-    /// artwork, so the sheet defaults to no blur at all — just the white wash below. Set this true
-    /// to get the frosted look back.
-    static let usesMaterial = false
-    /// Blur/vibrancy strength, used only when `usesMaterial` is true. Lighter -> more artwork shows
-    /// through: `.ultraThinMaterial` < `.thinMaterial` < `.regularMaterial` < `.thickMaterial`.
-    static let material: Material = .ultraThinMaterial
-    /// The white wash that lifts text off the artwork. This is the main transparency dial:
-    /// 0 = fully clear, 1 = opaque white. Around 0.30 starts looking milky.
-    static let tintOpacity: Double = 0.20
-    /// Dark scenic art already has enough contrast, so the wash stays almost clear.
-    static let darkArtworkTintOpacity: Double = 0.10
+    /// Opacity of the frost blur layer, 0...1. `1` is a full system blur.
+    /// This is a real fade, not Material and not the broken animator trick.
+    static let frostBlurIntensity: CGFloat = 0.78
+    /// Lightest system blur under that fade. `.extraLight` is softer than `.light`.
+    static let frostBlurStyle: UIBlurEffect.Style = .extraLight
+    /// White wash for `.clear`. 0 = fully clear, 1 = opaque white.
+    static let clearTintOpacity: Double = 0.10
+    /// White wash for `.wash`. Around 0.30 starts looking milky.
+    static let washTintOpacity: Double = 0.20
+    /// White wash for `.frost`. Keep this lighter so the blur does the lifting.
+    static let frostTintOpacity: Double = 0.08
     static let cornerRadius: CGFloat = 26
     /// Left/right inset between the screen edges and the sheet.
     static let horizontalMargin: CGFloat = 14
@@ -1360,6 +1404,13 @@ fileprivate enum CreateScenicSheetMetrics {
     /// Fixed strip reserved below the sheet for the bottom menu. Raise it to sit the sheet higher;
     /// lower it to let the sheet's bottom border approach the custom menu.
     static let bottomReserve: CGFloat = 96
+    /// Shared pill for the floating Save and Next buttons. They sit on opposite corners and
+    /// should read as the same control, not two different sizes.
+    static let floatingActionButtonWidth: CGFloat = 92
+    static let floatingActionButtonHeight: CGFloat = 44
+    static let floatingActionButtonCornerRadius: CGFloat = 12
+    static let floatingActionButtonTitleSize: CGFloat = 15
+    static let floatingActionButtonIconSize: CGFloat = 12
     /// Gap between Save/Next and the sheet's left, right, and bottom edges, so the buttons sit
     /// inside the writing area instead of resting on the border.
     static let floatingActionInset: CGFloat = 14
@@ -1439,14 +1490,12 @@ fileprivate struct CreateSaveAttentionNudge<Content: View>: View {
     }
 }
 
-/// One place to tune the create-page menu glass. Background classification lives on
-/// `CreatePaperStyleChoice.usesDarkMenuChrome` below.
+/// One place to tune the create-page menu glass. Which paper uses which look lives on
+/// `CreatePaperStyleChoice.chrome` below.
 fileprivate enum CreateMenuGlassMetrics {
-    static let darkBackgroundTintOpacity: Double = CreateScenicSheetMetrics.darkArtworkTintOpacity
-    static let lightBackgroundTintOpacity: Double = 0.34
-    static let darkBackgroundUsesMaterial = CreateScenicSheetMetrics.usesMaterial
-    static let lightBackgroundUsesMaterial = false
-    static let material: Material = CreateScenicSheetMetrics.material
+    static let clearTintOpacity: Double = CreateScenicSheetMetrics.clearTintOpacity
+    static let washTintOpacity: Double = 0.34
+    static let frostTintOpacity: Double = 0.10
     static let borderOpacity: Double = CreateScenicSheetMetrics.borderOpacity
     static let shadowOpacity: Double = CreateScenicSheetMetrics.shadowOpacity
     static let shadowRadius: CGFloat = CreateScenicSheetMetrics.shadowRadius
@@ -1457,11 +1506,44 @@ fileprivate enum CreateMenuGlassMetrics {
     static let lightMutedForeground = Color.storyInk.opacity(0.62)
 }
 
+/// Faded system blur. Intensity is the layer's opacity, which is what actually
+/// lets artwork show through. A paused `UIViewPropertyAnimator` still landed on
+/// a full blur, so Moon never changed when the intensity number did.
+fileprivate struct CreateFrostBlurView: UIViewRepresentable {
+    var intensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
+    var style: UIBlurEffect.Style = CreateScenicSheetMetrics.frostBlurStyle
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .clear
+        container.isOpaque = false
+        container.isUserInteractionEnabled = false
+
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: style))
+        blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        blur.frame = container.bounds
+        blur.tag = Self.blurTag
+        container.addSubview(blur)
+        container.alpha = min(max(intensity, 0), 1)
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        uiView.alpha = min(max(intensity, 0), 1)
+        if let blur = uiView.viewWithTag(Self.blurTag) as? UIVisualEffectView {
+            blur.effect = UIBlurEffect(style: style)
+        }
+    }
+
+    private static let blurTag = 17
+}
+
 fileprivate extension View {
     func createGlassRoundedBackground(
         cornerRadius: CGFloat,
         tintOpacity: Double = 0.44,
-        usesMaterial: Bool = CreateScenicSheetMetrics.usesMaterial
+        usesMaterial: Bool = false,
+        frostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
@@ -1469,7 +1551,9 @@ fileprivate extension View {
             .background {
                 ZStack {
                     if usesMaterial {
-                        shape.fill(CreateMenuGlassMetrics.material)
+                        CreateFrostBlurView(intensity: frostIntensity)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipShape(shape)
                     }
 
                     shape.fill(Color.white.opacity(tintOpacity))
@@ -1491,7 +1575,8 @@ fileprivate extension View {
 
     func createGlassCapsuleBackground(
         tintOpacity: Double = 0.44,
-        usesMaterial: Bool = CreateScenicSheetMetrics.usesMaterial
+        usesMaterial: Bool = false,
+        frostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
     ) -> some View {
         let shape = Capsule()
 
@@ -1499,7 +1584,9 @@ fileprivate extension View {
             .background {
                 ZStack {
                     if usesMaterial {
-                        shape.fill(CreateMenuGlassMetrics.material)
+                        CreateFrostBlurView(intensity: frostIntensity)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipShape(shape)
                     }
 
                     shape.fill(Color.white.opacity(tintOpacity))
@@ -1521,7 +1608,8 @@ fileprivate extension View {
 
     func createGlassCircleBackground(
         tintOpacity: Double = 0.44,
-        usesMaterial: Bool = CreateScenicSheetMetrics.usesMaterial
+        usesMaterial: Bool = false,
+        frostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
     ) -> some View {
         let shape = Circle()
 
@@ -1529,7 +1617,9 @@ fileprivate extension View {
             .background {
                 ZStack {
                     if usesMaterial {
-                        shape.fill(CreateMenuGlassMetrics.material)
+                        CreateFrostBlurView(intensity: frostIntensity)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipShape(shape)
                     }
 
                     shape.fill(Color.white.opacity(tintOpacity))
@@ -1925,59 +2015,82 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var scenicSheetTintOpacity: Double {
-        switch self {
-        case .nightCity, .cyberFuture, .deepSea, .nightSky, .cozyRoom, .cozyWindow:
-            CreateScenicSheetMetrics.darkArtworkTintOpacity
-        default:
-            CreateScenicSheetMetrics.tintOpacity
-        }
-    }
-
-    /// Move a paper here when its background needs white menu text and clearer glass.
-    var usesDarkMenuChrome: Bool {
+    /// Editor sheet and page UI are independent. Use `.both` when they should match.
+    var chrome: CreatePaperChrome {
         switch self {
         case .nightCity,
                 .cyberFuture,
                 .deepSea,
-                .cozyRoom,
-                .cozyWindow,
                 .nightSky,
-                .lofiStreet:
-            true
-        case .collegeRuled,
+                .cozyRoom,
+                .cozyWindow:
+            .both(.clear)
+        case .moon,
+                .peachWildflowers,
+                .inkSketchbook,
+                .oceanWave,
+                .cherryBlossom,
+                .pastelSkyline,
+                .twilightCity,
+                .lofiStreet,
+                .collegeRuled,
                 .blank,
                 .watercolorPaper,
                 .cottonPaper,
-                .recycledPaper,
-                .pastelSkyline,
-                .rooftopCat1,
+                .recycledPaper:
+            CreatePaperChrome(editor: .wash, menu: .frost, menuFrostIntensity: 0.78)
+        case .rooftopCat1,
                 .japaneseTown,
                 .japaneseHome,
                 .trainView,
                 .daytimeCoffeeShop,
                 .lofiGirl,
-                .peachWildflowers,
-                .inkSketchbook,
-                .moon,
-                .purpleClouds,
-                .twilightCity,
-                .cherryBlossom,
-                .oceanWave:
-            false
+                .purpleClouds:
+            .both(.wash)
         }
     }
 
+    var scenicSheetTintOpacity: Double {
+        switch chrome.editor {
+        case .clear:
+            CreateScenicSheetMetrics.clearTintOpacity
+        case .wash:
+            CreateScenicSheetMetrics.washTintOpacity
+        case .frost:
+            CreateScenicSheetMetrics.frostTintOpacity
+        }
+    }
+
+    var scenicSheetUsesMaterial: Bool {
+        chrome.editor == .frost
+    }
+
+    var scenicSheetFrostIntensity: CGFloat {
+        chrome.editorFrostIntensity
+    }
+
+    /// Clear menu looks sit on dark art, so menu icons stay light.
+    var usesDarkMenuChrome: Bool {
+        chrome.menu == .clear
+    }
+
     var menuGlassTintOpacity: Double {
-        usesDarkMenuChrome
-            ? CreateMenuGlassMetrics.darkBackgroundTintOpacity
-            : CreateMenuGlassMetrics.lightBackgroundTintOpacity
+        switch chrome.menu {
+        case .clear:
+            CreateMenuGlassMetrics.clearTintOpacity
+        case .wash:
+            CreateMenuGlassMetrics.washTintOpacity
+        case .frost:
+            CreateMenuGlassMetrics.frostTintOpacity
+        }
     }
 
     var menuGlassUsesMaterial: Bool {
-        usesDarkMenuChrome
-            ? CreateMenuGlassMetrics.darkBackgroundUsesMaterial
-            : CreateMenuGlassMetrics.lightBackgroundUsesMaterial
+        chrome.menu == .frost
+    }
+
+    var menuFrostIntensity: CGFloat {
+        chrome.menuFrostIntensity
     }
 
     /// Image papers whose page is dark enough that toolbar chrome should use light text.
@@ -2820,6 +2933,10 @@ struct CreateEntryView: View {
         selectedPaperStyleChoice.menuGlassUsesMaterial
     }
 
+    private var createMenuFrostIntensity: CGFloat {
+        selectedPaperStyleChoice.menuFrostIntensity
+    }
+
     private var createMenuForeground: Color {
         selectedPaperStyleChoice.usesDarkMenuChrome
             ? CreateMenuGlassMetrics.darkForeground
@@ -2930,6 +3047,7 @@ struct CreateEntryView: View {
                     .transition(.scale(scale: 0.86).combined(with: .opacity))
             }
         }
+        .animation(.snappy(duration: 0.22), value: isCreateKeyboardChromeVisible)
         .overlay {
             if showsSavedConfirmationCard {
                 savedConfirmationCard
@@ -4247,7 +4365,7 @@ struct CreateEntryView: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(createMenuForeground)
                         .frame(width: 40, height: 38)
-                        .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
+                        .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial, frostIntensity: createMenuFrostIntensity)
                         .frame(width: 48, height: 48)
                         .contentShape(Rectangle())
                 }
@@ -4345,7 +4463,7 @@ struct CreateEntryView: View {
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(createMenuForeground)
                 .frame(width: 36, height: 38)
-                .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
+                .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial, frostIntensity: createMenuFrostIntensity)
                 .frame(width: toolbarOverflowMenuWidth, height: 48)
                 .contentShape(Rectangle())
         }
@@ -4387,7 +4505,8 @@ struct CreateEntryView: View {
             .createGlassRoundedBackground(
                 cornerRadius: 12,
                 tintOpacity: createMenuGlassTintOpacity,
-                usesMaterial: createMenuGlassUsesMaterial
+                usesMaterial: createMenuGlassUsesMaterial,
+                frostIntensity: createMenuFrostIntensity
             )
             .frame(maxWidth: 210)
             .accessibilityLabel("Entry date, \(editorToolbarDateText)")
@@ -4427,11 +4546,11 @@ struct CreateEntryView: View {
     private func toolbarSaveCheckmark(bounceTrigger: Int) -> some View {
         if #available(iOS 17.0, *) {
             Image(systemName: "checkmark")
-                .font(.system(size: 14, weight: .heavy))
+                .font(.system(size: CreateScenicSheetMetrics.floatingActionButtonIconSize, weight: .bold))
                 .symbolEffect(.bounce, value: bounceTrigger)
         } else {
             Image(systemName: "checkmark")
-                .font(.system(size: 14, weight: .heavy))
+                .font(.system(size: CreateScenicSheetMetrics.floatingActionButtonIconSize, weight: .bold))
         }
     }
 
@@ -4440,7 +4559,7 @@ struct CreateEntryView: View {
             Button {
                 performToolbarSave()
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     if isToolbarSaveInProgress {
                         ProgressView()
                             .controlSize(.mini)
@@ -4450,18 +4569,23 @@ struct CreateEntryView: View {
                     }
 
                     Text(toolbarSaveButtonTitle)
-                        .font(.system(size: 15, weight: .heavy))
                         .lineLimit(1)
-
+                        .minimumScaleFactor(0.82)
                 }
-                .frame(width: 104, height: 42)
+                .font(.system(size: CreateScenicSheetMetrics.floatingActionButtonTitleSize, weight: .bold))
                 .foregroundStyle(Color.storyPurple)
-                .createGlassRoundedBackground(
-                    cornerRadius: 12,
-                    tintOpacity: createMenuGlassTintOpacity,
-                    usesMaterial: createMenuGlassUsesMaterial
+                .padding(.horizontal, 14)
+                .frame(
+                    width: CreateScenicSheetMetrics.floatingActionButtonWidth,
+                    height: CreateScenicSheetMetrics.floatingActionButtonHeight
                 )
-                .contentShape(Rectangle())
+                .createGlassRoundedBackground(
+                    cornerRadius: CreateScenicSheetMetrics.floatingActionButtonCornerRadius,
+                    tintOpacity: createMenuGlassTintOpacity,
+                    usesMaterial: createMenuGlassUsesMaterial,
+                    frostIntensity: createMenuFrostIntensity
+                )
+                .contentShape(RoundedRectangle(cornerRadius: CreateScenicSheetMetrics.floatingActionButtonCornerRadius, style: .continuous))
                 .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
             }
             .buttonStyle(.plain)
@@ -4477,6 +4601,7 @@ struct CreateEntryView: View {
 
     private var showsBottomSaveButton: Bool {
         showsToolbarSaveButton
+            && !isCreateKeyboardChromeVisible
             && !isBottomOptionsPanelVisible
             && !isCompanionChatVisible
             && (canUseToolbarSaveButton || isToolbarSaveInProgress)
@@ -5601,7 +5726,11 @@ struct CreateEntryView: View {
     }
 
     private func scenicWritingSheet(bottomContentInset: CGFloat) -> some View {
-        CreateScenicWritingSheet(tintOpacity: selectedPaperStyleChoice.scenicSheetTintOpacity) {
+        CreateScenicWritingSheet(
+            tintOpacity: selectedPaperStyleChoice.scenicSheetTintOpacity,
+            usesMaterial: selectedPaperStyleChoice.scenicSheetUsesMaterial,
+            frostIntensity: selectedPaperStyleChoice.scenicSheetFrostIntensity
+        ) {
             draftEditorContent(scrollsInternally: true, pageHeight: nil)
                 .padding(.bottom, bottomContentInset)
         }
@@ -6435,6 +6564,13 @@ struct CreateEntryView: View {
         max(visibleHeight, UIScreen.main.bounds.height) * 2
     }
 
+    private var isCreateKeyboardChromeVisible: Bool {
+        isKeyboardVisible
+            || isBodyEditorEditing
+            || isTitleFocused
+            || activeKeyboardFormattingMode != nil
+    }
+
     private var showsSpeechMicButton: Bool {
         !isShowingEntryOptionsPage
             && !isBlockingSaveInProgress
@@ -6444,6 +6580,7 @@ struct CreateEntryView: View {
 
     private var showsFloatingNextButton: Bool {
         showsComposeFlowControls
+            && !isCreateKeyboardChromeVisible
             && !isBottomOptionsPanelVisible
             && !isCompanionChatVisible
             && !isBlockingSaveInProgress
@@ -6492,7 +6629,8 @@ struct CreateEntryView: View {
             isListening: speechTranscriber.state.isListening,
             foregroundColor: createMenuForeground,
             tintOpacity: createMenuGlassTintOpacity,
-            usesMaterial: createMenuGlassUsesMaterial
+            usesMaterial: createMenuGlassUsesMaterial,
+            frostIntensity: createMenuFrostIntensity
         ) {
             toggleSpeechTranscription()
         }
@@ -6868,7 +7006,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
-        .createGlassRoundedBackground(cornerRadius: 16, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
+        .createGlassRoundedBackground(cornerRadius: 16, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial, frostIntensity: createMenuFrostIntensity)
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
         .frame(maxWidth: 420)
@@ -6911,7 +7049,7 @@ struct CreateEntryView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
+        .createGlassRoundedBackground(cornerRadius: 8, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial, frostIntensity: createMenuFrostIntensity)
     }
 
     private var referencePhotosShelfButton: some View {
@@ -7066,7 +7204,7 @@ struct CreateEntryView: View {
                 ZStack {
                     Color.clear
                         .frame(width: 56, height: 56)
-                        .createGlassCircleBackground(tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
+                        .createGlassCircleBackground(tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial, frostIntensity: createMenuFrostIntensity)
 
                     Image(systemName: "bubble.left.and.bubble.right")
                         .font(.system(size: 20, weight: .semibold))
@@ -7162,7 +7300,7 @@ struct CreateEntryView: View {
             .font(.system(size: 31, weight: .semibold))
             .foregroundStyle(createMenuForeground)
             .frame(width: 60, height: 60)
-            .createGlassCircleBackground(tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
+            .createGlassCircleBackground(tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial, frostIntensity: createMenuFrostIntensity)
     }
 
     private var selectedJournalShelfTitles: [String] {
@@ -7712,14 +7850,22 @@ struct CreateEntryView: View {
                     .fixedSize(horizontal: true, vertical: false)
 
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: CreateScenicSheetMetrics.floatingActionButtonIconSize, weight: .bold))
             }
-            .font(.system(size: 15, weight: .bold))
+            .font(.system(size: CreateScenicSheetMetrics.floatingActionButtonTitleSize, weight: .bold))
             .foregroundStyle(createMenuForeground)
             .padding(.horizontal, 14)
-            .frame(width: 92, height: 44)
-            .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .frame(
+                width: CreateScenicSheetMetrics.floatingActionButtonWidth,
+                height: CreateScenicSheetMetrics.floatingActionButtonHeight
+            )
+            .createGlassRoundedBackground(
+                cornerRadius: CreateScenicSheetMetrics.floatingActionButtonCornerRadius,
+                tintOpacity: createMenuGlassTintOpacity,
+                usesMaterial: createMenuGlassUsesMaterial,
+                frostIntensity: createMenuFrostIntensity
+            )
+            .contentShape(RoundedRectangle(cornerRadius: CreateScenicSheetMetrics.floatingActionButtonCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(isToolbarSaveInProgress)
@@ -16545,6 +16691,8 @@ func artStyleAssetName(for title: String) -> String {
 /// rather than a dozen nested modifier generics.
 fileprivate struct CreateScenicWritingSheet<Content: View>: View {
     var tintOpacity: Double
+    var usesMaterial: Bool = false
+    var frostIntensity: CGFloat = CreateScenicSheetMetrics.frostBlurIntensity
     @ViewBuilder var content: Content
 
     private var shape: RoundedRectangle {
@@ -16571,8 +16719,10 @@ fileprivate struct CreateScenicWritingSheet<Content: View>: View {
 
     private var sheetSurface: some View {
         ZStack {
-            if CreateScenicSheetMetrics.usesMaterial {
-                shape.fill(CreateScenicSheetMetrics.material)
+            if usesMaterial {
+                CreateFrostBlurView(intensity: frostIntensity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipShape(shape)
             }
 
             shape.fill(Color.white.opacity(tintOpacity))
