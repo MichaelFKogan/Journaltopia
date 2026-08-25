@@ -4034,6 +4034,9 @@ struct CreateEntryView: View {
                 isKeyboardVisible = true
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+            KeyboardCornerRadiusRemover.removeKeyboardCornerRadius()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             withAnimation(.snappy(duration: 0.22)) {
                 isKeyboardVisible = false
@@ -13892,38 +13895,6 @@ private enum AddToJournalTab: CaseIterable, Identifiable {
         case .new:
             return "New Journal"
         }
-    }
-}
-
-private enum KeyboardCornerRadiusRemover {
-    static func removeKeyboardCornerRadius() {
-        DispatchQueue.main.async {
-            removeKeyboardCornerRadius(in: UIApplication.shared.connectedScenes)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            removeKeyboardCornerRadius(in: UIApplication.shared.connectedScenes)
-        }
-    }
-
-    private static func removeKeyboardCornerRadius(in scenes: Set<UIScene>) {
-        scenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .forEach { window in
-                removeKeyboardCornerRadius(from: window)
-            }
-    }
-
-    private static func removeKeyboardCornerRadius(from view: UIView) {
-        let className = NSStringFromClass(type(of: view))
-
-        if className.contains("UIInputSet") || className.contains("UIKeyboard") {
-            view.layer.cornerRadius = 0
-            view.layer.maskedCorners = []
-        }
-
-        view.subviews.forEach(removeKeyboardCornerRadius(from:))
     }
 }
 
