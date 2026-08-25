@@ -375,7 +375,7 @@ private struct EntrySpeechMicButton: View {
                 }
 
                 Image(systemName: isListening ? "mic.fill" : "mic")
-                    .font(.system(size: 23, weight: .bold))
+                    .font(.system(size: 23, weight: .regular))
                     .foregroundStyle(foregroundColor)
                     .frame(width: 58, height: 58)
                     .createGlassCircleBackground(tintOpacity: tintOpacity, usesMaterial: usesMaterial)
@@ -1443,9 +1443,9 @@ fileprivate struct CreateSaveAttentionNudge<Content: View>: View {
 /// `CreatePaperStyleChoice.usesDarkMenuChrome` below.
 fileprivate enum CreateMenuGlassMetrics {
     static let darkBackgroundTintOpacity: Double = CreateScenicSheetMetrics.darkArtworkTintOpacity
-    static let lightBackgroundTintOpacity: Double = 0.16
+    static let lightBackgroundTintOpacity: Double = 0.34
     static let darkBackgroundUsesMaterial = CreateScenicSheetMetrics.usesMaterial
-    static let lightBackgroundUsesMaterial = true
+    static let lightBackgroundUsesMaterial = false
     static let material: Material = CreateScenicSheetMetrics.material
     static let borderOpacity: Double = CreateScenicSheetMetrics.borderOpacity
     static let shadowOpacity: Double = CreateScenicSheetMetrics.shadowOpacity
@@ -1568,15 +1568,15 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case nightCity
     case lofiStreet
     case cyberFuture
-    case japaneseTown
+    case cozyWindow
+    case daytimeCoffeeShop
+    case cozyRoom
+    case rooftopCat1
+    case deepSea
     case japaneseHome
     case trainView
-    case daytimeCoffeeShop
-    case rooftopCat1
-    case cozyRoom
-    case cozyWindow
+    case japaneseTown
     case lofiGirl
-    case deepSea
 
     static let defaultChoice: CreatePaperStyleChoice = .collegeRuled
 
@@ -4441,7 +4441,7 @@ struct CreateEntryView: View {
                     if isToolbarSaveInProgress {
                         ProgressView()
                             .controlSize(.mini)
-                            .tint(Color.white)
+                            .tint(Color.storyPurple)
                     } else {
                         toolbarSaveCheckmark(bounceTrigger: bounceTrigger)
                     }
@@ -4452,13 +4452,12 @@ struct CreateEntryView: View {
 
                 }
                 .frame(width: 104, height: 42)
-                .foregroundStyle(Color.white)
-                .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                .foregroundStyle(Color.storyPurple)
+                .createGlassRoundedBackground(
+                    cornerRadius: 12,
+                    tintOpacity: createMenuGlassTintOpacity,
+                    usesMaterial: createMenuGlassUsesMaterial
                 )
-                .shadow(color: Color.storyPurple.opacity(0.28), radius: 14, y: 7)
                 .contentShape(Rectangle())
                 .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
             }
@@ -6237,7 +6236,7 @@ struct CreateEntryView: View {
     }
 
     private var completedEntryStoryboardBottomPadding: CGFloat {
-        speechMicBottomPadding + (showsSpeechMicButton ? 110 : 18)
+        speechMicBottomPadding + (showsSpeechMicButton ? 142 : 18)
     }
 
     @ViewBuilder
