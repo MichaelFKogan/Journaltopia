@@ -124,18 +124,26 @@ struct OnboardingView: View {
             pageIndicator
 
             Button(action: primaryAction) {
-                Text(primaryActionTitle)
-                    .font(.system(size: 18, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(
-                        Color.storyPurple,
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    )
-                    .shadow(color: Color.storyPurple.opacity(0.26), radius: 14, y: 6)
+                HStack(spacing: 8) {
+                    if isLastPage {
+                        Image(systemName: "video.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(primaryActionTitle)
+                        .font(.system(size: 18, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 56)
+                .background(
+                    Color.storyPurple,
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .shadow(color: Color.storyPurple.opacity(0.26), radius: 14, y: 6)
             }
             .buttonStyle(.plain)
         }

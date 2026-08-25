@@ -362,6 +362,9 @@ private final class EntrySpeechTranscriber: ObservableObject {
 
 private struct EntrySpeechMicButton: View {
     let isListening: Bool
+    var foregroundColor: Color = Color.white
+    var tintOpacity: Double = 0.20
+    var usesMaterial: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -373,13 +376,9 @@ private struct EntrySpeechMicButton: View {
 
                 Image(systemName: isListening ? "mic.fill" : "mic")
                     .font(.system(size: 23, weight: .bold))
-                    .foregroundStyle(isListening ? Color.storyPurple : Color.white)
+                    .foregroundStyle(foregroundColor)
                     .frame(width: 58, height: 58)
-                    .background(
-                        Circle()
-                            .fill(isListening ? Color.white : Color.storyPurple)
-                    )
-                    .shadow(color: Color.storyInk.opacity(isListening ? 0.22 : 0.16), radius: 14, y: 7)
+                    .createGlassCircleBackground(tintOpacity: tintOpacity, usesMaterial: usesMaterial)
                     .overlay(alignment: .topTrailing) {
                         if isListening {
                             Circle()
@@ -1358,10 +1357,18 @@ fileprivate enum CreateScenicSheetMetrics {
     static let horizontalMargin: CGFloat = 14
     /// Gap between the navigation bar and the top of the sheet.
     static let topMargin: CGFloat = 8
-    /// Fixed strip reserved below the sheet for the bottom menu. The sheet's bottom edge sits
-    /// just above the menu and never moves, so taller panels draw over the sheet rather than
-    /// pushing it. Raise it to sit the sheet higher.
-    static let bottomReserve: CGFloat = 190
+    /// Fixed strip reserved below the sheet for the bottom menu. Raise it to sit the sheet higher;
+    /// lower it to let the sheet's bottom border approach the custom menu.
+    static let bottomReserve: CGFloat = 96
+    /// Gap between Save/Next and the sheet's left, right, and bottom edges, so the buttons sit
+    /// inside the writing area instead of resting on the border.
+    static let floatingActionInset: CGFloat = 14
+    static var floatingActionHorizontalPadding: CGFloat {
+        horizontalMargin + floatingActionInset
+    }
+    static var floatingActionBottomPadding: CGFloat {
+        bottomReserve + floatingActionInset
+    }
     static let borderOpacity: Double = 0.30
     static let shadowOpacity: Double = 0.16
     static let shadowRadius: CGFloat = 18
@@ -1371,11 +1378,72 @@ fileprivate enum CreateScenicSheetMetrics {
     static let placeholderColor = Color.storyGray.opacity(0.8)
 }
 
+/// Periodic “I’m here” nudge for the floating Save button. Still most of the time; one spring
+/// every few seconds is enough to catch the eye without a looping pulse.
+fileprivate enum CreateSaveAttentionMetrics {
+    static let interval: Duration = .milliseconds(4_500)
+    static let peakScale: CGFloat = 1.05
+    static let holdAtPeak: Duration = .milliseconds(160)
+}
+
+fileprivate struct CreateSaveAttentionNudge<Content: View>: View {
+    var isActive: Bool
+    @ViewBuilder var content: (_ bounceTrigger: Int) -> Content
+
+    @State private var bounceTrigger = 0
+    @State private var scale: CGFloat = 1
+
+    var body: some View {
+        content(bounceTrigger)
+            .scaleEffect(scale)
+            .task(id: isActive) {
+                await runNudgeLoop()
+            }
+    }
+
+    @MainActor
+    private func runNudgeLoop() async {
+        scale = 1
+        guard isActive else { return }
+
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: CreateSaveAttentionMetrics.interval)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled, isActive else { return }
+
+            bounceTrigger += 1
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.56)) {
+                scale = CreateSaveAttentionMetrics.peakScale
+            }
+
+            do {
+                try await Task.sleep(for: CreateSaveAttentionMetrics.holdAtPeak)
+            } catch {
+                scale = 1
+                return
+            }
+
+            guard !Task.isCancelled else {
+                scale = 1
+                return
+            }
+
+            withAnimation(.spring(response: 0.40, dampingFraction: 0.72)) {
+                scale = 1
+            }
+        }
+    }
+}
+
 /// One place to tune the create-page menu glass. Background classification lives on
 /// `CreatePaperStyleChoice.usesDarkMenuChrome` below.
 fileprivate enum CreateMenuGlassMetrics {
     static let darkBackgroundTintOpacity: Double = CreateScenicSheetMetrics.darkArtworkTintOpacity
-    static let lightBackgroundTintOpacity: Double = 0.34
+    static let lightBackgroundTintOpacity: Double = 0.16
     static let darkBackgroundUsesMaterial = CreateScenicSheetMetrics.usesMaterial
     static let lightBackgroundUsesMaterial = true
     static let material: Material = CreateScenicSheetMetrics.material
@@ -1488,28 +1556,27 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     case watercolorPaper
     case cottonPaper
     case recycledPaper
+    case peachWildflowers
+    case inkSketchbook
+    case moon
+    case oceanWave
+    case cherryBlossom
+    case purpleClouds
     case pastelSkyline
+    case twilightCity
+    case nightSky
     case nightCity
+    case lofiStreet
     case cyberFuture
-    case softClouds
-    case moonCat
-    case deepSea
+    case japaneseTown
+    case japaneseHome
+    case trainView
+    case daytimeCoffeeShop
     case rooftopCat1
     case cozyRoom
-    case daytimeCoffeeShop
+    case cozyWindow
     case lofiGirl
-    case moon
-    case peachWildflowers
-    case nightSky
-    case doodleGrid
-    case retroComputer
-    case lofiStreet
-    case inkSketchbook
-    case purpleClouds
-    case twilightCity
-    case cherryBlossom
-    case oceanWave
-    case studyNotes
+    case deepSea
 
     static let defaultChoice: CreatePaperStyleChoice = .collegeRuled
 
@@ -1533,16 +1600,20 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Night City"
         case .cyberFuture:
             "Cyber Future"
-        case .softClouds:
-            "Soft Clouds"
-        case .moonCat:
-            "Moon Cat"
         case .deepSea:
             "Deep Sea"
         case .rooftopCat1:
             "Rooftop Cat 1"
         case .cozyRoom:
             "Cozy Room"
+        case .cozyWindow:
+            "Cozy Window"
+        case .japaneseTown:
+            "Japanese Town"
+        case .japaneseHome:
+            "Japanese Home"
+        case .trainView:
+            "Train View"
         case .daytimeCoffeeShop:
             "Daytime Coffee Shop"
         case .lofiGirl:
@@ -1553,10 +1624,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Peach Wildflowers"
         case .nightSky:
             "Night Sky"
-        case .doodleGrid:
-            "Doodle Grid"
-        case .retroComputer:
-            "Retro Computer"
         case .lofiStreet:
             "LoFi Street"
         case .inkSketchbook:
@@ -1569,8 +1636,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "Cherry Blossom"
         case .oceanWave:
             "Ocean Wave"
-        case .studyNotes:
-            "Study Notes"
         }
     }
 
@@ -1603,6 +1668,25 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         backgroundImageName != nil
     }
 
+    /// Crop origin for the paper picker thumbnails. Scenic art that is taller than the square
+    /// keeps its subject at the bottom instead of the default centered crop.
+    var pickerPreviewAlignment: Alignment {
+        switch self {
+        case .nightCity,
+                .rooftopCat1,
+                .cozyWindow,
+                .moon,
+                .peachWildflowers,
+                .nightSky,
+                .inkSketchbook,
+                .purpleClouds,
+                .twilightCity:
+            .bottom
+        default:
+            .center
+        }
+    }
+
     /// EXPERIMENT (translucent-background): scenic art papers render the image once as a fixed
     /// full-screen backdrop and float a translucent writing sheet on top of it, instead of
     /// tiling the art inside the editor's own scroll view.
@@ -1611,25 +1695,24 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         case .pastelSkyline,
                 .nightCity,
                 .cyberFuture,
-                .softClouds,
-                .moonCat,
                 .deepSea,
                 .rooftopCat1,
                 .cozyRoom,
+                .cozyWindow,
+                .japaneseTown,
+                .japaneseHome,
+                .trainView,
                 .daytimeCoffeeShop,
                 .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
-                .doodleGrid,
-                .retroComputer,
                 .lofiStreet,
                 .inkSketchbook,
                 .purpleClouds,
                 .twilightCity,
                 .cherryBlossom,
-                .oceanWave,
-                .studyNotes:
+                .oceanWave:
             true
         case .collegeRuled,
                 .blank,
@@ -1662,16 +1745,20 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "night_city"
         case .cyberFuture:
             "cyber_future"
-        case .softClouds:
-            "soft_clouds"
-        case .moonCat:
-            "moon_cat"
         case .deepSea:
             "deep_sea"
         case .rooftopCat1:
             "rooftop_cat 1"
         case .cozyRoom:
             "cozy_room"
+        case .cozyWindow:
+            "cozy_window"
+        case .japaneseTown:
+            "japanese_town"
+        case .japaneseHome:
+            "japanese_home"
+        case .trainView:
+            "train_view"
         case .daytimeCoffeeShop:
             "daytime_coffee_shop"
         case .lofiGirl:
@@ -1682,10 +1769,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "peach_wildflowers"
         case .nightSky:
             "night_sky"
-        case .doodleGrid:
-            "doodle_grid"
-        case .retroComputer:
-            "retro_computer"
         case .lofiStreet:
             "lofi_street"
         case .inkSketchbook:
@@ -1698,8 +1781,6 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             "cherry_blossom"
         case .oceanWave:
             "ocean_wave"
-        case .studyNotes:
-            "study_notes"
         case .collegeRuled, .blank:
             nil
         }
@@ -1710,11 +1791,19 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     var backgroundVideoName: String? {
         switch self {
         case .rooftopCat1:
-            "rooftap_cat_1"
+            "rooftop_cat_1"
         case .deepSea:
             "deep_sea"
         case .cozyRoom:
             "cozy_room"
+        case .cozyWindow:
+            "cozy_window"
+        case .japaneseTown:
+            "japanese_town"
+        case .japaneseHome:
+            "japanese_home"
+        case .trainView:
+            "train_view"
         case .daytimeCoffeeShop:
             "daytime_coffee_shop"
         case .lofiGirl:
@@ -1726,7 +1815,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
 
     var backgroundVideoExtension: String {
         switch self {
-        case .cozyRoom, .daytimeCoffeeShop, .lofiGirl:
+        case .cozyRoom, .cozyWindow, .japaneseTown, .japaneseHome, .trainView, .daytimeCoffeeShop, .lofiGirl:
             "mp4"
         default:
             "MOV"
@@ -1744,25 +1833,24 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .pastelSkyline,
                 .nightCity,
                 .cyberFuture,
-                .softClouds,
-                .moonCat,
                 .deepSea,
                 .rooftopCat1,
                 .cozyRoom,
+                .cozyWindow,
+                .japaneseTown,
+                .japaneseHome,
+                .trainView,
                 .daytimeCoffeeShop,
                 .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
-                .doodleGrid,
-                .retroComputer,
                 .lofiStreet,
                 .inkSketchbook,
                 .purpleClouds,
                 .twilightCity,
                 .cherryBlossom,
-                .oceanWave,
-                .studyNotes:
+                .oceanWave:
             18
         }
     }
@@ -1778,25 +1866,24 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .pastelSkyline,
                 .nightCity,
                 .cyberFuture,
-                .softClouds,
-                .moonCat,
                 .deepSea,
                 .rooftopCat1,
                 .cozyRoom,
+                .cozyWindow,
+                .japaneseTown,
+                .japaneseHome,
+                .trainView,
                 .daytimeCoffeeShop,
                 .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
-                .doodleGrid,
-                .retroComputer,
                 .lofiStreet,
                 .inkSketchbook,
                 .purpleClouds,
                 .twilightCity,
                 .cherryBlossom,
-                .oceanWave,
-                .studyNotes:
+                .oceanWave:
             0
         }
     }
@@ -1810,25 +1897,24 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         case .pastelSkyline,
                 .nightCity,
                 .cyberFuture,
-                .softClouds,
-                .moonCat,
                 .deepSea,
                 .rooftopCat1,
                 .cozyRoom,
+                .cozyWindow,
+                .japaneseTown,
+                .japaneseHome,
+                .trainView,
                 .daytimeCoffeeShop,
                 .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
-                .doodleGrid,
-                .retroComputer,
                 .lofiStreet,
                 .inkSketchbook,
                 .purpleClouds,
                 .twilightCity,
                 .cherryBlossom,
-                .oceanWave,
-                .studyNotes:
+                .oceanWave:
             .white.opacity(0.78)
         case .collegeRuled,
                 .blank,
@@ -1841,7 +1927,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
 
     var scenicSheetTintOpacity: Double {
         switch self {
-        case .nightCity, .cyberFuture, .deepSea, .nightSky, .cozyRoom:
+        case .nightCity, .cyberFuture, .deepSea, .nightSky, .cozyRoom, .cozyWindow:
             CreateScenicSheetMetrics.darkArtworkTintOpacity
         default:
             CreateScenicSheetMetrics.tintOpacity
@@ -1855,12 +1941,9 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .cyberFuture,
                 .deepSea,
                 .cozyRoom,
+                .cozyWindow,
                 .nightSky,
-                .moon,
-                .purpleClouds,
-                .twilightCity,
-                .lofiStreet,
-                .retroComputer:
+                .lofiStreet:
             true
         case .collegeRuled,
                 .blank,
@@ -1868,17 +1951,19 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .cottonPaper,
                 .recycledPaper,
                 .pastelSkyline,
-                .softClouds,
-                .moonCat,
                 .rooftopCat1,
+                .japaneseTown,
+                .japaneseHome,
+                .trainView,
                 .daytimeCoffeeShop,
                 .lofiGirl,
                 .peachWildflowers,
-                .doodleGrid,
                 .inkSketchbook,
+                .moon,
+                .purpleClouds,
+                .twilightCity,
                 .cherryBlossom,
-                .oceanWave,
-                .studyNotes:
+                .oceanWave:
             false
         }
     }
@@ -1901,25 +1986,24 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         case .pastelSkyline,
                 .nightCity,
                 .cyberFuture,
-                .softClouds,
-                .moonCat,
                 .deepSea,
                 .rooftopCat1,
                 .cozyRoom,
+                .cozyWindow,
+                .japaneseTown,
+                .japaneseHome,
+                .trainView,
                 .daytimeCoffeeShop,
                 .lofiGirl,
                 .moon,
                 .peachWildflowers,
                 .nightSky,
-                .doodleGrid,
-                .retroComputer,
                 .lofiStreet,
                 .inkSketchbook,
                 .purpleClouds,
                 .twilightCity,
                 .cherryBlossom,
-                .oceanWave,
-                .studyNotes:
+                .oceanWave:
             true
         case .collegeRuled,
                 .blank,
@@ -2822,17 +2906,26 @@ struct CreateEntryView: View {
             completedEntryStoryboardFloatingOverlay
         }
         .overlay(alignment: .bottomTrailing) {
-            if showsSpeechMicButton {
-                speechMicButton
-                    .padding(.trailing, 18)
-                    .padding(.bottom, speechMicBottomPadding)
-                    .transition(.scale(scale: 0.86).combined(with: .opacity))
+            if showsFloatingCreateActions {
+                VStack(alignment: .trailing, spacing: 8) {
+                    if showsSpeechMicButton {
+                        speechMicButton
+                            .transition(.scale(scale: 0.86).combined(with: .opacity))
+                    }
+
+                    if showsFloatingNextButton {
+                        bottomToolbarNextButton
+                            .transition(.scale(scale: 0.86).combined(with: .opacity))
+                    }
+                }
+                .padding(.trailing, createFloatingActionHorizontalPadding)
+                .padding(.bottom, createFloatingActionBottomPadding)
             }
         }
         .overlay(alignment: .bottomLeading) {
             if showsBottomSaveButton {
                 toolbarSaveActionButton
-                    .padding(.leading, 18)
+                    .padding(.leading, createFloatingActionHorizontalPadding)
                     .padding(.bottom, bottomSaveButtonPadding)
                     .transition(.scale(scale: 0.86).combined(with: .opacity))
             }
@@ -4257,7 +4350,6 @@ struct CreateEntryView: View {
     }
 
     private var toolbarOverflowMenuWidth: CGFloat { 44 }
-    private var toolbarSaveActionWidth: CGFloat { 94 }
     private var toolbarCloseButtonWidth: CGFloat { 48 }
 
     /// What the leading close button reserves so the principal title stays centred.
@@ -4321,34 +4413,58 @@ struct CreateEntryView: View {
         .accessibilityLabel(selectedEntryJournalTitle.map { "Journal, \($0)" } ?? "Add To Journal")
     }
 
-    private var toolbarSaveActionButton: some View {
-        Button {
-            performToolbarSave()
-        } label: {
-            HStack(spacing: 6) {
-                if isToolbarSaveInProgress {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(Color.storyPurple)
-                } else {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 14, weight: .heavy))
-                }
+    private var isSaveAttentionNudgeActive: Bool {
+        showsBottomSaveButton
+            && !isKeyboardVisible
+            && !isBodyEditorEditing
+            && !isToolbarSaveInProgress
+    }
 
-                Text(toolbarSaveButtonTitle)
-                    .font(.system(size: 15, weight: .heavy))
-                    .lineLimit(1)
-
-            }
-            .frame(width: 104, height: 42)
-            .foregroundStyle(createMenuForeground)
-            .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
-            .frame(width: toolbarSaveActionWidth, height: 48)
-            .contentShape(Rectangle())
-            .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
+    @ViewBuilder
+    private func toolbarSaveCheckmark(bounceTrigger: Int) -> some View {
+        if #available(iOS 17.0, *) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 14, weight: .heavy))
+                .symbolEffect(.bounce, value: bounceTrigger)
+        } else {
+            Image(systemName: "checkmark")
+                .font(.system(size: 14, weight: .heavy))
         }
-        .buttonStyle(.plain)
-        .disabled(!canUseToolbarSaveButton || isToolbarSaveInProgress)
+    }
+
+    private var toolbarSaveActionButton: some View {
+        CreateSaveAttentionNudge(isActive: isSaveAttentionNudgeActive) { bounceTrigger in
+            Button {
+                performToolbarSave()
+            } label: {
+                HStack(spacing: 6) {
+                    if isToolbarSaveInProgress {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(Color.white)
+                    } else {
+                        toolbarSaveCheckmark(bounceTrigger: bounceTrigger)
+                    }
+
+                    Text(toolbarSaveButtonTitle)
+                        .font(.system(size: 15, weight: .heavy))
+                        .lineLimit(1)
+
+                }
+                .frame(width: 104, height: 42)
+                .foregroundStyle(Color.white)
+                .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: Color.storyPurple.opacity(0.28), radius: 14, y: 7)
+                .contentShape(Rectangle())
+                .animation(.snappy(duration: 0.18), value: isToolbarSaveInProgress)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canUseToolbarSaveButton || isToolbarSaveInProgress)
+        }
     }
 
     private var showsToolbarSaveButton: Bool {
@@ -4365,15 +4481,7 @@ struct CreateEntryView: View {
     }
 
     private var bottomSaveButtonPadding: CGFloat {
-        if isFullScreenEditorVisible {
-            return speechMicBottomPadding
-        }
-
-        if isKeyboardVisible || isBodyEditorEditing || activeKeyboardFormattingMode != nil {
-            return speechMicBottomPadding
-        }
-
-        return 196
+        createFloatingActionBottomPadding
     }
 
     private func handleEditorPageTap() {
@@ -6332,6 +6440,39 @@ struct CreateEntryView: View {
             && !isBottomOptionsPanelVisible
     }
 
+    private var showsFloatingNextButton: Bool {
+        showsComposeFlowControls
+            && !isBottomOptionsPanelVisible
+            && !isCompanionChatVisible
+            && !isBlockingSaveInProgress
+    }
+
+    private var showsFloatingCreateActions: Bool {
+        showsSpeechMicButton || showsFloatingNextButton
+    }
+
+    private var createFloatingActionHorizontalPadding: CGFloat {
+        selectedPaperStyleChoice.usesFloatingWritingSheet
+            ? CreateScenicSheetMetrics.floatingActionHorizontalPadding
+            : 18
+    }
+
+    private var createFloatingActionBottomPadding: CGFloat {
+        if isFullScreenEditorVisible {
+            return isKeyboardVisible ? 82 : 24
+        }
+
+        if isKeyboardVisible || isBodyEditorEditing || activeKeyboardFormattingMode != nil {
+            return selectedPaperStyleChoice.usesFloatingWritingSheet
+                ? CreateScenicSheetMetrics.floatingActionInset + 8
+                : 22
+        }
+
+        return selectedPaperStyleChoice.usesFloatingWritingSheet
+            ? CreateScenicSheetMetrics.floatingActionBottomPadding
+            : 100
+    }
+
     private var isBottomOptionsPanelVisible: Bool {
         isPhotosPanelVisible
             || isShowingStoryReferencesSheet
@@ -6341,19 +6482,16 @@ struct CreateEntryView: View {
     }
 
     private var speechMicBottomPadding: CGFloat {
-        if isFullScreenEditorVisible {
-            return isKeyboardVisible ? 82 : 24
-        }
-
-        if isKeyboardVisible || isBodyEditorEditing || activeKeyboardFormattingMode != nil {
-            return 22
-        }
-
-        return 92
+        createFloatingActionBottomPadding
     }
 
     private var speechMicButton: some View {
-        EntrySpeechMicButton(isListening: speechTranscriber.state.isListening) {
+        EntrySpeechMicButton(
+            isListening: speechTranscriber.state.isListening,
+            foregroundColor: createMenuForeground,
+            tintOpacity: createMenuGlassTintOpacity,
+            usesMaterial: createMenuGlassUsesMaterial
+        ) {
             toggleSpeechTranscription()
         }
     }
@@ -6377,13 +6515,6 @@ struct CreateEntryView: View {
     private var entryDraftBottomBar: some View {
         VStack(spacing: 0) {
             activeEntryDraftPanel
-
-            if !isBottomOptionsPanelVisible && !isCompanionChatVisible {
-                entryReferencesShelf
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
 
             floatingEditorMenu
         }
@@ -6695,6 +6826,15 @@ struct CreateEntryView: View {
     private var floatingEditorMenu: some View {
         HStack(spacing: 8) {
             floatingMenuActionButton(
+                title: "Photos",
+                systemName: "camera",
+                foregroundColor: createMenuForeground,
+                accessibilityLabel: isShowingStoryReferencesSheet ? "Close story references" : "Open story references"
+            ) {
+                openReferencesPanel(tab: .photos)
+            }
+
+            floatingMenuActionButton(
                 title: "Font",
                 systemName: CreateFormattingTab.fontStyle.sheetSymbol,
                 foregroundColor: createMenuForeground,
@@ -6722,12 +6862,6 @@ struct CreateEntryView: View {
                     : (selectedJournalShelfTitles.isEmpty ? "Add to journal" : "\(journalShelfSummary), change journals")
             ) {
                 openJournalsFromShelf()
-            }
-
-            if showsComposeFlowControls {
-                bottomToolbarNextButton
-                    .padding(.leading, 4)
-                    .layoutPriority(2)
             }
         }
         .padding(.horizontal, 16)
@@ -7579,11 +7713,10 @@ struct CreateEntryView: View {
                     .font(.system(size: 12, weight: .bold))
             }
             .font(.system(size: 15, weight: .bold))
-            .foregroundStyle(Color.white)
+            .foregroundStyle(createMenuForeground)
             .padding(.horizontal, 14)
             .frame(width: 92, height: 44)
-            .background(Color.storyPurple, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .shadow(color: Color.storyPurple.opacity(0.28), radius: 7, y: 3)
+            .createGlassRoundedBackground(cornerRadius: 12, tintOpacity: createMenuGlassTintOpacity, usesMaterial: createMenuGlassUsesMaterial)
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -12753,7 +12886,7 @@ struct AddEntryToJournalPage: View {
             .hideSharedBackgroundIfAvailable()
 
             ToolbarItem(placement: .principal) {
-                Text("Add to Journal")
+                Text("Add to Journals")
                     .font(.system(size: 18, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
             }
@@ -12805,7 +12938,7 @@ struct AddEntryToJournalPage: View {
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Color.storyPurple)
 
-                    Text("Journals")
+                    Text("Add to Journals")
                         .font(.system(size: 19, weight: .bold, design: .serif))
                         .foregroundStyle(Color.storyInk)
                 }
@@ -14687,30 +14820,29 @@ private struct CreatePaperPreview: View {
                         .pastelSkyline,
                         .nightCity,
                         .cyberFuture,
-                        .softClouds,
-                        .moonCat,
                         .deepSea,
                         .rooftopCat1,
                         .cozyRoom,
+                        .cozyWindow,
+                        .japaneseTown,
+                        .japaneseHome,
+                        .trainView,
                         .daytimeCoffeeShop,
                         .lofiGirl,
                         .moon,
                         .peachWildflowers,
                         .nightSky,
-                        .doodleGrid,
-                        .retroComputer,
                         .lofiStreet,
                         .inkSketchbook,
                         .purpleClouds,
                         .twilightCity,
                         .cherryBlossom,
-                        .oceanWave,
-                        .studyNotes:
+                        .oceanWave:
                     if let backgroundImageName = style.backgroundImageName {
                         Image(backgroundImageName)
                             .resizable()
                             .scaledToFill()
-                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .frame(width: proxy.size.width, height: proxy.size.height, alignment: style.pickerPreviewAlignment)
                             .clipped()
                     }
                 }
