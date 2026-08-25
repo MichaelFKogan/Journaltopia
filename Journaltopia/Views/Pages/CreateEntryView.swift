@@ -3040,11 +3040,20 @@ struct CreateEntryView: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if showsBottomSaveButton {
-                toolbarSaveActionButton
-                    .padding(.leading, createFloatingActionHorizontalPadding)
-                    .padding(.bottom, bottomSaveButtonPadding)
-                    .transition(.scale(scale: 0.86).combined(with: .opacity))
+            if showsReferencePolaroidButton || showsBottomSaveButton {
+                VStack(alignment: .leading, spacing: 8) {
+                    if showsReferencePolaroidButton {
+                        referencePhotosShelfButton
+                            .transition(.scale(scale: 0.86).combined(with: .opacity))
+                    }
+
+                    if showsBottomSaveButton {
+                        toolbarSaveActionButton
+                            .transition(.scale(scale: 0.86).combined(with: .opacity))
+                    }
+                }
+                .padding(.leading, createFloatingActionHorizontalPadding)
+                .padding(.bottom, bottomSaveButtonPadding)
             }
         }
         .animation(.snappy(duration: 0.22), value: isCreateKeyboardChromeVisible)
@@ -4605,6 +4614,14 @@ struct CreateEntryView: View {
             && !isBottomOptionsPanelVisible
             && !isCompanionChatVisible
             && (canUseToolbarSaveButton || isToolbarSaveInProgress)
+    }
+
+    private var showsReferencePolaroidButton: Bool {
+        !isCreateKeyboardChromeVisible
+            && !isBottomOptionsPanelVisible
+            && !isCompanionChatVisible
+            && !isShowingEntryOptionsPage
+            && !isBlockingSaveInProgress
     }
 
     private var bottomSaveButtonPadding: CGFloat {
@@ -7060,7 +7077,7 @@ struct CreateEntryView: View {
                 referencePhotoShelfStack
 
                 shelfButtonCaption(
-                    title: "References",
+                    title: "Photos",
                     summary: attachedReferencesCount > 0 ? referenceShelfSummary : nil
                 )
             }
