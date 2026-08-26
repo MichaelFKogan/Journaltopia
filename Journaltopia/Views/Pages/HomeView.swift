@@ -26,7 +26,10 @@ struct HomeView: View {
     @State private var loadedHomeSamplePack: SampleStoryPack?
     @State private var recentContentLoadTask: Task<Void, Never>?
     @State private var preparingRecentEntryID: UUID?
-    @State private var recentScrollTrailingIndex = 1
+    /// Which card the scroll cue last brought to the leading edge. Driven by the button rather than
+    /// measured from the scroll offset: a measured index can resolve to the card already on screen,
+    /// and then a press asks the scroller to go where it already is and nothing happens.
+    @State private var recentScrollCueIndex = 0
 
     private let homeStoryboardPreviewLimit = 3
     private let homeRecentContentLimit = 5
@@ -75,8 +78,12 @@ struct HomeView: View {
             }
         }
         .task(id: homeStoryboardLoadID) {
-            await loadHomeStoryboards()
+            // Most Recent used to wait on the cover-image fetch, so the section spent that whole
+            // round trip showing last session's cards — or local drafts ranked by on-device
+            // `updatedAt` — before the cloud ranking landed. Kick the entry load off first; the
+            // covers can arrive on their own.
             refreshRecentContent(loadsCloudEntry: true)
+            await loadHomeStoryboards()
             await generationCreditStore.refresh(isSignedIn: authStore.userID != nil)
         }
         .onAppear {
@@ -92,9 +99,6 @@ struct HomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
             refreshRecentContent(loadsCloudEntry: true)
-        }
-        .onChange(of: recentEntries.map(\.id)) { _ in
-            recentScrollTrailingIndex = min(1, max(0, recentEntries.count - 1))
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaJournalCoverChanged)) { _ in
             refreshRecentContent(loadsCloudEntry: false)
@@ -312,13 +316,22 @@ struct HomeView: View {
                             .padding(.vertical, 1)
                             .padding(.trailing, recentEntries.count > 2 ? HomeRecentContentLayout.trailingScrollCueWidth : 0)
                         }
+                        // Only the cue index resets. Asking the proxy to scroll back to the first
+                        // card here also drags the page's own vertical scroll — `scrollTo` reaches
+                        // the enclosing scroll view too, and a ranking that lands while the reader
+                        // is partway down Home yanks them back to the top of the page.
+                        .onChange(of: recentEntries.map(\.id)) { _ in
+                            recentScrollCueIndex = 0
+                        }
 
                         if recentEntries.count > 2 {
                             HomeRecentScrollCue {
-                                let nextIndex = min(recentScrollTrailingIndex + 1, recentEntries.count - 1)
-                                recentScrollTrailingIndex = nextIndex
+                                let nextIndex = recentScrollCueIndex + 1 < recentEntries.count
+                                    ? recentScrollCueIndex + 1
+                                    : 0
+                                recentScrollCueIndex = nextIndex
                                 withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                                    scrollProxy.scrollTo(recentEntries[nextIndex].id, anchor: .trailing)
+                                    scrollProxy.scrollTo(recentEntries[nextIndex].id, anchor: .leading)
                                 }
                             }
                         }
@@ -363,15 +376,30 @@ struct HomeView: View {
             return
         }
 
-        let localEntries = visibleLocalEntries()
-        // The local draft cache ranks by on-device `updatedAt`, which autosaves and sidecar writes bump
-        // without moving the cloud `updated_at` this card actually sorts on — so its pick can name a
-        // different entry than the cloud answer arriving a moment later. Starting from the cloud-ranked
-        // card this session already resolved is what stops the card swapping entries in front of the
-        // reader; the local pick is the fallback for when there is no resolved card to start from.
-        recentEntries = HomeRecentEntrySessionCache.entries(for: loadID)
-        if recentEntries.isEmpty {
-            recentEntries = mostRecentLocalEntries(from: localEntries)
+        // A session still resolving has not picked a data source. Painting local drafts here is what
+        // the reader sees as older cards, because those drafts rank by on-device `updatedAt` and then
+        // swap once the account's cloud ranking lands.
+        guard contentMode.isResolved else {
+            recentEntries = HomeRecentEntrySessionCache.entries(for: loadID)
+            return
+        }
+
+        let cachedEntries = HomeRecentEntrySessionCache.entries(for: loadID)
+        if !cachedEntries.isEmpty {
+            // The cache holds the last ranking the cloud gave this account, so it opens on the same
+            // order the fetch below is about to confirm.
+            recentEntries = cachedEntries
+        } else if authStore.userID != nil {
+            // Signed-in visits must not stand in the local `updatedAt` ranking. Autosaves and sidecar
+            // writes bump that timestamp without moving the cloud `updated_at` this section sorts on,
+            // so the local pick is often a different order than the one arriving a moment later.
+            // Nothing to seed from means staying empty until the fetch answers.
+            let localIDs = Set(visibleLocalEntries().map(\.id))
+            if recentEntries.contains(where: { !localIDs.contains($0.id) }) {
+                recentEntries = []
+            }
+        } else {
+            recentEntries = mostRecentLocalEntries(from: visibleLocalEntries())
         }
 
         guard loadsCloudEntry, authStore.userID != nil else {
@@ -410,7 +438,28 @@ struct HomeView: View {
                 return
             }
 
-            recentEntries = cloudEntries.map(homeRecentEntry)
+            // Straight off the Edited: Newest page, in the order Supabase returned it — drafts and
+            // completed entries alike, which is the same list Entries shows under All. Nothing local
+            // is spliced in: on-device `updatedAt` moves on autosaves and sidecar writes that never
+            // touch cloud `updated_at`, so a local pick lands somewhere Entries would never put it,
+            // and an entry that has never reached Supabase does not belong on this row at all.
+            let merged = cloudEntries.map(homeRecentEntry)
+            // Same ranking is not a reason to rebuild the HStack. Replacing cards that are already
+            // the right entries is how a fetch that lost the race with a local promotion flashes
+            // the previous row for a frame.
+            if merged.map(\.id) != recentEntries.map(\.id) {
+                recentEntries = merged
+            } else {
+                recentEntries = zip(recentEntries, merged).map { current, next in
+                    HomeRecentEntry(
+                        entry: next.entry,
+                        storyboardImage: current.storyboardImage ?? next.storyboardImage,
+                        storyboardCount: max(current.storyboardCount, next.storyboardCount),
+                        isSample: next.isSample,
+                        cloudEntryID: next.cloudEntryID ?? current.cloudEntryID
+                    )
+                }
+            }
             HomeRecentEntrySessionCache.store(recentEntries, for: loadID)
 
             let thumbnailService = SupabaseEntryThumbnailService()
@@ -428,6 +477,11 @@ struct HomeView: View {
             return
         } catch {
             print("[Journaltopia] Home most-recent entry load failed: \(error.localizedDescription)")
+            // The opening paint stayed empty rather than flash a local ranking. If the cloud never
+            // answers, local drafts are better than a permanently missing section.
+            if recentEntries.isEmpty, homeStoryboardLoadID == loadID, !showsSampleHomeContent {
+                recentEntries = mostRecentLocalEntries(from: visibleLocalEntries())
+            }
         }
     }
 
@@ -709,6 +763,9 @@ struct HomeView: View {
             }
     }
 
+    /// Only reached when there is no account to rank against — signed-out browsing, or a cloud page
+    /// that never answered. A signed-in Home takes its cards from the cloud alone, which is what
+    /// keeps entries that only exist on this device out of the section.
     private func visibleLocalEntries() -> [CreateEntryDraft] {
         CreateEntryDraftStore.loadAll(includeMedia: false)
             .filter { $0.status != JournalEntryStatus.archived.rawValue }

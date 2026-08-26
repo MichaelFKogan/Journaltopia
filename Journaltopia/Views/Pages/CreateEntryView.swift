@@ -1396,7 +1396,7 @@ fileprivate enum CreateScenicSheetMetrics {
     static let washTintOpacity: Double = 0.20
     /// Slightly less transparent gray editor. Used by papers in
     /// `CreatePaperStyleChoice.usesHeavierEditorWash`.
-    static let heavyWashTintOpacity: Double = 0.32
+    static let heavyWashTintOpacity: Double = 0.62
     /// White wash for `.frost`. Keep this lighter so the blur does the lifting.
     static let frostTintOpacity: Double = 0.08
     static let cornerRadius: CGFloat = 26
@@ -1732,6 +1732,37 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Font applied when this paper is tapped in the Paper sheet. `nil` keeps the current font.
+    /// Options: `.sans`, `.serif`, `.nunito`, `.lora`, `.caveat`, `.patrickHand`,
+    /// `.gloriaHallelujah`, `.permanentMarker`, `.specialElite`.
+    var startingFontChoice: CreateFontChoice? {
+        switch self {
+        case .lofiGirl:
+            .lora
+        case .japaneseTown:
+            .serif
+        case .trainView, .japaneseHome, .rooftopCat1:
+            .nunito
+        default:
+            nil
+        }
+    }
+
+    /// Text color applied when this paper is tapped in the Paper sheet. `nil` keeps the current color.
+    /// Use `CreateFormattingPalette.blackTextColorIndex`, `.whiteTextColorIndex`, or `.yellowTextColorIndex`.
+    var startingTextColorIndex: Int? {
+        switch self {
+        case .lofiGirl:
+            CreateFormattingPalette.blackTextColorIndex
+        case .deepSea:
+            CreateFormattingPalette.whiteTextColorIndex
+        case .rooftopCat1:
+            CreateFormattingPalette.yellowTextColorIndex
+        default:
+            nil
+        }
+    }
+
     var showsRuledLines: Bool {
         self == .collegeRuled
     }
@@ -2053,11 +2084,11 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Add a paper here to make its gray editor a bit less transparent.
-    /// Menu chrome is unchanged.
+    /// Papers that get a heavier gray editor once the user has typed a title or body.
+    /// Menu chrome is unchanged. The wash stays at the normal `.wash` tint while empty.
     var usesHeavierEditorWash: Bool {
         switch self {
-        case .trainView, .daytimeCoffeeShop, .lofiGirl:
+        case .trainView, .daytimeCoffeeShop, .cherryBlossom, .japaneseHome, .japaneseTown, .lofiGirl:
             true
         default:
             false
@@ -2065,17 +2096,13 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     }
 
     var scenicSheetTintOpacity: Double {
-        if usesHeavierEditorWash {
-            return CreateScenicSheetMetrics.heavyWashTintOpacity
-        }
-
         switch chrome.editor {
         case .clear:
-            return CreateScenicSheetMetrics.clearTintOpacity
+            CreateScenicSheetMetrics.clearTintOpacity
         case .wash:
-            return CreateScenicSheetMetrics.washTintOpacity
+            CreateScenicSheetMetrics.washTintOpacity
         case .frost:
-            return CreateScenicSheetMetrics.frostTintOpacity
+            CreateScenicSheetMetrics.frostTintOpacity
         }
     }
 
@@ -2169,6 +2196,12 @@ private struct CreateColorOption {
 }
 
 private enum CreateFormattingPalette {
+    static let blackTextColorIndex = 0
+    static var whiteTextColorIndex: Int {
+        textColors.firstIndex { $0.uiColor == .white } ?? 10
+    }
+    static let yellowTextColorIndex = 13
+
     static let textColors: [CreateColorOption] = [
         CreateColorOption(color: .black, uiColor: .black),
         CreateColorOption(color: Color(red: 0.27, green: 0.31, blue: 0.42), uiColor: UIColor(red: 0.27, green: 0.31, blue: 0.42, alpha: 1)),
@@ -2233,7 +2266,7 @@ private enum CreateEntryTextSize {
     static let defaultSliderValue: Double = 0.5
     static let legacyDefaultSliderValue: Double = 0.25
     static let minimumFontSize: CGFloat = 14
-    static let defaultFontSize: CGFloat = 16
+    static let defaultFontSize: CGFloat = 18
     static let maximumFontSize: CGFloat = 22
     static let snapThreshold: Double = 0.035
 
@@ -2915,6 +2948,33 @@ struct CreateEntryView: View {
         sendTextFormattingCommand(.resetTextColors, preservesTitleFocus: true)
     }
 
+    private var selectedPaperStyleBinding: Binding<CreatePaperStyleChoice> {
+        Binding(
+            get: { selectedPaperStyleChoice },
+            set: { applyPaperStyleChoice($0) }
+        )
+    }
+
+    private func applyPaperStyleChoice(_ paperStyle: CreatePaperStyleChoice) {
+        selectedPaperStyleChoice = paperStyle
+        applyStartingTypography(for: paperStyle)
+    }
+
+    private func applyStartingTypography(for paperStyle: CreatePaperStyleChoice) {
+        if let font = paperStyle.startingFontChoice {
+            selectedFontChoice = font
+        }
+
+        guard let colorIndex = paperStyle.startingTextColorIndex else {
+            return
+        }
+
+        let clampedIndex = min(max(colorIndex, 0), CreateFormattingPalette.textColors.count - 1)
+        lastPickedTextColorIndex = clampedIndex
+        selectedTextColorIndex = clampedIndex
+        sendTextFormattingCommand(.resetTextColors, preservesTitleFocus: true)
+    }
+
     private var createChromeFill: Color {
         Color.white.opacity(0.88)
     }
@@ -2941,6 +3001,19 @@ struct CreateEntryView: View {
 
     private var editorDateForeground: Color {
         usesLightEditorChrome ? Color.white.opacity(0.86) : Color.storyGray.opacity(0.46)
+    }
+
+    private var hasEditorWriting: Bool {
+        !storyTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !entryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var resolvedScenicSheetTintOpacity: Double {
+        if selectedPaperStyleChoice.usesHeavierEditorWash, hasEditorWriting {
+            return CreateScenicSheetMetrics.heavyWashTintOpacity
+        }
+
+        return selectedPaperStyleChoice.scenicSheetTintOpacity
     }
 
     private var createMenuGlassTintOpacity: Double {
@@ -5762,7 +5835,7 @@ struct CreateEntryView: View {
 
     private func scenicWritingSheet(bottomContentInset: CGFloat) -> some View {
         CreateScenicWritingSheet(
-            tintOpacity: selectedPaperStyleChoice.scenicSheetTintOpacity,
+            tintOpacity: resolvedScenicSheetTintOpacity,
             usesMaterial: selectedPaperStyleChoice.scenicSheetUsesMaterial,
             frostIntensity: selectedPaperStyleChoice.scenicSheetFrostIntensity
         ) {
@@ -7723,7 +7796,7 @@ struct CreateEntryView: View {
         CreateFormattingSheet(
             initialTab: activeCustomizeTab,
             selectedFont: $selectedFontChoice,
-            selectedPaperStyle: $selectedPaperStyleChoice,
+            selectedPaperStyle: selectedPaperStyleBinding,
             selectedTextColorIndex: $selectedTextColorIndex,
             selectedPaperColorIndex: $selectedPaperColorIndex,
             previewTextSize: $previewTextSize,
@@ -16775,5 +16848,6 @@ fileprivate struct CreateScenicWritingSheet<Content: View>: View {
 
             shape.fill(Color.white.opacity(tintOpacity))
         }
+        .animation(.snappy(duration: 0.22), value: tintOpacity)
     }
 }
