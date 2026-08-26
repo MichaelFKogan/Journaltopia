@@ -805,6 +805,20 @@ private struct SettingsExtraView: View {
 
             Section("Pages") {
                 SettingsNavigationRow(
+                    systemName: "rectangle.stack.fill",
+                    title: "My Story Reader",
+                    subtitle: "Two-page comic without Home scroll",
+                    accessibilityLabel: "Open My Story reader test"
+                ) {
+                    SettingsMyStoryReaderTestPage(
+                        selectedPage: $selectedPage,
+                        generatedStoryboards: $generatedStoryboards,
+                        contentMode: contentMode
+                    )
+                    .enableInteractivePopGesture()
+                }
+
+                SettingsNavigationRow(
                     systemName: "person.fill",
                     title: "Profile",
                     subtitle: "Your storyboards and account",
@@ -949,6 +963,36 @@ private struct SettingsExtraView: View {
         }
 
         return isSampleAuthorModeEnabled ? "Entries opens sample content and saves edits to sample tables" : "Temporarily edit the signed-out sample experience"
+    }
+}
+
+private struct SettingsMyStoryReaderTestPage: View {
+    @Binding var selectedPage: StoryPage
+    @Binding var generatedStoryboards: [GeneratedStoryboard]
+    var contentMode: JournaltopiaContentMode = .user
+
+    var body: some View {
+        ZStack {
+            WatercolorPaperPageBackground()
+
+            MyStoryView(
+                selectedPage: $selectedPage,
+                generatedStoryboards: $generatedStoryboards,
+                contentMode: contentMode,
+                showsSettingsButton: false,
+                showsBottomNavigation: false,
+                embedsInNavigationStack: false
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .navigationTitle("My Story Reader")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .environment(\.colorScheme, .light)
+        .preferredColorScheme(.light)
     }
 }
 

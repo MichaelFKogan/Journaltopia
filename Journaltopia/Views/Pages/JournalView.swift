@@ -5972,9 +5972,7 @@ struct MyStoryView: View {
     @State private var loadErrorMessage: String?
     @State private var isShowingVerticalView = false
     @State private var isPageTurnActive = false
-    @State private var programmaticTurnOffset = 0
-    @State private var programmaticTurnProgress: CGFloat = 0
-    @State private var programmaticTurnTask: Task<Void, Never>?
+    @State private var programmaticTurnRequest: MyStoryTurnRequest?
     @State private var isShowingCoverCustomization = false
     @State private var coverSettings = MyStoryCoverSettings.empty
     @State private var storedCoverImage: UIImage?
@@ -5983,7 +5981,7 @@ struct MyStoryView: View {
     private let readerTopToolbarClearance: CGFloat = 62
     private let readerBottomToolbarClearance: CGFloat = 150
     private let thumbnailHeight: CGFloat = 56
-    private let myStoryStoryboardPageSize = 6
+    private let myStoryStoryboardPageSize = 9
     private static let coverChapterID = UUID(uuidString: "00000000-0000-4000-8000-000000000101")!
 
     var body: some View {
@@ -6019,11 +6017,14 @@ struct MyStoryView: View {
             )
         }
         .onChange(of: generatedStoryboards.count) { _ in
-            currentPageIndex = clampedPageIndex(currentPageIndex)
+            currentPageIndex = clampedSpreadPageIndex(currentPageIndex)
         }
         .onChange(of: currentPageIndex) { pageIndex in
-            loadMoreMyStoryboardsIfNeeded(currentPageIndex: pageIndex)
             loadFullMyStoryStoryboardIfNeeded(pageIndex: pageIndex)
+        }
+        .onDisappear {
+            programmaticTurnRequest = nil
+            isPageTurnActive = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
             Task {
@@ -6120,7 +6121,9 @@ struct MyStoryView: View {
                     fallbackCoverImageName: myStoryFallbackCoverImageName,
                     pageCountText: pageCountText,
                     storyboardCountText: storyboardCountText,
-                    currentPageIndex: $currentPageIndex
+                    currentPageIndex: $currentPageIndex,
+                    programmaticTurnRequest: $programmaticTurnRequest,
+                    isPageTurnActive: $isPageTurnActive
                 )
                 .frame(width: pageSize.width, height: pageSize.height)
                 .shadow(color: .black.opacity(0.24), radius: 18, y: 8)
@@ -6217,7 +6220,7 @@ struct MyStoryView: View {
 
             HStack(spacing: 12) {
                 readerControlButton(
-                    isEnabled: currentPageIndex > 0 && !isTurningProgrammatically,
+                    isEnabled: currentPageIndex > 0,
                     accessibilityLabel: "Previous page"
                 ) {
                     Image(systemName: "chevron.left")
@@ -6231,7 +6234,7 @@ struct MyStoryView: View {
                     .frame(minWidth: 104)
 
                 readerControlButton(
-                    isEnabled: currentPageIndex < totalPageCount - 1 && !isTurningProgrammatically,
+                    isEnabled: currentPageIndex < totalPageCount - 1,
                     accessibilityLabel: "Next page"
                 ) {
                     Image(systemName: "chevron.right")
@@ -6337,6 +6340,8 @@ struct MyStoryView: View {
                             .accessibilityLabel("Go to storyboard \(index + 1)")
                             .accessibilityAddTraits(pageIndex == currentPageIndex ? .isSelected : [])
                         }
+
+                        readerThumbnailLoadMoreButton
                     }
                     .frame(minWidth: geometry.size.width, alignment: .center)
                     .padding(.horizontal, 16)
@@ -6353,6 +6358,46 @@ struct MyStoryView: View {
             }
         }
         .frame(height: thumbnailHeight + 12)
+    }
+
+    /// Storyboards are fetched a page at a time and only on request — paging through the reader no
+    /// longer pulls the next page on its own, so a long story costs one round trip per tap here
+    /// rather than one per page turned.
+    @ViewBuilder
+    private var readerThumbnailLoadMoreButton: some View {
+        if hasMoreStoryboards {
+            Button {
+                Task {
+                    await loadMoreMyStoryboards()
+                }
+            } label: {
+                VStack(spacing: 3) {
+                    if isLoadingMoreStoryboards {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(readerChromePrimaryColor)
+                    } else {
+                        Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 14, weight: .bold))
+                    }
+
+                    Text(isLoadingMoreStoryboards ? "Loading" : "Load More")
+                        .font(.system(size: 9, weight: .heavy, design: .rounded))
+                }
+                .foregroundStyle(readerChromePrimaryColor.opacity(0.92))
+                .frame(width: 62, height: thumbnailHeight)
+                .background(readerChromeControlBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(readerThumbnailStroke, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isLoadingMoreStoryboards)
+            // Outside the page-index range the strip scrolls to, so it never steals a `scrollTo`.
+            .id(-1)
+            .accessibilityLabel(isLoadingMoreStoryboards ? "Loading more storyboards" : "Load more storyboards")
+        }
     }
 
     private func readerCoverThumbnail() -> some View {
@@ -6557,19 +6602,6 @@ struct MyStoryView: View {
             if generatedStoryboards.isEmpty {
                 loadErrorMessage = "Could not load your completed AI storyboards from Journaltopia cloud."
             }
-        }
-    }
-
-    private func loadMoreMyStoryboardsIfNeeded(currentPageIndex: Int) {
-        guard currentPageIndex >= generatedStoryboards.count - 1 else {
-            return
-        }
-        guard hasMoreStoryboards, !isLoadingStoryboards, !isLoadingMoreStoryboards else {
-            return
-        }
-
-        Task {
-            await loadMoreMyStoryboards()
         }
     }
 
@@ -6963,10 +6995,6 @@ struct MyStoryView: View {
         readerPageAspectRatio * 2
     }
 
-    private var isTurningProgrammatically: Bool {
-        isPageTurnActive || programmaticTurnOffset != 0
-    }
-
     private func fittedPageSize(in viewport: CGSize) -> CGSize {
         let width = max(viewport.width, 1)
         let height = width / readerDisplayAspectRatio
@@ -6974,7 +7002,8 @@ struct MyStoryView: View {
     }
 
     private func goToPage(_ pageIndex: Int) {
-        currentPageIndex = clampedPageIndex(pageIndex)
+        programmaticTurnRequest = nil
+        currentPageIndex = clampedSpreadPageIndex(pageIndex)
     }
 
     private func turnPage(by offset: Int) {
@@ -6983,13 +7012,7 @@ struct MyStoryView: View {
             return
         }
 
-        programmaticTurnTask?.cancel()
-        programmaticTurnOffset = 0
-        programmaticTurnProgress = 0
-
-        withAnimation(.easeInOut(duration: 0.22)) {
-            currentPageIndex = nextPageIndex
-        }
+        programmaticTurnRequest = MyStoryTurnRequest(offset: offset)
     }
 
     private func clampedPageIndex(_ pageIndex: Int) -> Int {
@@ -6998,6 +7021,100 @@ struct MyStoryView: View {
 
     private func clampedSpreadPageIndex(_ pageIndex: Int) -> Int {
         min(max(0, pageIndex), max(0, totalPageCount - 2))
+    }
+}
+
+/// One in-flight page turn. Every index the turn renders is captured up front, so the spread stays
+/// visually stable even though `currentPageIndex` is committed the moment the turn starts animating.
+private struct MyStoryPageTurn: Equatable {
+    let id: Int
+    let fromLeftIndex: Int
+    let toLeftIndex: Int
+    /// `1` turns the right page onto the left stack, `-1` turns the left page back onto the right.
+    let direction: Int
+    var progress: CGFloat
+    var isDragging: Bool
+}
+
+private struct MyStoryTurnRequest: Equatable {
+    let id = UUID()
+    let offset: Int
+}
+
+/// The sheet that swings across the spine during a page turn.
+///
+/// It is `Animatable` on its own progress so the halfway flip — the point where the page stops
+/// showing its near face and starts showing its far one — is decided fresh on every animation frame.
+/// Left to a plain view, that decision is only made once, when the drag ends, and SwiftUI
+/// interpolates the mirror itself: releasing a fast flick before the halfway point squashed the page
+/// towards its own centre and pulled its hinged edge away from the spine.
+private struct MyStoryTurningSheet<Content: View>: View, Animatable {
+    var progress: CGFloat
+    var turnsForward: Bool
+    var pageWidth: CGFloat
+    var pageHeight: CGFloat
+    var containerWidth: CGFloat
+    var content: Content
+
+    init(
+        progress: CGFloat,
+        turnsForward: Bool,
+        pageWidth: CGFloat,
+        pageHeight: CGFloat,
+        containerWidth: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.progress = progress
+        self.turnsForward = turnsForward
+        self.pageWidth = pageWidth
+        self.pageHeight = pageHeight
+        self.containerWidth = containerWidth
+        self.content = content()
+    }
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View {
+        let clampedProgress = min(1, max(0, progress))
+        let rotation = (turnsForward ? -180.0 : 180.0) * Double(clampedProgress)
+        // Past the spine the sheet is showing its far face, which `rotation3DEffect` renders
+        // mirrored — pre-mirror the artwork so the page reads the right way round as it lands. This
+        // has to stay centre-anchored: hinging it on the spine-side edge cancels out against the
+        // rotation's own anchor and lands the page back on the half it came from.
+        let hasPassedSpine = clampedProgress > 0.5
+        let liftAmount = 1 - abs(clampedProgress - 0.5) * 2
+
+        content
+            .frame(width: pageWidth, height: pageHeight)
+            .scaleEffect(x: hasPassedSpine ? -1 : 1, y: 1)
+            .compositingGroup()
+            .rotation3DEffect(
+                .degrees(rotation),
+                axis: (x: 0, y: 1, z: 0),
+                anchor: turnsForward ? .leading : .trailing,
+                // Shallow enough that the lifted edge stays inside the reader's frame instead of
+                // being clipped at the top and bottom by whatever is scrolling around it.
+                perspective: 0.28
+            )
+            .shadow(
+                color: Color.storyInk.opacity(0.08 + 0.2 * liftAmount),
+                radius: 12,
+                x: turnsForward ? -5 : 5,
+                y: 5
+            )
+            .frame(
+                width: containerWidth,
+                height: pageHeight,
+                alignment: turnsForward ? .trailing : .leading
+            )
+            // Everything above is derived from `progress`, which is already being interpolated for
+            // us — so nothing in here may be animated a second time on its own.
+            .transaction { transaction in
+                transaction.animation = nil
+            }
     }
 }
 
@@ -7011,44 +7128,87 @@ private struct MyStoryBookSpreadView: View {
     let pageCountText: String
     let storyboardCountText: String
     @Binding var currentPageIndex: Int
-    @State private var dragTranslation: CGFloat = 0
-    @State private var pendingTurnOffset = 0
-    @State private var pendingTurnProgress: CGFloat = 0
+    @Binding var programmaticTurnRequest: MyStoryTurnRequest?
+    @Binding var isPageTurnActive: Bool
+
+    @State private var turn: MyStoryPageTurn?
+    @State private var turnCounter = 0
 
     var body: some View {
         GeometryReader { proxy in
-            let pageTurn = pageTurnState(width: proxy.size.width)
+            let width = max(1, proxy.size.width)
 
-            bookContent(pageTurn: pageTurn)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            ZStack {
+                bookContent
+
+                // The pan recogniser has to sit in a slot of its own, next to the pages rather than
+                // on top of them. Nesting it inside the spread meant the first frame of a turn
+                // rebuilt that subtree, tore the recogniser down mid-drag, and left the page frozen
+                // halfway over because `.ended` never arrived.
+                MyStoryHorizontalPanCatcher(
+                    onChanged: { translation in
+                        updateDrag(translation: translation, width: width)
+                    },
+                    onEnded: { translation, predictedTranslation in
+                        endDrag(
+                            translation: translation,
+                            predictedTranslation: predictedTranslation,
+                            width: width
+                        )
+                    },
+                    onCancelled: {
+                        cancelTurn()
+                    }
+                )
+            }
             .contentShape(Rectangle())
-            .gesture(pageSwipeGesture)
+        }
+        .onChange(of: programmaticTurnRequest) { request in
+            guard let request else {
+                return
+            }
+
+            programmaticTurnRequest = nil
+            startProgrammaticTurn(offset: request.offset)
+        }
+        .onChange(of: currentPageIndex) { pageIndex in
+            // Somebody jumped the reader somewhere this turn was not heading (a thumbnail tap, a
+            // clamp after the storyboard list changed) — drop the stale turn instead of stranding it.
+            guard let turn else {
+                return
+            }
+
+            if pageIndex != turn.fromLeftIndex, pageIndex != turn.toLeftIndex {
+                clearTurn()
+            }
+        }
+        .onDisappear {
+            clearTurn()
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("My Story page \(leftPageIndex + 1) of \(totalPageCount)")
     }
 
-    @ViewBuilder
-    private func bookContent(
-        pageTurn: (progress: CGFloat, isTurningForward: Bool, isTurningBackward: Bool)
-    ) -> some View {
-        if pageTurn.isTurningForward, canTurnForward {
-            spreadView(leftPageIndex: leftPageIndex, rightPageIndex: leftPageIndex + 2)
-                .overlay {
-                    turningPage(pageIndex: leftPageIndex + 1, progress: pageTurn.progress, turnsForward: true)
-                }
-        } else if pageTurn.isTurningBackward, canTurnBackward {
-            spreadView(leftPageIndex: leftPageIndex - 1, rightPageIndex: leftPageIndex + 1)
-                .overlay {
-                    turningPage(pageIndex: leftPageIndex, progress: pageTurn.progress, turnsForward: false)
-                }
-        } else {
-            spreadView(leftPageIndex: leftPageIndex)
+    /// Deliberately branch-free: the same two slots are rendered whether or not a turn is running, so
+    /// starting one only changes values, never the shape of the view tree.
+    private var bookContent: some View {
+        ZStack {
+            // Only the two stationary halves sit underneath: the page being turned is drawn once,
+            // on top, so nothing can duplicate or fight the settled spread mid-animation.
+            spreadView(leftPageIndex: baseSpread.left, rightPageIndex: baseSpread.right)
+
+            turningPage(turn: turn)
         }
     }
 
-    private func spreadView(leftPageIndex: Int) -> some View {
-        spreadView(leftPageIndex: leftPageIndex, rightPageIndex: leftPageIndex + 1)
+    private var baseSpread: (left: Int, right: Int) {
+        guard let turn else {
+            return (leftPageIndex, leftPageIndex + 1)
+        }
+
+        return turn.direction > 0
+            ? (turn.fromLeftIndex, turn.fromLeftIndex + 2)
+            : (turn.toLeftIndex, turn.fromLeftIndex + 1)
     }
 
     private func spreadView(leftPageIndex: Int, rightPageIndex: Int) -> some View {
@@ -7066,32 +7226,31 @@ private struct MyStoryBookSpreadView: View {
                     .frame(width: pageWidth, height: pageHeight)
             }
             .frame(width: proxy.size.width, height: pageHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .center) {
                 bookCenterShadow(height: pageHeight)
             }
         }
     }
 
-    private func turningPage(pageIndex: Int, progress: CGFloat, turnsForward: Bool) -> some View {
+    private func turningPage(turn: MyStoryPageTurn?) -> some View {
         GeometryReader { proxy in
-            let pageWidth = proxy.size.width / 2
-            let pageHeight = proxy.size.height
-            let clampedProgress = min(1, max(0.02, progress))
-            let rotation = turnsForward
-                ? -180 * Double(clampedProgress)
-                : 180 * Double(clampedProgress)
+            let turnsForward = (turn?.direction ?? 1) > 0
+            let movingPageIndex = clampedPageIndex(
+                turn.map { turnsForward ? $0.fromLeftIndex + 1 : $0.fromLeftIndex } ?? leftPageIndex
+            )
 
-            pageView(at: pageIndex)
-                .frame(width: pageWidth, height: pageHeight)
-                .rotation3DEffect(
-                    .degrees(rotation),
-                    axis: (x: 0, y: 1, z: 0),
-                    anchor: turnsForward ? .leading : .trailing,
-                    perspective: 0.62
-                )
-                .opacity(clampedProgress < 0.98 ? 1 : 0)
-                .shadow(color: Color.storyInk.opacity(0.18), radius: 12, x: turnsForward ? -4 : 4, y: 5)
-                .frame(width: proxy.size.width, height: pageHeight, alignment: turnsForward ? .trailing : .leading)
+            MyStoryTurningSheet(
+                progress: min(1, max(0, turn?.progress ?? 0)),
+                turnsForward: turnsForward,
+                pageWidth: proxy.size.width / 2,
+                pageHeight: proxy.size.height,
+                containerWidth: proxy.size.width
+            ) {
+                pageView(at: movingPageIndex)
+            }
+            .opacity(turn == nil ? 0 : 1)
+            .allowsHitTesting(false)
         }
     }
 
@@ -7125,79 +7284,167 @@ private struct MyStoryBookSpreadView: View {
         }
     }
 
-    private var pageSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 18)
-            .onChanged { value in
-                dragTranslation = value.translation.width
-            }
-            .onEnded { value in
-                let predicted = value.predictedEndTranslation.width
-                let threshold: CGFloat = 72
+    // MARK: - Turn state machine
 
-                if predicted < -threshold, canTurnForward {
-                    completeTurn(offset: 1, from: releaseProgress(translation: value.translation.width))
-                } else if predicted > threshold, canTurnBackward {
-                    completeTurn(offset: -1, from: releaseProgress(translation: value.translation.width))
-                } else {
-                    withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.88)) {
-                        dragTranslation = 0
-                    }
-                }
-            }
-    }
-
-    private func completeTurn(offset: Int, from releaseProgress: CGFloat) {
-        pendingTurnOffset = offset
-        pendingTurnProgress = max(0.02, releaseProgress)
-        dragTranslation = 0
-
-        let remaining = max(0, 1 - releaseProgress)
-        let duration = max(0.28, 0.62 * remaining)
-
-        withAnimation(.easeInOut(duration: duration)) {
-            pendingTurnProgress = 1
+    private func updateDrag(translation: CGFloat, width: CGFloat) {
+        guard abs(translation) > 1 else {
+            return
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            guard pendingTurnOffset == offset else {
-                return
-            }
+        let direction = translation < 0 ? 1 : -1
+        let progress = min(1, abs(translation) / (width * 0.42))
 
-            var transaction = Transaction()
-            transaction.animation = nil
-
-            withTransaction(transaction) {
-                currentPageIndex = clampedSpreadPageIndex(currentPageIndex + offset)
-                pendingTurnOffset = 0
-                pendingTurnProgress = 0
-            }
+        if let turn, turn.isDragging, turn.direction == direction {
+            self.turn?.progress = progress
+            return
         }
-    }
 
-    private func pageTurnState(width: CGFloat) -> (progress: CGFloat, isTurningForward: Bool, isTurningBackward: Bool) {
-        if pendingTurnOffset != 0 {
-            return (
-                min(1, max(0.02, pendingTurnProgress)),
-                pendingTurnOffset > 0,
-                pendingTurnOffset < 0
+        guard direction > 0 ? canTurnForward : canTurnBackward else {
+            return
+        }
+
+        // Either the finger crossed back over its start point, or a previous turn is still settling.
+        // Both cases start over from whatever spread is committed right now, so a drag can never be
+        // refused because an older turn failed to tidy itself up.
+        turnCounter += 1
+        let startIndex = leftPageIndex
+
+        setTurn(
+            MyStoryPageTurn(
+                id: turnCounter,
+                fromLeftIndex: startIndex,
+                toLeftIndex: clampedSpreadPageIndex(startIndex + direction),
+                direction: direction,
+                progress: progress,
+                isDragging: true
             )
+        )
+        isPageTurnActive = true
+    }
+
+    private func endDrag(translation: CGFloat, predictedTranslation: CGFloat, width: CGFloat) {
+        guard let turn, turn.isDragging else {
+            return
         }
 
-        let progress = pageTurnProgress(width: width, translation: dragTranslation)
-        return (
-            max(0.02, progress),
-            dragTranslation < -4,
-            dragTranslation > 4
+        let threshold = max(28, width * 0.08)
+        let flungPastThreshold = turn.direction > 0
+            ? predictedTranslation < -threshold
+            : predictedTranslation > threshold
+
+        if turn.toLeftIndex != turn.fromLeftIndex, flungPastThreshold || turn.progress > 0.3 {
+            completeTurn(turn)
+        } else {
+            cancelTurn()
+        }
+    }
+
+    private func startProgrammaticTurn(offset: Int) {
+        let startIndex = leftPageIndex
+        let targetIndex = clampedSpreadPageIndex(startIndex + offset)
+
+        guard offset != 0, targetIndex != startIndex else {
+            return
+        }
+
+        turnCounter += 1
+        let newTurn = MyStoryPageTurn(
+            id: turnCounter,
+            fromLeftIndex: startIndex,
+            toLeftIndex: targetIndex,
+            direction: offset > 0 ? 1 : -1,
+            progress: 0,
+            isDragging: false
         )
+
+        setTurn(newTurn)
+        isPageTurnActive = true
+        commitPageIndex(targetIndex)
+        animateTurn(id: newTurn.id, to: 1, duration: 0.42)
     }
 
-    private func pageTurnProgress(width: CGFloat, translation: CGFloat) -> CGFloat {
-        min(1, abs(translation) / (max(1, width) * 0.58))
+    private func completeTurn(_ turn: MyStoryPageTurn) {
+        var settled = turn
+        settled.isDragging = false
+        setTurn(settled)
+
+        // Commit the index before the animation rather than after it. The turn keeps rendering from
+        // its captured indices, so this is invisible — but it means the settled spread is already
+        // correct no matter when (or whether) the turn state gets cleared.
+        commitPageIndex(settled.toLeftIndex)
+
+        let remaining = max(0, 1 - settled.progress)
+        animateTurn(id: settled.id, to: 1, duration: max(0.16, 0.32 * Double(remaining)))
     }
 
-    private func releaseProgress(translation: CGFloat) -> CGFloat {
-        min(0.82, max(0.02, abs(translation) / 260))
+    private func cancelTurn() {
+        // Only a turn the finger still owns can be called off. Once a turn has been committed its
+        // index is already live, so a stray cancel arriving afterwards must not wind it back.
+        guard let turn, turn.isDragging else {
+            return
+        }
+
+        var settled = turn
+        settled.isDragging = false
+        setTurn(settled)
+
+        animateTurn(id: settled.id, to: 0, duration: max(0.14, 0.26 * Double(turn.progress)))
     }
+
+    private func animateTurn(id: Int, to target: CGFloat, duration: Double) {
+        if #available(iOS 17.0, *) {
+            withAnimation(.easeOut(duration: duration), completionCriteria: .removed) {
+                turn?.progress = target
+            } completion: {
+                clearTurn(matching: id)
+            }
+        } else {
+            withAnimation(.easeOut(duration: duration)) {
+                turn?.progress = target
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.03) {
+                clearTurn(matching: id)
+            }
+        }
+    }
+
+    private func clearTurn(matching id: Int) {
+        guard turn?.id == id else {
+            return
+        }
+
+        clearTurn()
+    }
+
+    private func clearTurn() {
+        setTurn(nil)
+        isPageTurnActive = false
+    }
+
+    /// Turn state is swapped, never interpolated: a new turn captures different page indices, so
+    /// letting an in-flight animation carry over into it is what produces half-turned, frozen pages.
+    private func setTurn(_ newValue: MyStoryPageTurn?) {
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            turn = newValue
+        }
+    }
+
+    private func commitPageIndex(_ pageIndex: Int) {
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            currentPageIndex = pageIndex
+        }
+    }
+
+    // MARK: - Paging maths
 
     private func image(at pageIndex: Int) -> UIImage? {
         let index = clampedPageIndex(pageIndex) - 1
@@ -7230,6 +7477,112 @@ private struct MyStoryBookSpreadView: View {
 
     private var canTurnBackward: Bool {
         leftPageIndex > 0
+    }
+}
+
+private struct MyStoryHorizontalPanCatcher: UIViewRepresentable {
+    var onChanged: (CGFloat) -> Void
+    var onEnded: (CGFloat, CGFloat) -> Void
+    var onCancelled: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = DetachReportingView(frame: .zero)
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = true
+        // Last line of defence: if this view is ever pulled out of the hierarchy while a drag is
+        // live, UIKit stops sending gesture updates, so report the drop ourselves rather than
+        // leaving the reader stuck on a half-turned page.
+        view.onDetach = { [weak coordinator = context.coordinator] in
+            coordinator?.reportInterruption()
+        }
+
+        let recognizer = UIPanGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handlePan(_:))
+        )
+        recognizer.cancelsTouchesInView = true
+        recognizer.delaysTouchesBegan = false
+        recognizer.delaysTouchesEnded = false
+        recognizer.delegate = context.coordinator
+        view.addGestureRecognizer(recognizer)
+
+        context.coordinator.hostView = view
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.hostView = uiView
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class DetachReportingView: UIView {
+        var onDetach: (() -> Void)?
+
+        override func willMove(toWindow newWindow: UIWindow?) {
+            super.willMove(toWindow: newWindow)
+
+            if newWindow == nil {
+                onDetach?()
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: MyStoryHorizontalPanCatcher
+        weak var hostView: UIView?
+        private var isDragging = false
+
+        init(parent: MyStoryHorizontalPanCatcher) {
+            self.parent = parent
+        }
+
+        func reportInterruption() {
+            guard isDragging else {
+                return
+            }
+
+            isDragging = false
+            parent.onCancelled()
+        }
+
+        @objc
+        func handlePan(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = hostView else {
+                return
+            }
+
+            let translation = recognizer.translation(in: view).x
+
+            switch recognizer.state {
+            case .began, .changed:
+                isDragging = true
+                parent.onChanged(translation)
+            case .ended:
+                isDragging = false
+                let velocity = recognizer.velocity(in: view).x
+                let predictedTranslation = translation + (velocity * 0.18)
+                parent.onEnded(translation, predictedTranslation)
+            case .cancelled, .failed:
+                isDragging = false
+                parent.onCancelled()
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                  let view = hostView else {
+                return false
+            }
+
+            let velocity = pan.velocity(in: view)
+            return abs(velocity.x) > 24 && abs(velocity.x) > abs(velocity.y) * 1.18
+        }
     }
 }
 
