@@ -5974,6 +5974,9 @@ struct MyStoryView: View {
     @State private var isPageTurnActive = false
     @State private var programmaticTurnRequest: MyStoryTurnRequest?
     @State private var isShowingCoverCustomization = false
+    @State private var isComicReaderPresented = false
+    @State private var comicReaderPageIndex = 0
+    @State private var isOpeningComicReader = false
     @State private var coverSettings = MyStoryCoverSettings.empty
     @State private var storedCoverImage: UIImage?
     @State private var coverErrorMessage: String?
@@ -6016,8 +6019,30 @@ struct MyStoryView: View {
                 onSave: applyMyStoryCoverCustomization
             )
         }
+        .navigationDestination(isPresented: $isComicReaderPresented) {
+            JournalStoryboardComicReaderView(
+                storyboards: generatedStoryboards,
+                currentPageIndex: $comicReaderPageIndex,
+                journalTitle: "My Story",
+                journalColor: myStoryCoverColor,
+                coverImage: myStoryCoverImage,
+                remoteCoverURL: coverSettings.remoteCover?.thumbnailNSURL ?? coverSettings.remoteCover?.imageNSURL,
+                fallbackCoverImageName: myStoryFallbackCoverImageName,
+                pageCountText: pageCountText,
+                storyboardCountText: storyboardCountText,
+                chapter: myStoryCoverChapter,
+                storyboardCoverCandidates: myStoryStoryboardCoverCandidates,
+                onCoverCustomized: applyMyStoryCoverCustomization
+            )
+        }
+        .onChange(of: isComicReaderPresented) { isPresented in
+            if !isPresented {
+                isOpeningComicReader = false
+            }
+        }
         .onChange(of: generatedStoryboards.count) { _ in
             currentPageIndex = clampedSpreadPageIndex(currentPageIndex)
+            comicReaderPageIndex = clampedComicReaderPageIndex(comicReaderPageIndex)
         }
         .onChange(of: currentPageIndex) { pageIndex in
             loadFullMyStoryStoryboardIfNeeded(pageIndex: pageIndex)
@@ -6086,8 +6111,11 @@ struct MyStoryView: View {
             HStack {
                 Spacer(minLength: 0)
 
-                readerContent
-                    .frame(width: embeddedReaderWidth, height: embeddedReaderWidth / readerDisplayAspectRatio)
+                GeometryReader { proxy in
+                    readerContent
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+                .aspectRatio(readerDisplayAspectRatio, contentMode: .fit)
 
                 Spacer(minLength: 0)
             }
@@ -6143,7 +6171,7 @@ struct MyStoryView: View {
             Spacer(minLength: 0)
 
             if !generatedStoryboards.isEmpty {
-                Text("\(currentPageIndex + 1) / \(displayTotalPageCount)")
+                Text(readerPagePositionText)
                     .font(.system(size: 13, weight: .heavy, design: .rounded))
                     .foregroundStyle(readerChromePrimaryColor.opacity(0.92))
                     .padding(.horizontal, 10)
@@ -6215,35 +6243,55 @@ struct MyStoryView: View {
     }
 
     private var readerBottomBar: some View {
-        HStack {
-            Spacer(minLength: 0)
+        VStack(spacing: 8) {
+            Button {
+                openMyStoryComicReader()
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Tap To Open")
 
-            HStack(spacing: 12) {
-                readerControlButton(
-                    isEnabled: currentPageIndex > 0,
-                    accessibilityLabel: "Previous page"
-                ) {
-                    Image(systemName: "chevron.left")
-                } action: {
-                    turnPage(by: -1)
-                }
-
-                Text(storyboardCountText)
-                    .font(.system(size: 13, weight: .heavy, design: .rounded))
-                    .foregroundStyle(readerChromePrimaryColor.opacity(0.82))
-                    .frame(minWidth: 104)
-
-                readerControlButton(
-                    isEnabled: currentPageIndex < totalPageCount - 1,
-                    accessibilityLabel: "Next page"
-                ) {
                     Image(systemName: "chevron.right")
-                } action: {
-                    turnPage(by: 1)
+                        .font(.system(size: 15, weight: .heavy))
                 }
+                .font(.system(size: 18, weight: .heavy, design: .rounded))
+                .foregroundStyle(readerChromePrimaryColor.opacity(0.9))
+                .padding(.horizontal, 18)
+                .frame(height: 38)
             }
+            .buttonStyle(.plain)
+            .disabled(isOpeningComicReader)
+            .accessibilityLabel("Tap to open My Story")
 
-            Spacer(minLength: 0)
+            HStack {
+                Spacer(minLength: 0)
+
+                HStack(spacing: 12) {
+                    readerControlButton(
+                        isEnabled: currentPageIndex > closedCoverPageIndex,
+                        accessibilityLabel: "Previous page"
+                    ) {
+                        Image(systemName: "chevron.left")
+                    } action: {
+                        turnPage(by: -1)
+                    }
+
+                    Text(storyboardCountText)
+                        .font(.system(size: 13, weight: .heavy, design: .rounded))
+                        .foregroundStyle(readerChromePrimaryColor.opacity(0.82))
+                        .frame(minWidth: 104)
+
+                    readerControlButton(
+                        isEnabled: currentPageIndex < maxSpreadPageIndex,
+                        accessibilityLabel: "Next page"
+                    ) {
+                        Image(systemName: "chevron.right")
+                    } action: {
+                        turnPage(by: 1)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
         }
         .padding(.horizontal, 24)
         .padding(.top, 10)
@@ -6264,10 +6312,6 @@ struct MyStoryView: View {
 
     private var readerChromeControlBackground: Color {
         embedsInNavigationStack ? Color.white.opacity(0.14) : Color.white.opacity(0.72)
-    }
-
-    private var embeddedReaderWidth: CGFloat {
-        max(1, UIScreen.main.bounds.width - 32)
     }
 
     private func readerControlButton<Label: View>(
@@ -6318,27 +6362,27 @@ struct MyStoryView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         Button {
-                            goToPage(0)
+                            goToPage(closedCoverPageIndex)
                         } label: {
                             readerCoverThumbnail()
                         }
                         .buttonStyle(.plain)
                         .id(0)
                         .accessibilityLabel("Go to My Story cover")
-                        .accessibilityAddTraits(currentPageIndex == 0 ? .isSelected : [])
+                        .accessibilityAddTraits(selectedThumbnailPageIndex == 0 ? .isSelected : [])
 
                         ForEach(Array(generatedStoryboards.enumerated()), id: \.element.id) { index, storyboard in
                             let pageIndex = index + 1
 
                             Button {
-                                goToPage(pageIndex)
+                                goToPage(pageIndex - 1)
                             } label: {
                                 readerThumbnail(for: storyboard.image, at: pageIndex)
                             }
                             .buttonStyle(.plain)
                             .id(pageIndex)
                             .accessibilityLabel("Go to storyboard \(index + 1)")
-                            .accessibilityAddTraits(pageIndex == currentPageIndex ? .isSelected : [])
+                            .accessibilityAddTraits(pageIndex == selectedThumbnailPageIndex ? .isSelected : [])
                         }
 
                         readerThumbnailLoadMoreButton
@@ -6348,11 +6392,11 @@ struct MyStoryView: View {
                     .padding(.vertical, 6)
                 }
                 .onAppear {
-                    proxy.scrollTo(currentPageIndex, anchor: .center)
+                    proxy.scrollTo(thumbnailScrollTarget, anchor: .center)
                 }
                 .onChange(of: currentPageIndex) { pageIndex in
                     withAnimation(.easeInOut(duration: 0.24)) {
-                        proxy.scrollTo(pageIndex, anchor: .center)
+                        proxy.scrollTo(thumbnailScrollTarget(for: pageIndex), anchor: .center)
                     }
                 }
             }
@@ -6394,24 +6438,19 @@ struct MyStoryView: View {
             }
             .buttonStyle(.plain)
             .disabled(isLoadingMoreStoryboards)
-            // Outside the page-index range the strip scrolls to, so it never steals a `scrollTo`.
-            .id(-1)
+            .id("myStoryLoadMore")
             .accessibilityLabel(isLoadingMoreStoryboards ? "Loading more storyboards" : "Load more storyboards")
         }
     }
 
     private func readerCoverThumbnail() -> some View {
-        let isSelected = currentPageIndex == 0
+        let isSelected = selectedThumbnailPageIndex == 0
 
-        return JournalStoryboardReaderCoverPage(
-            title: "My Story",
+        return MyStoryCoverThumbnail(
             color: myStoryCoverColor,
             coverImage: myStoryCoverImage,
             remoteCoverURL: coverSettings.remoteCover?.thumbnailNSURL ?? coverSettings.remoteCover?.imageNSURL,
-            fallbackImageName: myStoryFallbackCoverImageName,
-            pageCountText: pageCountText,
-            storyboardCountText: storyboardCountText,
-            showsDecorativeCopy: false
+            fallbackImageName: myStoryFallbackCoverImageName
         )
         .frame(width: thumbnailHeight * readerPageAspectRatio, height: thumbnailHeight)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -6429,7 +6468,7 @@ struct MyStoryView: View {
     }
 
     private func readerThumbnail(for image: UIImage, at index: Int) -> some View {
-        let isSelected = index == currentPageIndex
+        let isSelected = index == selectedThumbnailPageIndex
         let aspectRatio = image.size.height > 0 ? image.size.width / image.size.height : 0.57
         let thumbnailWidth = max(28, thumbnailHeight * aspectRatio)
 
@@ -6593,7 +6632,7 @@ struct MyStoryView: View {
             nextStoryboardOffset = visibleRows.count
             hasMoreStoryboards = rows.count > visibleRows.count
             cacheSelectedStoryboardCoverIfNeeded()
-            currentPageIndex = clampedPageIndex(currentPageIndex)
+            currentPageIndex = clampedSpreadPageIndex(currentPageIndex)
             loadFullMyStoryStoryboardIfNeeded(pageIndex: currentPageIndex)
         } catch is CancellationError {
             return
@@ -6638,7 +6677,7 @@ struct MyStoryView: View {
             nextStoryboardOffset += visibleRows.count
             hasMoreStoryboards = rows.count > visibleRows.count
             cacheSelectedStoryboardCoverIfNeeded()
-            currentPageIndex = clampedPageIndex(currentPageIndex)
+            currentPageIndex = clampedSpreadPageIndex(currentPageIndex)
             loadFullMyStoryStoryboardIfNeeded(pageIndex: currentPageIndex)
         } catch is CancellationError {
             return
@@ -6728,7 +6767,7 @@ struct MyStoryView: View {
             .flatMap { $0 }
             .sorted(by: myStoryStoryboardSort)
         cacheSelectedStoryboardCoverIfNeeded()
-        currentPageIndex = clampedPageIndex(currentPageIndex)
+        currentPageIndex = clampedSpreadPageIndex(currentPageIndex)
     }
 
     @MainActor
@@ -6777,6 +6816,17 @@ struct MyStoryView: View {
         }
 
         isShowingCoverCustomization = true
+    }
+
+    private func openMyStoryComicReader() {
+        guard !generatedStoryboards.isEmpty, !isOpeningComicReader else {
+            return
+        }
+
+        isOpeningComicReader = true
+        comicReaderPageIndex = 0
+        loadFullMyStoryStoryboardIfNeeded(pageIndex: 1)
+        isComicReaderPresented = true
     }
 
     @MainActor
@@ -6982,6 +7032,12 @@ struct MyStoryView: View {
         displayStoryboardCount + 1
     }
 
+    private var readerPagePositionText: String {
+        currentPageIndex <= closedCoverPageIndex
+            ? "Cover"
+            : "\(currentPageIndex + 1) / \(displayTotalPageCount)"
+    }
+
     private var readerPageAspectRatio: CGFloat {
         guard let firstStoryboard = generatedStoryboards.first,
               firstStoryboard.image.size.height > 0 else {
@@ -6999,6 +7055,24 @@ struct MyStoryView: View {
         let width = max(viewport.width, 1)
         let height = width / readerDisplayAspectRatio
         return CGSize(width: width, height: height)
+    }
+
+    private var thumbnailScrollTarget: Int {
+        thumbnailScrollTarget(for: currentPageIndex)
+    }
+
+    private func thumbnailScrollTarget(for pageIndex: Int) -> Int {
+        selectedThumbnailPageIndex(for: pageIndex)
+    }
+
+    private var selectedThumbnailPageIndex: Int {
+        selectedThumbnailPageIndex(for: currentPageIndex)
+    }
+
+    private func selectedThumbnailPageIndex(for pageIndex: Int) -> Int {
+        pageIndex <= closedCoverPageIndex
+            ? 0
+            : clampedPageIndex(pageIndex + 1)
     }
 
     private func goToPage(_ pageIndex: Int) {
@@ -7019,8 +7093,52 @@ struct MyStoryView: View {
         min(max(0, pageIndex), max(0, totalPageCount - 1))
     }
 
+    private func clampedComicReaderPageIndex(_ pageIndex: Int) -> Int {
+        min(max(0, pageIndex), max(0, generatedStoryboards.count))
+    }
+
     private func clampedSpreadPageIndex(_ pageIndex: Int) -> Int {
-        min(max(0, pageIndex), max(0, totalPageCount - 2))
+        min(max(closedCoverPageIndex, pageIndex), maxSpreadPageIndex)
+    }
+
+    private var maxSpreadPageIndex: Int {
+        max(0, totalPageCount - 2)
+    }
+
+    private var closedCoverPageIndex: Int {
+        -1
+    }
+}
+
+private struct MyStoryCoverThumbnail: View {
+    let color: Color
+    let coverImage: UIImage?
+    let remoteCoverURL: URL?
+    let fallbackImageName: String?
+
+    var body: some View {
+        GeometryReader { proxy in
+            coverFill
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+        }
+    }
+
+    @ViewBuilder
+    private var coverFill: some View {
+        if let coverImage {
+            Image(uiImage: coverImage)
+                .resizable()
+                .scaledToFill()
+        } else if let remoteCoverURL {
+            RemoteCoverImage(url: remoteCoverURL, placeholderColor: color)
+        } else if let fallbackImageName {
+            Image(fallbackImageName)
+                .resizable()
+                .scaledToFill()
+        } else {
+            color
+        }
     }
 }
 
@@ -7186,16 +7304,20 @@ private struct MyStoryBookSpreadView: View {
             clearTurn()
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("My Story page \(leftPageIndex + 1) of \(totalPageCount)")
+        .accessibilityLabel(readerAccessibilityLabel)
     }
 
     /// Deliberately branch-free: the same two slots are rendered whether or not a turn is running, so
     /// starting one only changes values, never the shape of the view tree.
     private var bookContent: some View {
         ZStack {
-            // Only the two stationary halves sit underneath: the page being turned is drawn once,
-            // on top, so nothing can duplicate or fight the settled spread mid-animation.
-            spreadView(leftPageIndex: baseSpread.left, rightPageIndex: baseSpread.right)
+            if isSettledClosedCover {
+                closedCoverView
+            } else {
+                // Only the two stationary halves sit underneath: the page being turned is drawn once,
+                // on top, so nothing can duplicate or fight the settled spread mid-animation.
+                spreadView(leftPageIndex: baseSpread.left, rightPageIndex: baseSpread.right)
+            }
 
             turningPage(turn: turn)
         }
@@ -7206,9 +7328,22 @@ private struct MyStoryBookSpreadView: View {
             return (leftPageIndex, leftPageIndex + 1)
         }
 
+        if turn.toLeftIndex == closedCoverPageIndex {
+            return (closedCoverPageIndex, turn.fromLeftIndex + 1)
+        }
+
         return turn.direction > 0
             ? (turn.fromLeftIndex, turn.fromLeftIndex + 2)
             : (turn.toLeftIndex, turn.fromLeftIndex + 1)
+    }
+
+    private var closedCoverView: some View {
+        GeometryReader { proxy in
+            pageView(at: 0, showsClosedBookEdges: true)
+                .frame(width: proxy.size.width / 2, height: proxy.size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+        }
     }
 
     private func spreadView(leftPageIndex: Int, rightPageIndex: Int) -> some View {
@@ -7217,18 +7352,21 @@ private struct MyStoryBookSpreadView: View {
             let pageHeight = proxy.size.height
             let clampedLeftPageIndex = clampedSpreadPageIndex(leftPageIndex)
             let clampedRightPageIndex = clampedPageIndex(rightPageIndex)
+            let rightPageIsClosedCover = clampedLeftPageIndex == closedCoverPageIndex && clampedRightPageIndex == 0
 
             HStack(spacing: 0) {
                 pageView(at: clampedLeftPageIndex)
                     .frame(width: pageWidth, height: pageHeight)
 
-                pageView(at: clampedRightPageIndex)
+                pageView(at: clampedRightPageIndex, showsClosedBookEdges: rightPageIsClosedCover)
                     .frame(width: pageWidth, height: pageHeight)
             }
             .frame(width: proxy.size.width, height: pageHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .center) {
-                bookCenterShadow(height: pageHeight)
+                if clampedLeftPageIndex != closedCoverPageIndex {
+                    bookCenterShadow(height: pageHeight, shadesLeftPage: clampedLeftPageIndex != 0)
+                }
             }
         }
     }
@@ -7239,6 +7377,8 @@ private struct MyStoryBookSpreadView: View {
             let movingPageIndex = clampedPageIndex(
                 turn.map { turnsForward ? $0.fromLeftIndex + 1 : $0.fromLeftIndex } ?? leftPageIndex
             )
+            let movingPageIsCover = movingPageIndex == 0
+                && (turn?.fromLeftIndex == closedCoverPageIndex || turn?.toLeftIndex == closedCoverPageIndex)
 
             MyStoryTurningSheet(
                 progress: min(1, max(0, turn?.progress ?? 0)),
@@ -7247,18 +7387,20 @@ private struct MyStoryBookSpreadView: View {
                 pageHeight: proxy.size.height,
                 containerWidth: proxy.size.width
             ) {
-                pageView(at: movingPageIndex)
+                pageView(at: movingPageIndex, showsClosedBookEdges: movingPageIsCover)
             }
             .opacity(turn == nil ? 0 : 1)
             .allowsHitTesting(false)
         }
     }
 
-    private func bookCenterShadow(height: CGFloat) -> some View {
+    private func bookCenterShadow(height: CGFloat, shadesLeftPage: Bool) -> some View {
         Rectangle()
             .fill(
                 LinearGradient(
-                    colors: [.black.opacity(0.24), .black.opacity(0.05), .clear, .black.opacity(0.05), .black.opacity(0.24)],
+                    colors: shadesLeftPage
+                        ? [.black.opacity(0.24), .black.opacity(0.05), .clear, .black.opacity(0.05), .black.opacity(0.24)]
+                        : [.clear, .clear, .clear, .black.opacity(0.05), .black.opacity(0.24)],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
@@ -7268,8 +7410,10 @@ private struct MyStoryBookSpreadView: View {
     }
 
     @ViewBuilder
-    private func pageView(at pageIndex: Int) -> some View {
-        if pageIndex == 0 {
+    private func pageView(at pageIndex: Int, showsClosedBookEdges: Bool = false) -> some View {
+        if pageIndex == closedCoverPageIndex {
+            Color.clear
+        } else if pageIndex == 0 {
             JournalStoryboardReaderCoverPage(
                 title: journalTitle,
                 color: journalColor,
@@ -7277,7 +7421,8 @@ private struct MyStoryBookSpreadView: View {
                 remoteCoverURL: remoteCoverURL,
                 fallbackImageName: fallbackCoverImageName,
                 pageCountText: pageCountText,
-                storyboardCountText: storyboardCountText
+                storyboardCountText: storyboardCountText,
+                showsClosedBookEdges: showsClosedBookEdges
             )
         } else if let image = image(at: pageIndex) {
             JournalStoryboardComicPage(image: image)
@@ -7460,7 +7605,7 @@ private struct MyStoryBookSpreadView: View {
     }
 
     private func clampedSpreadPageIndex(_ pageIndex: Int) -> Int {
-        min(max(0, pageIndex), max(0, totalPageCount - 2))
+        min(max(closedCoverPageIndex, pageIndex), maxSpreadPageIndex)
     }
 
     private var totalPageCount: Int {
@@ -7472,11 +7617,29 @@ private struct MyStoryBookSpreadView: View {
     }
 
     private var canTurnForward: Bool {
-        leftPageIndex < max(0, totalPageCount - 2)
+        leftPageIndex < maxSpreadPageIndex
     }
 
     private var canTurnBackward: Bool {
-        leftPageIndex > 0
+        leftPageIndex > closedCoverPageIndex
+    }
+
+    private var isSettledClosedCover: Bool {
+        turn == nil && leftPageIndex == closedCoverPageIndex
+    }
+
+    private var maxSpreadPageIndex: Int {
+        max(0, totalPageCount - 2)
+    }
+
+    private var closedCoverPageIndex: Int {
+        -1
+    }
+
+    private var readerAccessibilityLabel: String {
+        leftPageIndex == closedCoverPageIndex
+            ? "My Story cover closed"
+            : "My Story page \(leftPageIndex + 1) of \(totalPageCount)"
     }
 }
 
@@ -8249,6 +8412,7 @@ private struct JournalStoryboardReaderCoverPage: View {
     let fallbackImageName: String?
     let pageCountText: String
     let storyboardCountText: String
+    var showsClosedBookEdges = true
     var showsDecorativeCopy = true
 
     var body: some View {
@@ -8258,35 +8422,53 @@ private struct JournalStoryboardReaderCoverPage: View {
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipped()
 
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.5),
-                        Color.black.opacity(0.2),
-                        Color.clear
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: max(22, proxy.size.width * 0.13))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .allowsHitTesting(false)
-
                 titleScrim(in: proxy.size)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(alignment: .leading) {
-                Rectangle()
-                    .fill(Color.white.opacity(0.14))
-                    .frame(width: 1)
-                    .padding(.leading, max(14, proxy.size.width * 0.075))
-                    .blendMode(.screen)
+            .clipShape(coverPageShape)
+            .overlay {
+                if showsClosedBookEdges {
+                    closedBookEdgeOverlay(in: proxy.size)
+                }
             }
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                coverPageShape
+                    .stroke(Color.white.opacity(showsClosedBookEdges ? 0.18 : 0.08), lineWidth: 1)
             )
         }
+    }
+
+    private var coverPageShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 8,
+            bottomLeadingRadius: 8,
+            bottomTrailingRadius: showsClosedBookEdges ? 8 : 0,
+            topTrailingRadius: showsClosedBookEdges ? 8 : 0,
+            style: .continuous
+        )
+    }
+
+    private func closedBookEdgeOverlay(in size: CGSize) -> some View {
+        ZStack(alignment: .leading) {
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.5),
+                    Color.black.opacity(0.2),
+                    Color.clear
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: max(22, size.width * 0.13))
+
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(width: 1)
+                .padding(.leading, max(14, size.width * 0.075))
+                .blendMode(.screen)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .allowsHitTesting(false)
     }
 
     private func titleScrim(in size: CGSize) -> some View {

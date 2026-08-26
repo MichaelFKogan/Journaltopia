@@ -20,16 +20,15 @@ struct HomeView: View {
     @State private var fullScreenImageName: String?
     @State private var isLoadingHomeStoryboards = false
     /// Seeded from the session cache because `ContentView` rebuilds `HomeView` from scratch on every
-    /// return to Home. Without it the opening frames have nothing but the local draft pick to show,
-    /// which is the card the reader sees swap to a different entry once the cloud answer lands.
-    @State private var recentEntry: HomeRecentEntry? = HomeRecentEntrySessionCache.mostRecentEntry()
-    @State private var recentJournal: HomeRecentJournal?
+    /// return to Home. Without it the opening frames have nothing but local draft picks to show,
+    /// which are the cards the reader sees swap once the cloud answer lands.
+    @State private var recentEntries: [HomeRecentEntry] = HomeRecentEntrySessionCache.mostRecentEntries()
     @State private var loadedHomeSamplePack: SampleStoryPack?
     @State private var recentContentLoadTask: Task<Void, Never>?
-    @State private var recentJournalLoadTask: Task<Void, Never>?
-    @State private var isPreparingRecentEntry = false
+    @State private var preparingRecentEntryID: UUID?
 
     private let homeStoryboardPreviewLimit = 3
+    private let homeRecentContentLimit = 5
     /// Enough of the Edited: Newest page to apply the same `createdAt` tie-break Entries uses.
     private let homeRecentCloudEntryLimit = 8
 
@@ -85,7 +84,6 @@ struct HomeView: View {
         .onChange(of: selectedPage) { page in
             guard page == .home else {
                 recentContentLoadTask?.cancel()
-                recentJournalLoadTask?.cancel()
                 return
             }
 
@@ -284,27 +282,44 @@ struct HomeView: View {
 
     @ViewBuilder
     private var recentContentSection: some View {
-        if recentEntry != nil || recentJournal != nil {
+        let recentEntries = homeRecentEntries()
+        if !recentEntries.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Most Recent")
                     .font(.system(size: 24, weight: .bold, design: .serif))
                     .foregroundStyle(Color.storyInk)
                     .padding(.top, 6)
 
-                LazyVGrid(columns: HomeRecentContentLayout.gridColumns, spacing: HomeRecentContentLayout.gridSpacing) {
-                    if let recentEntry {
-                        HomeRecentEntryCard(recent: recentEntry, isPreparing: isPreparingRecentEntry) {
-                            openRecentEntryCard(recentEntry)
+                ScrollViewReader { scrollProxy in
+                    ZStack(alignment: .trailing) {
+                        ScrollView(.horizontal, showsIndicators: true) {
+                            HStack(alignment: .top, spacing: HomeRecentContentLayout.gridSpacing) {
+                                ForEach(recentEntries) { recentEntry in
+                                    HomeRecentEntryCard(
+                                        recent: recentEntry,
+                                        isPreparing: preparingRecentEntryID == recentEntry.id
+                                    ) {
+                                        openRecentEntryCard(recentEntry)
+                                    }
+                                    .frame(width: HomeRecentContentLayout.cardWidth)
+                                    .id(recentEntry.id)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                            .padding(.trailing, recentEntries.count > 2 ? HomeRecentContentLayout.trailingScrollCueWidth : 0)
                         }
-                    }
 
-                    if let recentJournal {
-                        HomeRecentJournalCard(recent: recentJournal) {
-                            openRecentJournal(recentJournal.chapter)
+                        if let lastEntryID = recentEntries.last?.id, recentEntries.count > 2 {
+                            HomeRecentScrollCue {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                    scrollProxy.scrollTo(lastEntryID, anchor: .trailing)
+                                }
+                            }
                         }
                     }
                 }
             }
+            .homeSectionCardBackground()
             .padding(.top, 8)
         }
     }
@@ -318,7 +333,8 @@ struct HomeView: View {
             showsBottomNavigation: false,
             embedsInNavigationStack: false
         )
-        .padding(.top, recentEntry == nil && recentJournal == nil ? 8 : 4)
+        .homeSectionCardBackground()
+        .padding(.top, homeRecentEntries().isEmpty ? 8 : 4)
     }
 
     @MainActor
@@ -327,18 +343,16 @@ struct HomeView: View {
 
         if showsSampleHomeContent {
             recentContentLoadTask?.cancel()
-            recentJournalLoadTask?.cancel()
             let pack = isSampleAuthorMode
                 ? loadedHomeSamplePack
                 : (SampleContentStore.pack ?? loadedHomeSamplePack)
             if let pack {
-                recentEntry = mostRecentSampleEntry(from: pack)
-                recentJournal = mostRecentSampleJournal(from: pack)
-                HomeRecentEntrySessionCache.store(recentEntry, for: loadID)
+                recentEntries = mostRecentSampleEntries(from: pack)
+                HomeRecentEntrySessionCache.store(recentEntries, for: loadID)
             } else {
                 // The seed above is unkeyed, so it can belong to whichever mode was last on screen. A
                 // pack that has not loaded yet falls back to this mode's own card, never keeps that one.
-                recentEntry = HomeRecentEntrySessionCache.entry(for: loadID)
+                recentEntries = HomeRecentEntrySessionCache.entries(for: loadID)
             }
             return
         }
@@ -349,9 +363,10 @@ struct HomeView: View {
         // different entry than the cloud answer arriving a moment later. Starting from the cloud-ranked
         // card this session already resolved is what stops the card swapping entries in front of the
         // reader; the local pick is the fallback for when there is no resolved card to start from.
-        recentEntry = HomeRecentEntrySessionCache.entry(for: loadID)
-            ?? mostRecentLocalEntry(from: localEntries)
-        recentJournal = homeRecentJournal(from: UserChapterStore.load(), localEntries: localEntries)
+        recentEntries = HomeRecentEntrySessionCache.entries(for: loadID)
+        if recentEntries.isEmpty {
+            recentEntries = mostRecentLocalEntries(from: localEntries)
+        }
 
         guard loadsCloudEntry, authStore.userID != nil else {
             return
@@ -360,87 +375,6 @@ struct HomeView: View {
         recentContentLoadTask?.cancel()
         recentContentLoadTask = Task {
             await refreshMostRecentCloudEntry()
-        }
-
-        recentJournalLoadTask?.cancel()
-        recentJournalLoadTask = Task {
-            await refreshMostRecentCloudJournal()
-        }
-    }
-
-    /// The journal card, ranked the same way Journals ranks its shelf.
-    @MainActor
-    private func homeRecentJournal(
-        from chapters: [PrototypeChapter],
-        localEntries: [CreateEntryDraft],
-        cloudMemberIDsByJournalID: [UUID: Set<UUID>] = [:]
-    ) -> HomeRecentJournal? {
-        chapters
-            .map { chapter in
-                let memberIDs = journalMemberIDs(for: chapter)
-                    .union(cloudMemberIDsByJournalID[chapter.id] ?? [])
-                return HomeRecentJournal(
-                    chapter: chapter,
-                    recentDate: recentDate(for: chapter, entries: localEntries, memberIDs: memberIDs),
-                    entryCount: memberIDs.count,
-                    isSample: false
-                )
-            }
-            .sorted(by: homeRecentJournalSort)
-            .first
-    }
-
-    /// The journal card's counterpart to ``refreshMostRecentCloudEntry``.
-    ///
-    /// `UserChapterStore` is a local cache that only the Journals page ever filled, so Home could
-    /// only show a journal the reader had already visited Journals to load. On a device whose cache
-    /// is empty — a fresh install, or the first launch after a sign-out purge — the entry card came
-    /// down from the cloud and sat there alone next to nothing.
-    @MainActor
-    private func refreshMostRecentCloudJournal() async {
-        let loadID = homeStoryboardLoadID
-
-        do {
-            let repository = SupabaseJournalRepository()
-            // Two independent reads, so let them overlap rather than stacking the round trips.
-            async let cloudJournalsTask = repository.getJournals()
-            async let membershipsTask = repository.getJournalEntryMemberships()
-
-            let cloudJournals = try await cloudJournalsTask
-            let memberships = try await membershipsTask
-
-            guard !Task.isCancelled, homeStoryboardLoadID == loadID, !showsSampleHomeContent else {
-                return
-            }
-
-            // Read the tombstones after the fetch, so a journal deleted while these reads were in
-            // flight does not come back as this card.
-            let deletedJournalIDs = DeletedJournalStore.ids
-            let chapters = cloudJournals
-                .filter { !deletedJournalIDs.contains($0.id) && !LegacySystemJournalIDs.all.contains($0.id) }
-                .map(PrototypeChapter.init(cloudJournal:))
-
-            guard !chapters.isEmpty else {
-                return
-            }
-
-            // Journals reads this cache when it appears, which is also what lets the card's tap find
-            // the journal it means to open. Skipped when the cloud came back empty above: that is
-            // indistinguishable from a failed read here, and overwriting the cache with nothing
-            // would drop a journal created offline that has not been synced yet.
-            UserChapterStore.replace(with: chapters)
-
-            let cloudMemberIDsByJournalID = Dictionary(grouping: memberships, by: \.journalID)
-                .mapValues { Set($0.map(\.clientEntryID)) }
-            recentJournal = homeRecentJournal(
-                from: chapters,
-                localEntries: visibleLocalEntries(),
-                cloudMemberIDsByJournalID: cloudMemberIDsByJournalID
-            )
-        } catch is CancellationError {
-            return
-        } catch {
-            print("[Journaltopia] Home most-recent journal load failed: \(error.localizedDescription)")
         }
     }
 
@@ -463,34 +397,26 @@ struct HomeView: View {
                 return
             }
 
-            guard let cloudEntry = page.sorted(by: homeRecentCloudEntrySort).first else {
-                recentEntry = nil
-                HomeRecentEntrySessionCache.store(nil, for: loadID)
+            let cloudEntries = Array(page.sorted(by: homeRecentCloudEntrySort).prefix(homeRecentContentLimit))
+            guard !cloudEntries.isEmpty else {
+                recentEntries = []
+                HomeRecentEntrySessionCache.store([], for: loadID)
                 return
             }
 
-            var recent = homeRecentEntry(from: cloudEntry)
-            recentEntry = recent
-            HomeRecentEntrySessionCache.store(recent, for: loadID)
+            recentEntries = cloudEntries.map(homeRecentEntry)
+            HomeRecentEntrySessionCache.store(recentEntries, for: loadID)
 
-            if recent.entry.thumbnail == nil,
-               let thumbnailStoragePath = cloudEntry.thumbnailStoragePath,
-               let thumbnail = try? await SupabaseEntryThumbnailService().downloadThumbnail(
-                storagePath: thumbnailStoragePath
-               ) {
-                guard !Task.isCancelled, recentEntry?.id == cloudEntry.clientEntryID else {
-                    return
+            let thumbnailService = SupabaseEntryThumbnailService()
+            for cloudEntry in cloudEntries where homeRecentEntryNeedsThumbnail(cloudEntry) {
+                if let thumbnailStoragePath = cloudEntry.thumbnailStoragePath,
+                   let thumbnail = try? await thumbnailService.downloadThumbnail(storagePath: thumbnailStoragePath) {
+                    guard !Task.isCancelled, homeStoryboardLoadID == loadID else {
+                        return
+                    }
+
+                    updateRecentEntryThumbnail(thumbnail, for: cloudEntry, loadID: loadID)
                 }
-
-                recent = HomeRecentEntry(
-                    entry: CreateEntryDraft.fromCloud(cloudEntry, thumbnail: thumbnail),
-                    storyboardImage: recent.storyboardImage,
-                    storyboardCount: recent.storyboardCount,
-                    isSample: false,
-                    cloudEntryID: cloudEntry.id
-                )
-                recentEntry = recent
-                HomeRecentEntrySessionCache.store(recent, for: loadID)
             }
         } catch is CancellationError {
             return
@@ -509,7 +435,7 @@ struct HomeView: View {
     /// handing the editor an id; this is that same step for Home.
     @MainActor
     private func openRecentEntryCard(_ recent: HomeRecentEntry) {
-        guard !isPreparingRecentEntry else {
+        guard preparingRecentEntryID == nil else {
             return
         }
 
@@ -535,10 +461,10 @@ struct HomeView: View {
             return
         }
 
-        isPreparingRecentEntry = true
+        preparingRecentEntryID = recent.id
         Task {
             let outcome = await materializeCloudRecentEntry(recent)
-            isPreparingRecentEntry = false
+            preparingRecentEntryID = nil
 
             switch outcome {
             case .staged(let storyboardImage):
@@ -761,58 +687,20 @@ struct HomeView: View {
     }
 
     @MainActor
-    private func mostRecentSampleEntry(from pack: SampleStoryPack) -> HomeRecentEntry? {
+    private func mostRecentSampleEntries(from pack: SampleStoryPack) -> [HomeRecentEntry] {
         // Entries lists `pack.entries` only. Journal copies used to be mixed in here, so Home could
         // pick a nested sample that Edited: Newest on Entries would never show first.
-        let entry = pack.entries
+        pack.entries
             .sorted(by: homeRecentEntrySort)
-            .first
-
-        return entry.map {
-            HomeRecentEntry(
-                entry: $0,
-                storyboardImage: primaryStoryboardImage(for: $0.id),
-                storyboardCount: storyboardCount(for: $0.id),
-                isSample: true
-            )
-        }
-    }
-
-    @MainActor
-    private func mostRecentSampleJournal(from pack: SampleStoryPack) -> HomeRecentJournal? {
-        pack.journals
-            .map { journal in
-                HomeRecentJournal(
-                    chapter: SampleJournalDisplay.chapter(from: journal),
-                    recentDate: journal.entries.map(\.updatedAt).max().map { max($0, journal.updatedAt) } ?? journal.updatedAt,
-                    entryCount: journal.entries.count,
+            .prefix(homeRecentContentLimit)
+            .map {
+                HomeRecentEntry(
+                    entry: $0,
+                    storyboardImage: primaryStoryboardImage(for: $0.id),
+                    storyboardCount: storyboardCount(for: $0.id),
                     isSample: true
                 )
             }
-            .sorted(by: homeRecentJournalSort)
-            .first
-    }
-
-    /// Journals persist membership in `StoryEntryStore` / `EntryJournalLinkStore`, not on the
-    /// chapter itself. `UserChapterStore.load()` always hands back `entries: []`, which is why the
-    /// Home card used to read "0 stories" for a journal that actually had entries inside.
-    private func journalMemberIDs(for chapter: PrototypeChapter) -> Set<UUID> {
-        EntryJournalLinkStore.draftIDs(linkedTo: chapter.title)
-            .union(Set(StoryEntryStore.clientEntryIDs(for: chapter.title)))
-            .union(Set(chapter.entries.map(\.id)))
-    }
-
-    private func recentDate(
-        for chapter: PrototypeChapter,
-        entries: [CreateEntryDraft],
-        memberIDs: Set<UUID>
-    ) -> Date {
-        let linkedEntryUpdatedAt = entries
-            .filter { memberIDs.contains($0.id) }
-            .map(\.updatedAt)
-            .max()
-
-        return max(chapter.updatedAt, linkedEntryUpdatedAt ?? .distantPast)
     }
 
     private func visibleLocalEntries() -> [CreateEntryDraft] {
@@ -821,10 +709,10 @@ struct HomeView: View {
     }
 
     @MainActor
-    private func mostRecentLocalEntry(from entries: [CreateEntryDraft]) -> HomeRecentEntry? {
+    private func mostRecentLocalEntries(from entries: [CreateEntryDraft]) -> [HomeRecentEntry] {
         entries
             .sorted(by: homeRecentEntrySort)
-            .first
+            .prefix(homeRecentContentLimit)
             .map { entry in
                 HomeRecentEntry(
                     entry: entry,
@@ -840,7 +728,7 @@ struct HomeView: View {
         let localEntry = CreateEntryDraftStore.load(ids: [cloudEntry.clientEntryID], includeMedia: false).first
         // Reuse the thumbnail already on screen for this same entry. Dropping it would blank the card
         // for as long as the download below took to fetch a picture the card was already showing.
-        let displayedThumbnail = recentEntry?.id == cloudEntry.clientEntryID ? recentEntry?.entry.thumbnail : nil
+        let displayedThumbnail = recentEntries.first { $0.id == cloudEntry.clientEntryID }?.entry.thumbnail
         let entry = CreateEntryDraft.fromCloud(cloudEntry, thumbnail: localEntry?.thumbnail ?? displayedThumbnail)
 
         return HomeRecentEntry(
@@ -850,6 +738,31 @@ struct HomeView: View {
             isSample: false,
             cloudEntryID: cloudEntry.id
         )
+    }
+
+    private func homeRecentEntryNeedsThumbnail(_ cloudEntry: JournalEntry) -> Bool {
+        recentEntries.first { $0.id == cloudEntry.clientEntryID }?.entry.thumbnail == nil
+    }
+
+    @MainActor
+    private func updateRecentEntryThumbnail(_ thumbnail: UIImage, for cloudEntry: JournalEntry, loadID: String) {
+        guard let index = recentEntries.firstIndex(where: { $0.id == cloudEntry.clientEntryID }) else {
+            return
+        }
+
+        let recent = recentEntries[index]
+        recentEntries[index] = HomeRecentEntry(
+            entry: CreateEntryDraft.fromCloud(cloudEntry, thumbnail: thumbnail),
+            storyboardImage: recent.storyboardImage,
+            storyboardCount: recent.storyboardCount,
+            isSample: false,
+            cloudEntryID: cloudEntry.id
+        )
+        HomeRecentEntrySessionCache.store(recentEntries, for: loadID)
+    }
+
+    private func homeRecentEntries() -> [HomeRecentEntry] {
+        Array(recentEntries.prefix(homeRecentContentLimit))
     }
 
     private func homeRecentEntrySort(_ lhs: CreateEntryDraft, _ rhs: CreateEntryDraft) -> Bool {
@@ -866,14 +779,6 @@ struct HomeView: View {
         }
 
         return lhs.createdAt > rhs.createdAt
-    }
-
-    private func homeRecentJournalSort(_ lhs: HomeRecentJournal, _ rhs: HomeRecentJournal) -> Bool {
-        if lhs.recentDate != rhs.recentDate {
-            return lhs.recentDate > rhs.recentDate
-        }
-
-        return lhs.chapter.createdAt > rhs.chapter.createdAt
     }
 
     /// Sample authoring never fills `SampleContentStore` — that store exists for signed-out browsing,
@@ -1301,12 +1206,74 @@ private enum HomeCardLayout {
 
 private enum HomeRecentContentLayout {
     static let gridSpacing: CGFloat = 16
-    static let gridColumns = [
-        GridItem(.flexible(), spacing: gridSpacing),
-        GridItem(.flexible(), spacing: gridSpacing)
-    ]
+    static let cardWidth: CGFloat = 168
+    static let trailingScrollCueWidth: CGFloat = 46
     static let entryAspectRatio = JournalPaperGeometry.aspectRatio
-    static let journalAspectRatio = JournalPaperGeometry.aspectRatio
+}
+
+private extension View {
+    func homeSectionCardBackground() -> some View {
+        HomeSectionCardLayout(horizontalInset: 14, verticalInset: 14) {
+            self
+        }
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.homeCardGray.opacity(0.9))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.homeBorder.opacity(0.82), lineWidth: 1)
+            )
+            .shadow(color: Color.storyInk.opacity(0.07), radius: 14, y: 6)
+    }
+}
+
+private struct HomeSectionCardLayout: Layout {
+    let horizontalInset: CGFloat
+    let verticalInset: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard let content = subviews.first else {
+            return .zero
+        }
+
+        let contentProposal = ProposedViewSize(
+            width: proposal.width.map { max(0, $0 - horizontalInset * 2) },
+            height: proposal.height.map { max(0, $0 - verticalInset * 2) }
+        )
+        let contentSize = content.sizeThatFits(contentProposal)
+
+        return CGSize(
+            width: proposal.width ?? contentSize.width + horizontalInset * 2,
+            height: contentSize.height + verticalInset * 2
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard let content = subviews.first else {
+            return
+        }
+
+        let contentSize = CGSize(
+            width: max(0, bounds.width - horizontalInset * 2),
+            height: max(0, bounds.height - verticalInset * 2)
+        )
+
+        content.place(
+            at: CGPoint(x: bounds.minX + horizontalInset, y: bounds.minY + verticalInset),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(contentSize)
+        )
+    }
 }
 
 private struct HomeRecentEntry: Identifiable {
@@ -1324,42 +1291,42 @@ private struct HomeRecentEntry: Identifiable {
     }
 }
 
-/// The most-recent entry card Home last resolved, kept for the life of the process.
+/// The most-recent entry cards Home last resolved, kept for the life of the process.
 ///
-/// `ContentView` builds `HomeView` fresh on every return to Home, so `recentEntry` starts empty and
+/// `ContentView` builds `HomeView` fresh on every return to Home, so `recentEntries` starts empty and
 /// the only thing available for the opening frames is the local draft cache — which ranks by on-device
-/// `updatedAt` and can name a different entry than the cloud `updated_at` ranking the card settles on
-/// a moment later. That mismatch is what the reader sees as the card flashing one entry and then
-/// swapping to another. Seeding from here means a return to Home starts on the answer it ended on.
+/// `updatedAt` and can name different entries than the cloud `updated_at` ranking the cards settle on
+/// a moment later. That mismatch is what the reader sees as cards flashing one way and then swapping.
+/// Seeding from here means a return to Home starts on the answer it ended on.
 ///
 /// Keyed by the same load identity Home keys its loads on, so one account never reads another's card
 /// and sample mode never reads the account's; sign-out purges the whole thing through
 /// ``HomeLocalCachePurge``.
 private enum HomeRecentEntrySessionCache {
-    private static var entriesByLoadID: [String: HomeRecentEntry?] = [:]
+    private static var entriesByLoadID: [String: [HomeRecentEntry]] = [:]
     private static var mostRecentLoadID: String?
 
-    static func entry(for loadID: String) -> HomeRecentEntry? {
-        entriesByLoadID[loadID] ?? nil
+    static func entries(for loadID: String) -> [HomeRecentEntry] {
+        entriesByLoadID[loadID] ?? []
     }
 
-    /// The last card stored, whichever load it belonged to.
+    /// The last cards stored, whichever load they belonged to.
     ///
     /// Unkeyed because the load identity needs the signed-in user, and `@State` initial values are
     /// evaluated before the environment exists. Being occasionally wrong is safe: `onAppear` refreshes
     /// against the real identity, so a mismatch costs a frame and never persists.
-    static func mostRecentEntry() -> HomeRecentEntry? {
+    static func mostRecentEntries() -> [HomeRecentEntry] {
         guard let mostRecentLoadID else {
-            return nil
+            return []
         }
 
-        return entry(for: mostRecentLoadID)
+        return entries(for: mostRecentLoadID)
     }
 
-    /// Stores `nil` as a real answer — "this account has no entries" is worth seeding too, and lets a
-    /// deleted last entry stop coming back on the next visit.
-    static func store(_ entry: HomeRecentEntry?, for loadID: String) {
-        entriesByLoadID[loadID] = .some(entry)
+    /// Stores an empty array as a real answer — "this account has no entries" is worth seeding too,
+    /// and lets deleted last entries stop coming back on the next visit.
+    static func store(_ entries: [HomeRecentEntry], for loadID: String) {
+        entriesByLoadID[loadID] = entries
         mostRecentLoadID = loadID
     }
 
@@ -1380,21 +1347,6 @@ enum HomeLocalCachePurge {
     }
 }
 
-private struct HomeRecentJournal: Identifiable {
-    let chapter: PrototypeChapter
-    let recentDate: Date
-    let entryCount: Int
-    let isSample: Bool
-
-    var id: UUID {
-        chapter.id
-    }
-
-    var entryCountText: String {
-        "\(entryCount) \(entryCount == 1 ? "story" : "stories")"
-    }
-}
-
 private func homeRecentEntryTitle(_ entry: CreateEntryDraft) -> String {
     let trimmedTitle = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedTitle.isEmpty {
@@ -1403,6 +1355,31 @@ private func homeRecentEntryTitle(_ entry: CreateEntryDraft) -> String {
 
     let trimmedText = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmedText.isEmpty ? "Untitled Entry" : trimmedText
+}
+
+private struct HomeRecentScrollCue: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            LinearGradient(
+                colors: [
+                    Color.homeCardGray.opacity(0),
+                    Color.homeCardGray.opacity(0.86)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: HomeRecentContentLayout.trailingScrollCueWidth)
+            .overlay(alignment: .trailing) {
+                HomeCardNavigationIndicator()
+                    .padding(.trailing, 2)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show more recent entries")
+        .accessibilityHint("Scrolls to the rest of the most recent entries")
+    }
 }
 
 private struct HomeRecentEntryCard: View {
@@ -1530,147 +1507,6 @@ private struct HomeRecentEntryCard: View {
         .rotationEffect(.degrees(2))
         .shadow(color: Color.storyInk.opacity(0.16), radius: 6, y: 4)
         .position(x: size.width * 0.76, y: size.height * 0.73)
-    }
-}
-
-private struct HomeRecentJournalCard: View {
-    let recent: HomeRecentJournal
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        journalCover
-                            .frame(width: proxy.size.width, height: proxy.size.height)
-                            .clipped()
-
-                        Rectangle()
-                            .fill(Color.black.opacity(0.18))
-                            .frame(width: 12)
-                            .overlay(alignment: .trailing) {
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.22))
-                                    .frame(width: 1)
-                            }
-
-                        VStack {
-                            Spacer()
-                            LinearGradient(
-                                colors: [.clear, .black.opacity(0.48)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: 64)
-                            .overlay(alignment: .bottomLeading) {
-                                Text(recent.chapter.title)
-                                    .font(.system(size: 13, weight: .heavy, design: .serif))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(2)
-                                    .minimumScaleFactor(0.72)
-                                    .padding(.leading, 18)
-                                    .padding(.trailing, 10)
-                                    .padding(.bottom, 10)
-                                    .homeBannerSubtitleContrast()
-                            }
-                        }
-                    }
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.homeBorder, lineWidth: 1)
-                    )
-                }
-                .aspectRatio(HomeRecentContentLayout.journalAspectRatio, contentMode: .fit)
-                .frame(minWidth: 0, maxWidth: .infinity)
-                .shadow(color: Color.storyInk.opacity(0.16), radius: 9, y: 5)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(recent.entryCountText)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.storyInk)
-                        .lineLimit(1)
-
-                    Text(recent.recentDate.formatted(.dateTime.month(.abbreviated).day()))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.homeMutedText)
-                        .lineLimit(1)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Most recent journal, \(recent.chapter.title)")
-        .accessibilityHint("Opens Journals")
-    }
-
-    @ViewBuilder
-    private var journalCover: some View {
-        if let localCoverImage = HomeJournalCoverImageStore.image(for: recent.chapter) {
-            Image(uiImage: localCoverImage)
-                .resizable()
-                .scaledToFill()
-        } else if let remoteCoverURL = recent.chapter.remoteCover?.thumbnailNSURL ?? recent.chapter.remoteCover?.imageNSURL {
-            AsyncImage(url: remoteCoverURL) { phase in
-                if let image = phase.image {
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    recent.chapter.color
-                }
-            }
-        } else if let coverImageName = recent.chapter.coverImageName {
-            Image(coverImageName)
-                .resizable()
-                .scaledToFill()
-        } else {
-            ZStack {
-                recent.chapter.color
-
-                Image(systemName: recent.chapter.symbol)
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.82))
-            }
-        }
-    }
-}
-
-private enum HomeJournalCoverImageStore {
-    private static let folderName = "JournalCovers"
-
-    static func image(for journal: PrototypeChapter) -> UIImage? {
-        image(for: journal.coverStorageKey) ?? image(for: journal.title)
-    }
-
-    private static func image(for key: String) -> UIImage? {
-        guard
-            let data = try? Data(contentsOf: fileURL(for: key)),
-            let image = UIImage(data: data)
-        else {
-            return nil
-        }
-
-        return image
-    }
-
-    private static var directoryURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(folderName, isDirectory: true)
-    }
-
-    private static func fileURL(for key: String) -> URL {
-        directoryURL.appendingPathComponent(fileName(for: key))
-    }
-
-    private static func fileName(for key: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-        let sanitized = key.unicodeScalars.map { scalar in
-            allowed.contains(scalar) ? String(scalar) : "-"
-        }.joined()
-        return "\(sanitized.isEmpty ? "journal" : sanitized).jpg"
     }
 }
 
