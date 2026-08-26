@@ -26,6 +26,7 @@ struct HomeView: View {
     @State private var loadedHomeSamplePack: SampleStoryPack?
     @State private var recentContentLoadTask: Task<Void, Never>?
     @State private var preparingRecentEntryID: UUID?
+    @State private var recentScrollTrailingIndex = 1
 
     private let homeStoryboardPreviewLimit = 3
     private let homeRecentContentLimit = 5
@@ -91,6 +92,9 @@ struct HomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaGeneratedStoryboardsChanged)) { _ in
             refreshRecentContent(loadsCloudEntry: true)
+        }
+        .onChange(of: recentEntries.map(\.id)) { _ in
+            recentScrollTrailingIndex = min(1, max(0, recentEntries.count - 1))
         }
         .onReceive(NotificationCenter.default.publisher(for: .journaltopiaJournalCoverChanged)) { _ in
             refreshRecentContent(loadsCloudEntry: false)
@@ -309,10 +313,12 @@ struct HomeView: View {
                             .padding(.trailing, recentEntries.count > 2 ? HomeRecentContentLayout.trailingScrollCueWidth : 0)
                         }
 
-                        if let lastEntryID = recentEntries.last?.id, recentEntries.count > 2 {
+                        if recentEntries.count > 2 {
                             HomeRecentScrollCue {
+                                let nextIndex = min(recentScrollTrailingIndex + 1, recentEntries.count - 1)
+                                recentScrollTrailingIndex = nextIndex
                                 withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                                    scrollProxy.scrollTo(lastEntryID, anchor: .trailing)
+                                    scrollProxy.scrollTo(recentEntries[nextIndex].id, anchor: .trailing)
                                 }
                             }
                         }

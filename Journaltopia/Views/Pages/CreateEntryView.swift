@@ -1394,6 +1394,9 @@ fileprivate enum CreateScenicSheetMetrics {
     static let clearTintOpacity: Double = 0.10
     /// White wash for `.wash`. Around 0.30 starts looking milky.
     static let washTintOpacity: Double = 0.20
+    /// Slightly less transparent gray editor. Used by papers in
+    /// `CreatePaperStyleChoice.usesHeavierEditorWash`.
+    static let heavyWashTintOpacity: Double = 0.32
     /// White wash for `.frost`. Keep this lighter so the blur does the lifting.
     static let frostTintOpacity: Double = 0.08
     static let cornerRadius: CGFloat = 26
@@ -2037,27 +2040,42 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
                 .blank,
                 .watercolorPaper,
                 .cottonPaper,
-                .recycledPaper:
-            CreatePaperChrome(editor: .wash, menu: .frost, menuFrostIntensity: 0.78)
-        case .rooftopCat1,
+                .daytimeCoffeeShop,
                 .japaneseTown,
                 .japaneseHome,
                 .trainView,
-                .daytimeCoffeeShop,
                 .lofiGirl,
+                .recycledPaper:
+            CreatePaperChrome(editor: .wash, menu: .frost, menuFrostIntensity: 0.88)
+        case .rooftopCat1,
                 .purpleClouds:
             .both(.wash)
         }
     }
 
+    /// Add a paper here to make its gray editor a bit less transparent.
+    /// Menu chrome is unchanged.
+    var usesHeavierEditorWash: Bool {
+        switch self {
+        case .trainView, .daytimeCoffeeShop, .lofiGirl:
+            true
+        default:
+            false
+        }
+    }
+
     var scenicSheetTintOpacity: Double {
+        if usesHeavierEditorWash {
+            return CreateScenicSheetMetrics.heavyWashTintOpacity
+        }
+
         switch chrome.editor {
         case .clear:
-            CreateScenicSheetMetrics.clearTintOpacity
+            return CreateScenicSheetMetrics.clearTintOpacity
         case .wash:
-            CreateScenicSheetMetrics.washTintOpacity
+            return CreateScenicSheetMetrics.washTintOpacity
         case .frost:
-            CreateScenicSheetMetrics.frostTintOpacity
+            return CreateScenicSheetMetrics.frostTintOpacity
         }
     }
 
