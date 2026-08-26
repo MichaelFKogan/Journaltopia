@@ -2544,9 +2544,9 @@ private struct DraftPageThumbnail: View {
 
 /// Layout constants for the create page chrome that sits outside the notebook paper itself.
 enum CreateEntryLayout {
-    /// Shows the floating companion video-call window and its "Call" button on the references shelf.
+    /// Shows the companion chat overlay and its Chat button on the create page.
     /// Flip this to `false` to park both without unwiring the rest of the companion.
-    static let isCompanionEnabled = false
+    static let isCompanionEnabled = true
 
     /// Bundled loop shown as the journaling companion.
     static let companionVideoName = "girl-1"
@@ -7019,6 +7019,19 @@ struct CreateEntryView: View {
                     : (selectedJournalShelfTitles.isEmpty ? "Add to journal" : "\(journalShelfSummary), change journals")
             ) {
                 openJournalsFromShelf()
+            }
+
+            if CreateEntryLayout.isCompanionEnabled {
+                floatingMenuActionButton(
+                    title: "Chat",
+                    systemName: "bubble.left.and.bubble.right",
+                    foregroundColor: createMenuForeground,
+                    accessibilityLabel: isCompanionChatVisible
+                        ? "Close \(CreateEntryLayout.companionName) chat"
+                        : "Chat with \(CreateEntryLayout.companionName)"
+                ) {
+                    toggleCompanion()
+                }
             }
         }
         .padding(.horizontal, 16)
