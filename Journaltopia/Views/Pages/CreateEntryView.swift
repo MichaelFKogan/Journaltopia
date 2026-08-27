@@ -1743,6 +1743,8 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             .serif
         case .trainView, .japaneseHome, .rooftopCat1:
             .nunito
+        case .cozyWindow:
+            .patrickHand
         default:
             nil
         }
@@ -1756,7 +1758,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             CreateFormattingPalette.blackTextColorIndex
         case .deepSea:
             CreateFormattingPalette.whiteTextColorIndex
-        case .rooftopCat1:
+        case .rooftopCat1, .cozyWindow:
             CreateFormattingPalette.yellowTextColorIndex
         default:
             nil
@@ -8267,6 +8269,14 @@ struct CreateEntryView: View {
             }
 
             keyboardToolButton(
+                systemName: "list.number",
+                accessibilityLabel: "Numbered list",
+                isSelected: false
+            ) {
+                sendTextFormattingCommand(.numberedList)
+            }
+
+            keyboardToolButton(
                 systemName: "increase.indent",
                 accessibilityLabel: "Indent",
                 isSelected: false
@@ -8280,14 +8290,6 @@ struct CreateEntryView: View {
                 isSelected: false
             ) {
                 sendTextFormattingCommand(.outdent)
-            }
-
-            keyboardToolButton(
-                systemName: "ellipsis",
-                accessibilityLabel: "More",
-                isSelected: false
-            ) {
-                showKeyboardMoreToolbar()
             }
         }
     }
@@ -8330,7 +8332,7 @@ struct CreateEntryView: View {
             return editorSelectionState.hasSelection && editorSelectionState.isUnderlined
         case .strikethrough:
             return editorSelectionState.hasSelection && editorSelectionState.isStrikethrough
-        case .bulletList, .indent, .outdent, .textColor, .resetTextColors, .textStyle:
+        case .bulletList, .numberedList, .indent, .outdent, .textColor, .resetTextColors, .textStyle:
             return false
         }
     }

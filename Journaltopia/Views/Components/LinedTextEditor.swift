@@ -14,6 +14,7 @@ enum NotebookTextFormattingCommand: Equatable {
     case underline
     case strikethrough
     case bulletList
+    case numberedList
     case indent
     case outdent
     case textColor(String)
@@ -670,6 +671,32 @@ final class LinedTextView: UITextView {
     private static let indentPrefix = "    "
     private static weak var attachedInstance: LinedTextView?
 
+    private enum LineListMarker: Equatable {
+        case none
+        case bullet
+        case numbered(Int)
+
+        var prefixString: String {
+            switch self {
+            case .none:
+                ""
+            case .bullet:
+                LinedTextView.bulletPrefix
+            case .numbered(let number):
+                "\(number). "
+            }
+        }
+
+        var prefixUTF16Length: Int {
+            (prefixString as NSString).length
+        }
+    }
+
+    private enum DesiredListKind {
+        case bullet
+        case numbered
+    }
+
     @discardableResult
     static func becomeActiveFirstResponder() -> Bool {
         attachedInstance?.becomeFirstResponder() ?? false
@@ -1267,7 +1294,12 @@ final class LinedTextView: UITextView {
 
     func applyFormattingCommand(_ command: NotebookTextFormattingCommand) {
         if command == .bulletList {
-            applyBulletToCurrentLine()
+            applyListToggle(to: .bullet)
+            return
+        }
+
+        if command == .numberedList {
+            applyListToggle(to: .numbered)
             return
         }
 
@@ -1326,7 +1358,7 @@ final class LinedTextView: UITextView {
             mutableText.toggleIntegerStyle(.underlineStyle, in: range)
         case .strikethrough:
             mutableText.toggleIntegerStyle(.strikethroughStyle, in: range)
-        case .bulletList:
+        case .bulletList, .numberedList:
             break
         case .indent, .outdent:
             break
@@ -1439,7 +1471,7 @@ final class LinedTextView: UITextView {
         return NSRange(location: range.location, length: length)
     }
 
-    private func applyBulletToCurrentLine() {
+    private func applyListToggle(to kind: DesiredListKind) {
         let cursor = selectedRange.location
         guard cursor != NSNotFound else {
             return
@@ -1451,50 +1483,110 @@ final class LinedTextView: UITextView {
         let lineText = nsPlain
             .substring(with: lineRange)
             .trimmingCharacters(in: .newlines)
+        let currentMarker = lineListMarker(in: lineText)
 
-        if lineText.hasPrefix(Self.bulletPrefix) {
-            removeBulletFromLine(at: lineRange, cursor: cursor)
-        } else {
-            addBulletToLine(at: lineRange, cursor: cursor)
+        let newPrefix: String
+        switch (kind, currentMarker) {
+        case (.bullet, .bullet), (.numbered, .numbered):
+            newPrefix = ""
+        case (.bullet, _):
+            newPrefix = Self.bulletPrefix
+        case (.numbered, _):
+            let number = (previousNumberedValue(before: lineRange, in: nsPlain) ?? 0) + 1
+            newPrefix = "\(number). "
         }
+
+        replaceLinePrefix(
+            at: lineRange,
+            oldPrefixLength: currentMarker.prefixUTF16Length,
+            newPrefix: newPrefix,
+            cursor: cursor
+        )
     }
 
-    private func addBulletToLine(at lineRange: NSRange, cursor: Int) {
-        let attributes = currentTypingAttributes()
-        let mutableText = NSMutableAttributedString(attributedString: attributedText)
-        mutableText.insert(
-            NSAttributedString(string: Self.bulletPrefix, attributes: attributes),
-            at: lineRange.location
-        )
+    private func lineListMarker(in lineText: String) -> LineListMarker {
+        if lineText.hasPrefix(Self.bulletPrefix) {
+            return .bullet
+        }
 
-        attributedText = mutableText
-        updateStoredRichTextDocument()
-        selectedRange = NSRange(
-            location: cursor >= lineRange.location ? cursor + Self.bulletPrefix.count : cursor,
-            length: 0
-        )
-        typingAttributes = attributes
-        notifyTextDidChange()
-        setNeedsDisplay()
+        if let number = numberedPrefixValue(in: lineText) {
+            return .numbered(number)
+        }
+
+        return .none
     }
 
-    private func removeBulletFromLine(at lineRange: NSRange, cursor: Int) {
+    private func numberedPrefixValue(in lineText: String) -> Int? {
+        let nsLine = lineText as NSString
+        var digitCount = 0
+        while digitCount < nsLine.length {
+            let character = nsLine.character(at: digitCount)
+            guard character >= 48, character <= 57 else {
+                break
+            }
+            digitCount += 1
+        }
+
+        guard digitCount > 0,
+              digitCount + 1 < nsLine.length,
+              nsLine.character(at: digitCount) == 46,
+              nsLine.character(at: digitCount + 1) == 32 else {
+            return nil
+        }
+
+        return Int(nsLine.substring(to: digitCount))
+    }
+
+    private func previousNumberedValue(before lineRange: NSRange, in plainText: NSString) -> Int? {
+        guard lineRange.location > 0 else {
+            return nil
+        }
+
+        let previousLineRange = plainText.lineRange(for: NSRange(location: lineRange.location - 1, length: 0))
+        let previousLineText = plainText
+            .substring(with: previousLineRange)
+            .trimmingCharacters(in: .newlines)
+
+        if case .numbered(let number) = lineListMarker(in: previousLineText) {
+            return number
+        }
+
+        return nil
+    }
+
+    private func replaceLinePrefix(
+        at lineRange: NSRange,
+        oldPrefixLength: Int,
+        newPrefix: String,
+        cursor: Int
+    ) {
         let attributes = currentTypingAttributes()
         let mutableText = NSMutableAttributedString(attributedString: attributedText)
-        mutableText.deleteCharacters(in: NSRange(location: lineRange.location, length: Self.bulletPrefix.count))
 
+        if oldPrefixLength > 0 {
+            mutableText.deleteCharacters(in: NSRange(location: lineRange.location, length: oldPrefixLength))
+        }
+
+        if !newPrefix.isEmpty {
+            mutableText.insert(
+                NSAttributedString(string: newPrefix, attributes: attributes),
+                at: lineRange.location
+            )
+        }
+
+        let newPrefixLength = (newPrefix as NSString).length
         let newCursor: Int
-        if cursor >= lineRange.location + Self.bulletPrefix.count {
-            newCursor = cursor - Self.bulletPrefix.count
+        if cursor >= lineRange.location + oldPrefixLength {
+            newCursor = cursor + (newPrefixLength - oldPrefixLength)
         } else if cursor > lineRange.location {
-            newCursor = lineRange.location
+            newCursor = lineRange.location + newPrefixLength
         } else {
             newCursor = cursor
         }
 
         attributedText = mutableText
         updateStoredRichTextDocument()
-        selectedRange = NSRange(location: newCursor, length: 0)
+        selectedRange = NSRange(location: max(0, newCursor), length: 0)
         typingAttributes = attributes
         notifyTextDidChange()
         setNeedsDisplay()
@@ -1672,21 +1764,26 @@ final class LinedTextView: UITextView {
         let lineText = nsPlain
             .substring(with: lineRange)
             .trimmingCharacters(in: .newlines)
+        let marker = lineListMarker(in: lineText)
 
-        guard lineText.hasPrefix(Self.bulletPrefix) else {
+        guard marker != .none else {
             return true
         }
 
         let attributes = currentTypingAttributes()
         let mutableText = NSMutableAttributedString(attributedString: attributedText)
-        let contentAfterBullet = String(lineText.dropFirst(Self.bulletPrefix.count))
+        let prefixLength = marker.prefixUTF16Length
+        let nsLineText = lineText as NSString
+        let contentAfterMarker = prefixLength <= nsLineText.length
+            ? nsLineText.substring(from: prefixLength)
+            : ""
 
-        if contentAfterBullet.trimmingCharacters(in: .whitespaces).isEmpty {
-            mutableText.deleteCharacters(in: NSRange(location: lineRange.location, length: Self.bulletPrefix.count))
+        if contentAfterMarker.trimmingCharacters(in: .whitespaces).isEmpty {
+            mutableText.deleteCharacters(in: NSRange(location: lineRange.location, length: prefixLength))
 
             var insertLocation = range.location
-            if insertLocation >= lineRange.location + Self.bulletPrefix.count {
-                insertLocation -= Self.bulletPrefix.count
+            if insertLocation >= lineRange.location + prefixLength {
+                insertLocation -= prefixLength
             } else if insertLocation > lineRange.location {
                 insertLocation = lineRange.location
             }
@@ -1699,14 +1796,24 @@ final class LinedTextView: UITextView {
             updateStoredRichTextDocument()
             selectedRange = NSRange(location: insertLocation + 1, length: 0)
         } else {
-            let insertString = "\n" + Self.bulletPrefix
+            let continuedPrefix: String
+            switch marker {
+            case .bullet:
+                continuedPrefix = Self.bulletPrefix
+            case .numbered(let number):
+                continuedPrefix = "\(number + 1). "
+            case .none:
+                return true
+            }
+
+            let insertString = "\n" + continuedPrefix
             mutableText.replaceCharacters(
                 in: range,
                 with: NSAttributedString(string: insertString, attributes: attributes)
             )
             attributedText = mutableText
             updateStoredRichTextDocument()
-            selectedRange = NSRange(location: range.location + insertString.count, length: 0)
+            selectedRange = NSRange(location: range.location + (insertString as NSString).length, length: 0)
         }
 
         typingAttributes = attributes
@@ -1735,7 +1842,7 @@ final class LinedTextView: UITextView {
             isTypingBold.toggle()
         case .italic:
             isTypingItalic.toggle()
-        case .underline, .strikethrough, .bulletList, .indent, .outdent, .textColor, .resetTextColors, .textStyle:
+        case .underline, .strikethrough, .bulletList, .numberedList, .indent, .outdent, .textColor, .resetTextColors, .textStyle:
             return
         }
 
