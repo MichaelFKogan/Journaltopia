@@ -6149,6 +6149,13 @@ struct MyStoryView: View {
                     fallbackCoverImageName: myStoryFallbackCoverImageName,
                     pageCountText: pageCountText,
                     storyboardCountText: storyboardCountText,
+                    hasMoreStoryboards: hasMoreStoryboards,
+                    isLoadingMoreStoryboards: isLoadingMoreStoryboards,
+                    loadMoreStoryboards: {
+                        Task {
+                            await loadMoreMyStoryboards()
+                        }
+                    },
                     currentPageIndex: $currentPageIndex,
                     programmaticTurnRequest: $programmaticTurnRequest,
                     isPageTurnActive: $isPageTurnActive
@@ -7033,9 +7040,15 @@ struct MyStoryView: View {
     }
 
     private var readerPagePositionText: String {
-        currentPageIndex <= closedCoverPageIndex
-            ? "Cover"
-            : "\(currentPageIndex + 1) / \(displayTotalPageCount)"
+        if currentPageIndex <= closedCoverPageIndex {
+            return "Cover"
+        }
+
+        if currentPageIndex >= firstEndPageSpreadIndex {
+            return hasMoreStoryboards ? "Load More" : "Back Cover"
+        }
+
+        return "\(currentPageIndex + 1) / \(displayTotalPageCount)"
     }
 
     private var readerPageAspectRatio: CGFloat {
@@ -7102,11 +7115,23 @@ struct MyStoryView: View {
     }
 
     private var maxSpreadPageIndex: Int {
-        max(0, totalPageCount - 2)
+        if hasMoreStoryboards {
+            return max(0, firstEndPageSpreadIndex)
+        }
+
+        return max(0, closedBackCoverPageIndex)
     }
 
     private var closedCoverPageIndex: Int {
         -1
+    }
+
+    private var firstEndPageSpreadIndex: Int {
+        generatedStoryboards.count
+    }
+
+    private var closedBackCoverPageIndex: Int {
+        generatedStoryboards.count + 1
     }
 }
 
@@ -7245,6 +7270,9 @@ private struct MyStoryBookSpreadView: View {
     let fallbackCoverImageName: String?
     let pageCountText: String
     let storyboardCountText: String
+    let hasMoreStoryboards: Bool
+    let isLoadingMoreStoryboards: Bool
+    let loadMoreStoryboards: () -> Void
     @Binding var currentPageIndex: Int
     @Binding var programmaticTurnRequest: MyStoryTurnRequest?
     @Binding var isPageTurnActive: Bool
@@ -7276,8 +7304,13 @@ private struct MyStoryBookSpreadView: View {
                     },
                     onCancelled: {
                         cancelTurn()
-                    }
+                    },
+                    onTap: isLoadMorePageVisible ? {
+                        loadMoreStoryboards()
+                    } : nil
                 )
+                .accessibilityLabel(isLoadMorePageVisible ? "Load more storyboards" : "Turn My Story pages")
+                .accessibilityAddTraits(isLoadMorePageVisible ? .isButton : [])
             }
             .contentShape(Rectangle())
         }
@@ -7311,8 +7344,10 @@ private struct MyStoryBookSpreadView: View {
     /// starting one only changes values, never the shape of the view tree.
     private var bookContent: some View {
         ZStack {
-            if isSettledClosedCover {
-                closedCoverView
+            if isSettledFrontCoverClosed {
+                frontCoverClosedView
+            } else if isSettledBackCoverClosed {
+                backCoverClosedView
             } else {
                 // Only the two stationary halves sit underneath: the page being turned is drawn once,
                 // on top, so nothing can duplicate or fight the settled spread mid-animation.
@@ -7332,17 +7367,30 @@ private struct MyStoryBookSpreadView: View {
             return (closedCoverPageIndex, turn.fromLeftIndex + 1)
         }
 
+        if turn.toLeftIndex == closedBackCoverPageIndex {
+            return (turn.fromLeftIndex, turn.fromLeftIndex + 2)
+        }
+
         return turn.direction > 0
             ? (turn.fromLeftIndex, turn.fromLeftIndex + 2)
             : (turn.toLeftIndex, turn.fromLeftIndex + 1)
     }
 
-    private var closedCoverView: some View {
+    private var frontCoverClosedView: some View {
         GeometryReader { proxy in
             pageView(at: 0, showsClosedBookEdges: true)
                 .frame(width: proxy.size.width / 2, height: proxy.size.height)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .trailing)
+        }
+    }
+
+    private var backCoverClosedView: some View {
+        GeometryReader { proxy in
+            backCoverPage
+                .frame(width: proxy.size.width / 2, height: proxy.size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
         }
     }
 
@@ -7351,8 +7399,10 @@ private struct MyStoryBookSpreadView: View {
             let pageWidth = proxy.size.width / 2
             let pageHeight = proxy.size.height
             let clampedLeftPageIndex = clampedSpreadPageIndex(leftPageIndex)
-            let clampedRightPageIndex = clampedPageIndex(rightPageIndex)
+            let clampedRightPageIndex = max(closedCoverPageIndex, rightPageIndex)
             let rightPageIsClosedCover = clampedLeftPageIndex == closedCoverPageIndex && clampedRightPageIndex == 0
+            let showsCenterShadow = clampedLeftPageIndex != closedCoverPageIndex
+                && clampedLeftPageIndex != closedBackCoverPageIndex
 
             HStack(spacing: 0) {
                 pageView(at: clampedLeftPageIndex)
@@ -7364,7 +7414,7 @@ private struct MyStoryBookSpreadView: View {
             .frame(width: proxy.size.width, height: pageHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .center) {
-                if clampedLeftPageIndex != closedCoverPageIndex {
+                if showsCenterShadow {
                     bookCenterShadow(height: pageHeight, shadesLeftPage: clampedLeftPageIndex != 0)
                 }
             }
@@ -7424,8 +7474,75 @@ private struct MyStoryBookSpreadView: View {
                 storyboardCountText: storyboardCountText,
                 showsClosedBookEdges: showsClosedBookEdges
             )
+        } else if pageIndex == endPageIndex {
+            if hasMoreStoryboards {
+                loadMorePage
+            } else {
+                backCoverPage
+            }
         } else if let image = image(at: pageIndex) {
             JournalStoryboardComicPage(image: image)
+        } else {
+            Color.clear
+        }
+    }
+
+    private var loadMorePage: some View {
+        ZStack {
+            Color(red: 0.97, green: 0.95, blue: 0.9)
+
+            VStack(spacing: 14) {
+                Image(systemName: isLoadingMoreStoryboards ? "hourglass" : "square.grid.2x2")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(Color.storyInk.opacity(0.72))
+
+                Text(isLoadingMoreStoryboards ? "Loading" : "Load More")
+                    .font(.system(size: 20, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Color.storyInk)
+
+                Button {
+                    loadMoreStoryboards()
+                } label: {
+                    HStack(spacing: 7) {
+                        if isLoadingMoreStoryboards {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .heavy))
+                        }
+
+                        Text(isLoadingMoreStoryboards ? "Loading" : "Load 9 More")
+                    }
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .frame(height: 36)
+                    .background(Color.storyPurple, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isLoadingMoreStoryboards)
+                .accessibilityLabel(isLoadingMoreStoryboards ? "Loading more storyboards" : "Load more storyboards")
+            }
+            .multilineTextAlignment(.center)
+            .padding(18)
+        }
+    }
+
+    private var backCoverPage: some View {
+        ZStack {
+            Color.black
+
+            VStack(spacing: 10) {
+                Text(journalTitle)
+                    .font(.system(size: 18, weight: .bold, design: .serif))
+                    .foregroundStyle(.white.opacity(0.82))
+
+                Text(storyboardCountText)
+                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+            .padding(18)
         }
     }
 
@@ -7601,7 +7718,7 @@ private struct MyStoryBookSpreadView: View {
     }
 
     private func clampedPageIndex(_ pageIndex: Int) -> Int {
-        min(max(0, pageIndex), max(0, totalPageCount - 1))
+        min(max(0, pageIndex), max(0, endPageIndex))
     }
 
     private func clampedSpreadPageIndex(_ pageIndex: Int) -> Int {
@@ -7609,7 +7726,7 @@ private struct MyStoryBookSpreadView: View {
     }
 
     private var totalPageCount: Int {
-        storyboards.count + 1
+        storyboards.count + 2
     }
 
     private var leftPageIndex: Int {
@@ -7624,22 +7741,52 @@ private struct MyStoryBookSpreadView: View {
         leftPageIndex > closedCoverPageIndex
     }
 
-    private var isSettledClosedCover: Bool {
+    private var isLoadMorePageVisible: Bool {
+        hasMoreStoryboards && !isLoadingMoreStoryboards && turn == nil && leftPageIndex == firstEndPageSpreadIndex
+    }
+
+    private var isSettledFrontCoverClosed: Bool {
         turn == nil && leftPageIndex == closedCoverPageIndex
     }
 
+    private var isSettledBackCoverClosed: Bool {
+        !hasMoreStoryboards && turn == nil && leftPageIndex == closedBackCoverPageIndex
+    }
+
     private var maxSpreadPageIndex: Int {
-        max(0, totalPageCount - 2)
+        if hasMoreStoryboards {
+            return max(0, firstEndPageSpreadIndex)
+        }
+
+        return max(0, closedBackCoverPageIndex)
     }
 
     private var closedCoverPageIndex: Int {
         -1
     }
 
+    private var firstEndPageSpreadIndex: Int {
+        storyboards.count
+    }
+
+    private var endPageIndex: Int {
+        storyboards.count + 1
+    }
+
+    private var closedBackCoverPageIndex: Int {
+        storyboards.count + 1
+    }
+
     private var readerAccessibilityLabel: String {
-        leftPageIndex == closedCoverPageIndex
-            ? "My Story cover closed"
-            : "My Story page \(leftPageIndex + 1) of \(totalPageCount)"
+        if leftPageIndex == closedCoverPageIndex {
+            return "My Story cover closed"
+        }
+
+        if leftPageIndex == closedBackCoverPageIndex {
+            return "My Story back cover closed"
+        }
+
+        return "My Story page \(leftPageIndex + 1) of \(totalPageCount)"
     }
 }
 
@@ -7647,6 +7794,7 @@ private struct MyStoryHorizontalPanCatcher: UIViewRepresentable {
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat) -> Void
     var onCancelled: () -> Void
+    var onTap: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> UIView {
         let view = DetachReportingView(frame: .zero)
@@ -7668,6 +7816,14 @@ private struct MyStoryHorizontalPanCatcher: UIViewRepresentable {
         recognizer.delaysTouchesEnded = false
         recognizer.delegate = context.coordinator
         view.addGestureRecognizer(recognizer)
+
+        let tapRecognizer = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleTap(_:))
+        )
+        tapRecognizer.cancelsTouchesInView = true
+        tapRecognizer.delegate = context.coordinator
+        view.addGestureRecognizer(tapRecognizer)
 
         context.coordinator.hostView = view
         return view
@@ -7737,7 +7893,20 @@ private struct MyStoryHorizontalPanCatcher: UIViewRepresentable {
             }
         }
 
+        @objc
+        func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else {
+                return
+            }
+
+            parent.onTap?()
+        }
+
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            if gestureRecognizer is UITapGestureRecognizer {
+                return parent.onTap != nil
+            }
+
             guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
                   let view = hostView else {
                 return false
@@ -9510,7 +9679,7 @@ struct EntriesView: View {
         contentMode.isSampleAuthoring
     }
 
-    private let thumbnailRendererVersion = 14
+    private let thumbnailRendererVersion = 15
     private let thumbnailRendererVersionKey = "JournaltopiaEntryThumbnailRendererVersion"
 
     // Seeded from the last session snapshot rather than starting empty. These are `@State`

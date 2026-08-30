@@ -2467,37 +2467,31 @@ private struct DraftPageThumbnail: View {
             Color.homePageBackground
 
             ZStack(alignment: .bottom) {
-                NotebookPaperBackground(
-                    paperColor: paperStyle.backgroundImageName == nil ? paperColor : .homePageBackground,
-                    paperImageName: paperStyle.backgroundImageName,
-                    fitsPaperImageToWidth: false,
-                    expandsFittedPaperToScreen: false,
-                    illustratedPaperConfiguration: paperStyle.illustratedPaperConfiguration,
-                    showsPaperWash: false,
-                    showsRuledLines: paperStyle.showsRuledLines,
-                    showsNotebookChrome: paperStyle.showsNotebookChrome,
-                    firstRuledLineY: 84
-                )
+                thumbnailPaperBackground
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(displayTitle)
-                        .font(NotebookMetrics.titleFont(for: thumbnailTextStyle))
-                        .foregroundStyle(thumbnailTextStyle.color)
-                        .lineLimit(2)
-
-                    Text(displayRichText)
-                        .foregroundStyle(textColor)
-                        .padding(.horizontal, isHighlighted ? 3 : 0)
-                        .background(isHighlighted ? Color.yellow.opacity(0.26) : Color.clear)
-                        .multilineTextAlignment(textAlignment == .center ? .center : textAlignment == .trailing ? .trailing : .leading)
-                        .lineSpacing(4)
-                        .lineLimit(photos.isEmpty ? 10 : 8)
+                if paperStyle.usesFloatingWritingSheet {
+                    CreateScenicWritingSheet(
+                        tintOpacity: resolvedScenicSheetTintOpacity,
+                        usesMaterial: paperStyle.scenicSheetUsesMaterial,
+                        frostIntensity: paperStyle.scenicSheetFrostIntensity
+                    ) {
+                        thumbnailTextContent
+                            .padding(.top, 20)
+                            .padding(.trailing, 14)
+                            .padding(.bottom, photos.isEmpty ? 16 : 72)
+                            .padding(.leading, max(14, paperStyle.leadingContentPadding - 8))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.top, 12)
+                    .padding(.bottom, photos.isEmpty ? 14 : 74)
+                } else {
+                    thumbnailTextContent
+                        .padding(.top, 28)
+                        .padding(.trailing, 18)
+                        .padding(.bottom, photos.isEmpty ? 20 : 88)
+                        .padding(.leading, paperStyle.leadingContentPadding)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-                .padding(.top, 28)
-                .padding(.trailing, 18)
-                .padding(.bottom, photos.isEmpty ? 20 : 88)
-                .padding(.leading, paperStyle.leadingContentPadding)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
                 if !photos.isEmpty {
                     photoFilmstrip
@@ -2508,6 +2502,51 @@ private struct DraftPageThumbnail: View {
             }
             .background(paperStyle.backgroundImageName == nil ? paperColor : Color.homePageBackground)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+
+    private var thumbnailPaperBackground: some View {
+        NotebookPaperBackground(
+            paperColor: paperStyle.backgroundImageName == nil ? paperColor : .homePageBackground,
+            paperImageName: paperStyle.backgroundImageName,
+            fitsPaperImageToWidth: false,
+            expandsFittedPaperToScreen: false,
+            illustratedPaperConfiguration: paperStyle.illustratedPaperConfiguration,
+            showsPaperWash: false,
+            showsRuledLines: paperStyle.showsRuledLines,
+            showsNotebookChrome: paperStyle.showsNotebookChrome,
+            firstRuledLineY: 84
+        )
+    }
+
+    private var thumbnailTextContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(displayTitle)
+                .font(NotebookMetrics.titleFont(for: thumbnailTextStyle))
+                .foregroundStyle(thumbnailTextStyle.color)
+                .lineLimit(2)
+
+            Text(displayRichText)
+                .foregroundStyle(textColor)
+                .padding(.horizontal, isHighlighted ? 3 : 0)
+                .background(isHighlighted ? Color.yellow.opacity(0.26) : Color.clear)
+                .multilineTextAlignment(textAlignment == .center ? .center : textAlignment == .trailing ? .trailing : .leading)
+                .lineSpacing(4)
+                .lineLimit(photos.isEmpty ? 10 : 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var resolvedScenicSheetTintOpacity: Double {
+        switch paperStyle.chrome.editor {
+        case .clear:
+            CreateScenicSheetMetrics.clearTintOpacity
+        case .wash:
+            paperStyle.usesHeavierEditorWash
+                ? CreateScenicSheetMetrics.heavyWashTintOpacity
+                : CreateScenicSheetMetrics.washTintOpacity
+        case .frost:
+            CreateScenicSheetMetrics.frostTintOpacity
         }
     }
 
