@@ -265,11 +265,11 @@ struct JournalView: View {
     @State private var isJournalDetailVisible = false
     @State private var draggingJournalID: UUID?
     @Namespace private var journalOpenNamespace
-    @AppStorage("JournaltopiaSelectedJournalLayout") private var selectedJournalLayoutRawValue = JournalDisplayLayout.grid3x3.rawValue
+    @AppStorage("JournaltopiaSelectedJournalLayout") private var selectedJournalLayoutRawValue = JournalDisplayLayout.grid2x2.rawValue
 
     private var selectedJournalLayout: JournalDisplayLayout {
         get {
-            JournalDisplayLayout(rawValue: selectedJournalLayoutRawValue) ?? .grid3x3
+            JournalDisplayLayout(rawValue: selectedJournalLayoutRawValue) ?? .grid2x2
         }
         nonmutating set {
             selectedJournalLayoutRawValue = newValue.rawValue

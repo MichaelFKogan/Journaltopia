@@ -1737,7 +1737,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     /// `.gloriaHallelujah`, `.permanentMarker`, `.specialElite`.
     var startingFontChoice: CreateFontChoice? {
         switch self {
-        case .lofiGirl:
+        case .lofiGirl, .pastelSkyline:
             .lora
         case .japaneseTown:
             .serif
@@ -1758,7 +1758,7 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
             CreateFormattingPalette.blackTextColorIndex
         case .deepSea:
             CreateFormattingPalette.whiteTextColorIndex
-        case .rooftopCat1, .cozyWindow:
+        case .rooftopCat1, .cozyWindow, .pastelSkyline:
             CreateFormattingPalette.yellowTextColorIndex
         default:
             nil
