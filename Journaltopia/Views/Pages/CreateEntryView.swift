@@ -1396,7 +1396,7 @@ fileprivate enum CreateScenicSheetMetrics {
     static let washTintOpacity: Double = 0.20
     /// Slightly less transparent gray editor. Used by papers in
     /// `CreatePaperStyleChoice.usesHeavierEditorWash`.
-    static let heavyWashTintOpacity: Double = 0.62
+    static let heavyWashTintOpacity: Double = 0.88
     /// White wash for `.frost`. Keep this lighter so the blur does the lifting.
     static let frostTintOpacity: Double = 0.08
     static let cornerRadius: CGFloat = 26
@@ -3044,13 +3044,21 @@ struct CreateEntryView: View {
         usesLightEditorChrome ? Color.white.opacity(0.86) : Color.storyGray.opacity(0.46)
     }
 
+    private var hasEditorFocus: Bool {
+        isTitleFocused || isBodyEditorEditing || isMovingFocusToBodyEditor
+    }
+
     private var hasEditorWriting: Bool {
         !storyTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !entryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var shouldUseHeavyEditorWash: Bool {
+        hasEditorFocus || hasEditorWriting
+    }
+
     private var resolvedScenicSheetTintOpacity: Double {
-        if selectedPaperStyleChoice.usesHeavierEditorWash, hasEditorWriting {
+        if selectedPaperStyleChoice.usesHeavierEditorWash, shouldUseHeavyEditorWash {
             return CreateScenicSheetMetrics.heavyWashTintOpacity
         }
 
@@ -5861,6 +5869,7 @@ struct CreateEntryView: View {
         for flag in [
             isKeyboardVisible,
             isBodyEditorEditing,
+            isTitleFocused,
             activeKeyboardFormattingMode != nil,
             hasStoryboardPhotos,
             isPhotosPanelVisible,
