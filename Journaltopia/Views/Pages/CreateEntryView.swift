@@ -1754,11 +1754,11 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     /// Use `CreateFormattingPalette.blackTextColorIndex`, `.whiteTextColorIndex`, or `.yellowTextColorIndex`.
     var startingTextColorIndex: Int? {
         switch self {
-        case .lofiGirl:
+        case .lofiGirl, .pastelSkyline:
             CreateFormattingPalette.blackTextColorIndex
         case .deepSea:
             CreateFormattingPalette.whiteTextColorIndex
-        case .rooftopCat1, .cozyWindow, .pastelSkyline:
+        case .rooftopCat1, .cozyWindow:
             CreateFormattingPalette.yellowTextColorIndex
         default:
             nil
@@ -2090,7 +2090,13 @@ fileprivate enum CreatePaperStyleChoice: String, CaseIterable, Identifiable {
     /// Menu chrome is unchanged. The wash stays at the normal `.wash` tint while empty.
     var usesHeavierEditorWash: Bool {
         switch self {
-        case .trainView, .daytimeCoffeeShop, .cherryBlossom, .japaneseHome, .japaneseTown, .lofiGirl:
+        case .pastelSkyline,
+                .trainView,
+                .daytimeCoffeeShop,
+                .cherryBlossom,
+                .japaneseHome,
+                .japaneseTown,
+                .lofiGirl:
             true
         default:
             false
